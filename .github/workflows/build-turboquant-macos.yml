@@ -1,0 +1,218 @@
+name: Build & Release TurboQuant (macOS ARM64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/turboquant-kv-cache
+    paths:
+      - '.github/workflows/build-turboquant-macos.yml'
+      - '**/CMakeLists.txt'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/*.c'
+      - '**/*.cpp'
+      - '**/*.metal'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_LOG_COLORS: 1
+  LLAMA_LOG_PREFIX: 1
+  LLAMA_LOG_TIMESTAMPS: 1
+
+jobs:
+  macOS-arm64-metal:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Set version tag
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          TAG="turboquant-macos-arm64-${SHORT_SHA}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Import code signing certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$MACOS_CERTIFICATE_P12" | base64 --decode -o $CERTIFICATE_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          security import $CERTIFICATE_PATH -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+          IDENTITY=$(security find-identity -v -p codesigning $KEYCHAIN_PATH | head -1 | grep -o '".*"' | tr -d '"')
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "Signing identity: $IDENTITY"
+
+      - name: Build
+        id: cmake_build
+        run: |
+          sysctl -a
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_USE_BF16=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $(sysctl -n hw.ncpu)
+
+      - name: Verify turbo3 support
+        run: |
+          ./build/bin/llama-server --help 2>&1 | grep -A2 "cache-type-k" || true
+          echo "---"
+          file ./build/bin/llama-server
+          ./build/bin/llama-server --version 2>&1 || true
+
+      - name: Verify static binary
+        run: |
+          echo "=== All dynamic dependencies (should be system-only) ==="
+          otool -L build/bin/llama-server
+          echo "---"
+          echo "=== Checking for non-system dylibs (should be empty) ==="
+          if otool -L build/bin/llama-server | grep -vE '/usr/lib|/System|llama-server' | grep '\.dylib'; then
+            echo "ERROR: Found non-system dynamic dependency!"
+            exit 1
+          fi
+          echo "OK: Only system dylibs — fully self-contained binary"
+          echo "---"
+          echo "=== Binary size ==="
+          ls -lh build/bin/llama-server
+
+      - name: Sign binaries
+        run: |
+          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity; do
+            if [ -f "$bin" ]; then
+              echo "Signing $bin ..."
+              codesign --force --options runtime --timestamp \
+                --entitlements .github/entitlements.plist \
+                --sign "$CODESIGN_IDENTITY" "$bin"
+              codesign --verify --verbose "$bin"
+            fi
+          done
+          for lib in $(find build -name "*.dylib" 2>/dev/null); do
+            echo "Signing dylib $lib ..."
+            codesign --force --options runtime --timestamp \
+              --sign "$CODESIGN_IDENTITY" "$lib"
+          done
+
+      - name: Prepare release archive
+        run: |
+          mkdir -p release/build/bin
+          cp build/bin/llama-server release/build/bin/
+          cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          find build -name "*.dylib" -exec cp {} release/build/bin/ \; 2>/dev/null || true
+          find build -name "*.metal" -path "*/bin/*" -exec cp {} release/build/bin/ \; 2>/dev/null || true
+          cd release
+          zip -r ../llama-turboquant-macos-arm64.zip .
+          tar -czf ../llama-turboquant-macos-arm64.tar.gz .
+          cd ..
+          ls -lh llama-turboquant-macos-arm64.zip llama-turboquant-macos-arm64.tar.gz
+
+      - name: Notarize release archive
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "=== Notarizing zip archive ==="
+          xcrun notarytool submit llama-turboquant-macos-arm64.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 10m
+          echo "=== Notarizing individual binaries (for tar.gz users) ==="
+          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity; do
+            if [ -f "$bin" ]; then
+              name=$(basename "$bin")
+              echo "--- Notarizing $name ---"
+              zip -j "${name}.zip" "$bin"
+              xcrun notarytool submit "${name}.zip" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_ID_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" \
+                --wait --timeout 10m
+              rm "${name}.zip"
+            fi
+          done
+          echo "=== All notarization complete ==="
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain $KEYCHAIN_PATH 2>/dev/null || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-turboquant-macos-arm64
+          path: release/
+          retention-days: 30
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: "TurboQuant macOS ARM64 (${{ steps.version.outputs.short_sha }})"
+          body: |
+            ## TurboQuant KV Cache — macOS ARM64 (Metal)
+
+            Built from `feature/turboquant-kv-cache` branch at commit `${{ steps.version.outputs.short_sha }}`.
+
+            ### What's included
+            - `llama-server` with `--cache-type-k turbo3` / `turbo4` support
+            - `llama-cli`, `llama-bench`, `llama-perplexity`
+            - Metal backend with BF16 + embedded shader library
+
+            ### Usage
+            ```bash
+            # Option 1: zip (notarized + stapled)
+            unzip llama-turboquant-macos-arm64.zip
+            # Option 2: tar.gz
+            tar -xzf llama-turboquant-macos-arm64.tar.gz
+
+            ./build/bin/llama-server -m model.gguf --cache-type-k turbo3 --cache-type-v turbo3
+            ```
+
+            ### For Atomic Chat integration
+            Replace the binary at:
+            ```
+            ~/Library/Application Support/Atomic Chat/data/llamacpp/backends/<version>/macos-arm64/build/bin/llama-server
+            ```
+          files: |
+            llama-turboquant-macos-arm64.zip
+            llama-turboquant-macos-arm64.tar.gz
+          draft: false
+          prerelease: true
