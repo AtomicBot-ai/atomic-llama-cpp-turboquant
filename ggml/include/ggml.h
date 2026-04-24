@@ -429,7 +429,8 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_COUNT   = 42,
+        GGML_TYPE_TQ3_0   = 42,  // TurboQuant 3.5 bpv (3-bit Lloyd-Max + FWHT rotation)
+        GGML_TYPE_COUNT   = 43,
     };
 
     // precision
@@ -576,6 +577,8 @@ extern "C" {
         GGML_OP_OPT_STEP_SGD,
 
         GGML_OP_GLU,
+
+        GGML_OP_TURBO_WHT,  // FWHT rotation for TurboQuant KV cache
 
         GGML_OP_COUNT,
     };
@@ -2350,6 +2353,14 @@ extern "C" {
     GGML_API void ggml_flash_attn_ext_add_sinks(
             struct ggml_tensor * a,
             struct ggml_tensor * sinks);
+
+    // TurboQuant FWHT rotation. direction: 0 = forward, 1 = inverse.
+    // Applies signs1 -> FWHT -> signs2 (forward) or signs2 -> FWHT -> signs1 (inverse).
+    // Used for KV cache rotation in TurboQuant quantization types (TQ3_0).
+    GGML_API struct ggml_tensor * ggml_turbo_wht(
+            struct ggml_context * ctx,
+             struct ggml_tensor * a,
+                              int direction);
 
     // TODO: needs to be adapted to ggml_flash_attn_ext
     GGML_API struct ggml_tensor * ggml_flash_attn_back(

@@ -394,6 +394,50 @@ void dequantize_row_q1_0(const block_q1_0 * GGML_RESTRICT x, float * GGML_RESTRI
     }
 }
 
+// TQ3_0 CPU stubs — dflash uses CUDA path exclusively, these exist for
+// type_traits registration only (ggml_type_traits.to_float / .from_float_ref).
+static const float TQ3_CENTROIDS[8] = {
+    -0.190685f, -0.117832f, -0.065717f, -0.021460f,
+     0.021460f,  0.065717f,  0.117832f,  0.190685f
+};
+
+void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_TQ3_0;
+    assert(k % qk == 0);
+    const int nb = k / qk;
+    for (int i = 0; i < nb; i++) {
+        const float norm = GGML_FP16_TO_FP32(x[i].norm);
+        for (int j = 0; j < qk; j++) {
+            const uint8_t qs_byte  = x[i].qs[j / 4];
+            const int     low2     = (qs_byte >> ((j % 4) * 2)) & 0x3;
+            const uint8_t sign_byte = x[i].signs[j / 8];
+            const int     hi1      = (sign_byte >> (j % 8)) & 0x1;
+            const int     idx      = low2 | (hi1 << 2);
+            y[i * qk + j] = TQ3_CENTROIDS[idx] * norm;
+        }
+    }
+}
+
+void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ3_0 == 0);
+    const int nb = k / QK_TQ3_0;
+    for (int i = 0; i < nb; i++) {
+        float amax = 0.0f;
+        for (int j = 0; j < QK_TQ3_0; j++) amax = MAX(amax, fabsf(x[i * QK_TQ3_0 + j]));
+        const float norm = amax / 0.190685f;
+        y[i].norm = GGML_FP32_TO_FP16(norm);
+        for (int j = 0; j < QK_TQ3_0 / 4; j++) y[i].qs[j] = 0;
+        for (int j = 0; j < QK_TQ3_0 / 8; j++) y[i].signs[j] = 0;
+        for (int j = 0; j < QK_TQ3_0; j++) {
+            const float v = x[i * QK_TQ3_0 + j] / (norm > 1e-10f ? norm : 1.0f);
+            int best = 0; float bd = fabsf(v - TQ3_CENTROIDS[0]);
+            for (int c = 1; c < 8; c++) { float d = fabsf(v - TQ3_CENTROIDS[c]); if (d < bd) { bd = d; best = c; } }
+            y[i].qs[j / 4] |= (best & 0x3) << ((j % 4) * 2);
+            y[i].signs[j / 8] |= ((best >> 2) & 0x1) << (j % 8);
+        }
+    }
+}
+
 void dequantize_row_q4_0(const block_q4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK4_0;
 

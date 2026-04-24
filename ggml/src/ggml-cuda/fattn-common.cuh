@@ -3,6 +3,7 @@
 #include "common.cuh"
 #include "convert.cuh"
 #include "vecdotq.cuh"
+#include "tq3-quant.cuh"
 
 #include <cstdint>
 
@@ -577,6 +578,37 @@ static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict
     }
 }
 
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_tq3_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_tq3_0 * K_tq3 = (const block_tq3_0 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D; k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+
+        const int ib = k_KQ / QK_TQ3_0;
+        const int j  = k_KQ % QK_TQ3_0;
+        const float K_norm = __half2float(K_tq3[ib].norm);
+        const uint8_t low2 = (K_tq3[ib].qs[j/4] >> ((j%4)*2)) & 0x3;
+        const uint8_t hi1  = (K_tq3[ib].signs[j/8] >> (j%8)) & 0x1;
+        const float Kv = d_tq3_centroids[low2 | (hi1 << 2)] * K_norm;
+
+        const int qi = k_KQ / 4;
+        const int shift = (k_KQ % 4) * 8;
+        const int8_t Qv = (int8_t)((Q_q8[qi] >> shift) & 0xFF);
+        const float2 Q_ds = ((const float2 *) Q_ds_v)[k_KQ / QK8_1];
+
+        sum += Kv * Qv * Q_ds.x;
+    }
+
+    return sum;
+}
+
 template <ggml_type type_K, int D, int nthreads>
 constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
     if constexpr (type_K == GGML_TYPE_F16) {
@@ -591,11 +623,50 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_q5_1<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_Q8_0) {
         return vec_dot_fattn_vec_KQ_q8_0<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_TQ3_0) {
+        return vec_dot_fattn_vec_KQ_tq3_0<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_BF16) {
         return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
     } else {
         static_assert(type_K == -1, "bad type");
         return nullptr;
+    }
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_tq3_0(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_tq3_0 * x = (const block_tq3_0 *) vx;
+
+    const int64_t ib = i0 / QK_TQ3_0;
+    const int     j  = i0 % QK_TQ3_0;
+    const float   norm = __half2float(x[ib].norm);
+
+    static_assert(ne == 2 || ne == 4, "bad ne");
+
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same<T, half>::value) {
+        const half2 h_norm = __half2half2(__float2half(norm));
+
+#pragma unroll
+        for (int l = 0; l < ne; l++) {
+            const int jl = j + l;
+            const uint8_t low2 = (x[ib].qs[jl/4] >> ((jl%4)*2)) & 0x3;
+            const uint8_t hi1  = (x[ib].signs[jl/8] >> (jl%8)) & 0x1;
+            const float cv = d_tq3_centroids[low2 | (hi1 << 2)];
+            ((half *) dst)[l] = __float2half(cv) * __float2half(norm);
+        }
+    } else
+#endif // FP16_AVAILABLE
+    if constexpr (std::is_same<T, float>::value) {
+#pragma unroll
+        for (int l = 0; l < ne; l++) {
+            const int jl = j + l;
+            const uint8_t low2 = (x[ib].qs[jl/4] >> ((jl%4)*2)) & 0x3;
+            const uint8_t hi1  = (x[ib].signs[jl/8] >> (jl%8)) & 0x1;
+            ((float *) dst)[l] = d_tq3_centroids[low2 | (hi1 << 2)] * norm;
+        }
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
     }
 }
 
@@ -613,6 +684,8 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_q5_1<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_Q8_0) {
         return dequantize_V_q8_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_TQ3_0) {
+        return dequantize_V_tq3_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_BF16) {
         return dequantize_V_bf16<float, ne>;
     } else {

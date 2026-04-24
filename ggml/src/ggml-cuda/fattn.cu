@@ -4,6 +4,7 @@
 #include "fattn-tile.cuh"
 #include "fattn-vec.cuh"
 #include "fattn-wmma-f16.cuh"
+#include "fattn-chunked.cuh"
 #include "fattn.cuh"
 
 template <int DKQ, int DV, int ncols2>
@@ -285,10 +286,22 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_BF16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_BF16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
+
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_0, GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_TQ3_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_TQ3_0)
+
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_0, GGML_TYPE_F16)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_0, GGML_TYPE_Q4_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_0, GGML_TYPE_Q8_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_0, GGML_TYPE_BF16)
 #else
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_F16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
+    FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_0, GGML_TYPE_TQ3_0)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
@@ -302,6 +315,7 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_VEC      = 100,
     BEST_FATTN_KERNEL_WMMA_F16 = 300,
     BEST_FATTN_KERNEL_MMA_F16  = 400,
+    BEST_FATTN_KERNEL_CHUNKED  = 500,   // chunked long-context prefill (fattn-chunked.cu)
 };
 
 static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
@@ -390,6 +404,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 #endif // GGML_CUDA_FA_ALL_QUANTS
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
+        case GGML_TYPE_TQ3_0:
         case GGML_TYPE_BF16:
             break;
         default:
@@ -400,9 +415,37 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         return BEST_FATTN_KERNEL_NONE;
     }
 
+    // Chunked long-context prefill. Routes to fattn-chunked.cu which uses
+    // cuBLAS SGEMM + online softmax with adaptive chunk sizing for O(CHUNK)
+    // temp memory. Intended for prefill (Q->ne[1] > 1) at contexts where the
+    // MMA kernel's O(nq_chunk * kv_len * D) memory pressure dominates.
+    //
+    // Threshold: DFLASH27B_CHUNKED_THRESHOLD (default 8192 KV tokens).
+    // Disable entirely: DFLASH27B_CHUNKED_THRESHOLD=0 or negative.
+    {
+        static const int64_t chunked_threshold = [] {
+            const char * e = getenv("DFLASH27B_CHUNKED_THRESHOLD");
+            if (e) return (int64_t)atoll(e);
+            return (int64_t)8192;
+        }();
+        const bool kv_supported =
+            (K->type == GGML_TYPE_F16 || K->type == GGML_TYPE_BF16 ||
+             K->type == GGML_TYPE_Q4_0 || K->type == GGML_TYPE_Q8_0 ||
+             K->type == GGML_TYPE_TQ3_0) &&
+            (V->type == GGML_TYPE_F16 || V->type == GGML_TYPE_BF16 ||
+             K->type == GGML_TYPE_Q4_0 || K->type == GGML_TYPE_Q8_0 ||
+             K->type == GGML_TYPE_TQ3_0);
+        // TQ3_0 has no MMA kernel support, so force chunked for all prefills.
+        const bool tq3_prefill = (K->type == GGML_TYPE_TQ3_0 || V->type == GGML_TYPE_TQ3_0);
+        if ((chunked_threshold > 0 && K->ne[1] > chunked_threshold) || tq3_prefill) {
+            if (Q->type == GGML_TYPE_F32 && Q->ne[1] > 1 && kv_supported && mask != nullptr) {
+                return BEST_FATTN_KERNEL_CHUNKED;
+            }
+        }
+    }
+
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
-
     // If Turing tensor cores are available, use them:
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
         if (can_use_vector_kernel) {
@@ -521,6 +564,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_CHUNKED:
+            ggml_cuda_flash_attn_ext_chunked(ctx, dst);
             break;
     }
 }

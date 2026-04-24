@@ -290,12 +290,14 @@ llama_kv_cache::llama_kv_cache(
         !attn_rot_disable &&
         n_embd_head_k_all > 0 &&
         ggml_is_quantized(type_k) &&
+        type_k != GGML_TYPE_TQ3_0 &&
         hparams.n_embd_head_k() % 64 == 0;
 
     attn_rot_v =
         !attn_rot_disable &&
         n_embd_head_v_all > 0 &&
         ggml_is_quantized(type_v) &&
+        type_v != GGML_TYPE_TQ3_0 &&
         hparams.n_embd_head_v() % 64 == 0;
 
     LLAMA_LOG_INFO("%s: attn_rot_k = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_k, n_embd_head_k_all);

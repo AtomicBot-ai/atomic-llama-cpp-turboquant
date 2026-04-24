@@ -2009,6 +2009,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_glu(params, tensor);
             } break;
+        case GGML_OP_TURBO_WHT:
+            {
+                // CUDA-only op; CPU fallback is identity (no rotation)
+                GGML_ASSERT(false && "TURBO_WHT is CUDA-only, use CUDA backend");
+            } break;
         case GGML_OP_GET_REL_POS:
             {
                 ggml_compute_forward_get_rel_pos(params, tensor);
@@ -2273,9 +2278,13 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
                         n_tasks = n_threads;
                     } break;
                 default:
-                    GGML_ABORT("fatal error");
+                    break;
             }
             break;
+        case GGML_OP_TURBO_WHT:
+            {
+                n_tasks = n_threads;
+            } break;
         case GGML_OP_SILU_BACK:
         case GGML_OP_MUL:
         case GGML_OP_DIV:

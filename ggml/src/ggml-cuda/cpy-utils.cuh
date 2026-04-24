@@ -2,6 +2,7 @@
 
 #include "ggml-common.h"
 #include "convert.cuh"
+#include "tq3-quant.cuh"
 
 static __device__ __forceinline__ int best_index_int8(int n, const int8_t * val, float x) {
     if (x <= val[0]) return 0;
@@ -209,6 +210,40 @@ static __device__ void cpy_blck_f32_q8_0(const char * cxi, char * cdsti) {
 
 static __device__ void cpy_blck_f32_iq4_nl(const char * cxi, char * cdsti) {
     quantize_f32_iq4_nl_block((const float *)cxi, (block_iq4_nl *)cdsti);
+}
+
+static __device__ void quantize_f32_tq3_0_group(const float * __restrict__ src, block_tq3_0 * __restrict__ dst) {
+    float x[128];
+    float norm_sq = 0.0f;
+    for (int j = 0; j < 128; j++) {
+        x[j] = src[j];
+        norm_sq += x[j] * x[j];
+    }
+
+    float grp_norm = sqrtf(norm_sq);
+    float inv_norm = grp_norm > 1e-10f ? 1.0f / grp_norm : 0.0f;
+    for (int j = 0; j < 128; j++) x[j] *= inv_norm;
+
+    tq3_rotate_forward(x);
+
+    float recon_norm_sq = 0.0f;
+    for (int b = 0; b < 4; b++) {
+        const int off = b * QK_TQ3_0;
+        for (int j = 0; j < QK_TQ3_0 / 4; j++) dst[b].qs[j] = 0;
+        for (int j = 0; j < QK_TQ3_0 / 8; j++) dst[b].signs[j] = 0;
+        for (int j = 0; j < QK_TQ3_0; j++) {
+            uint8_t idx = tq3_find_nearest(x[off + j]);
+            dst[b].qs[j/4] |= (idx & 0x3) << ((j%4) * 2);
+            if (idx & 0x4) dst[b].signs[j/8] |= (1 << (j%8));
+            float c = d_tq3_centroids[idx];
+            recon_norm_sq += c * c;
+        }
+    }
+
+    float recon_norm = sqrtf(recon_norm_sq);
+    float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    half h_norm = __float2half(corrected_norm);
+    for (int b = 0; b < 4; b++) dst[b].norm = h_norm;
 }
 
 template<typename src_t, typename dst_t>

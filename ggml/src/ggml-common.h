@@ -121,6 +121,9 @@ typedef sycl::half2 ggml_half2;
 #define QI8_1 (QK8_1 / (4 * QR8_1))
 #define QR8_1 1
 
+#define QI_TQ3_0 (QK_TQ3_0 / (4 * QR_TQ3_0))
+#define QR_TQ3_0 2
+
 #define QI2_K (QK_K / (4*QR2_K))
 #define QR2_K 4
 
@@ -276,6 +279,18 @@ typedef struct {
     ggml_half d;
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
+
+// TurboQuant 3.5 bpv — 3-bit Lloyd-Max codebook with FWHT rotation.
+// 4 consecutive blocks (128 elements) share a group norm.
+// Dequant: centroid[low2 | (hi1 << 2)] * norm
+#define QK_TQ3_0       32
+#define QK_TQ3_0_GROUP 128
+typedef struct {
+    ggml_half norm;                    // 2 bytes
+    uint8_t   qs[QK_TQ3_0 / 4];      // 8 bytes: 2-bit low indices, packed 4 per byte
+    uint8_t   signs[QK_TQ3_0 / 8];    // 4 bytes: 1-bit high index per element
+} block_tq3_0;                         // 14 bytes per 32 elements = 3.5 bpv
+static_assert(sizeof(block_tq3_0) == 14, "wrong tq3_0 block size");
 
 //
 // Super-block quantization structures
