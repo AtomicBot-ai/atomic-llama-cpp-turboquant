@@ -420,22 +420,24 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // temp memory. Intended for prefill (Q->ne[1] > 1) at contexts where the
     // MMA kernel's O(nq_chunk * kv_len * D) memory pressure dominates.
     //
-    // Threshold: DFLASH27B_CHUNKED_THRESHOLD (default 8192 KV tokens).
-    // Disable entirely: DFLASH27B_CHUNKED_THRESHOLD=0 or negative.
+    // TQ3_0 has no MMA kernel support and must always use chunked.
+    // For other K/V types MMA is faster, so the threshold-based forcing is
+    // off by default (DFLASH27B_CHUNKED_THRESHOLD=0). Set the env var to a
+    // positive value (e.g. 8192) to opt in when MMA's temp memory becomes
+    // the bottleneck on a memory-tight card.
     {
         static const int64_t chunked_threshold = [] {
             const char * e = getenv("DFLASH27B_CHUNKED_THRESHOLD");
             if (e) return (int64_t)atoll(e);
-            return (int64_t)8192;
+            return (int64_t)0;
         }();
         const bool kv_supported =
             (K->type == GGML_TYPE_F16 || K->type == GGML_TYPE_BF16 ||
              K->type == GGML_TYPE_Q4_0 || K->type == GGML_TYPE_Q8_0 ||
              K->type == GGML_TYPE_TQ3_0) &&
             (V->type == GGML_TYPE_F16 || V->type == GGML_TYPE_BF16 ||
-             K->type == GGML_TYPE_Q4_0 || K->type == GGML_TYPE_Q8_0 ||
-             K->type == GGML_TYPE_TQ3_0);
-        // TQ3_0 has no MMA kernel support, so force chunked for all prefills.
+             V->type == GGML_TYPE_Q4_0 || V->type == GGML_TYPE_Q8_0 ||
+             V->type == GGML_TYPE_TQ3_0);
         const bool tq3_prefill = (K->type == GGML_TYPE_TQ3_0 || V->type == GGML_TYPE_TQ3_0);
         if ((chunked_threshold > 0 && K->ne[1] > chunked_threshold) || tq3_prefill) {
             if (Q->type == GGML_TYPE_F32 && Q->ne[1] > 1 && kv_supported && mask != nullptr) {
