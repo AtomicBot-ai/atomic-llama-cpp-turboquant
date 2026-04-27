@@ -21,10 +21,16 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
             mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, args, stream);
             break;
         case GGML_TYPE_MXFP4:
-            mul_mat_q_case<GGML_TYPE_MXFP4>(ctx, args, stream);
-            break;
         case GGML_TYPE_NVFP4:
-            mul_mat_q_case<GGML_TYPE_NVFP4>(ctx, args, stream);
+#ifndef GGML_CUDA_BLACKWELL_CONSUMER
+            if (args.type_x == GGML_TYPE_MXFP4) {
+                mul_mat_q_case<GGML_TYPE_MXFP4>(ctx, args, stream);
+            } else {
+                mul_mat_q_case<GGML_TYPE_NVFP4>(ctx, args, stream);
+            }
+#else
+            GGML_ABORT("FP4 quantization requires sm_120a, not supported on consumer Blackwell (SM 12.0)");
+#endif
             break;
         case GGML_TYPE_Q2_K:
             mul_mat_q_case<GGML_TYPE_Q2_K>(ctx, args, stream);
@@ -277,6 +283,10 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
+#ifdef GGML_CUDA_BLACKWELL_CONSUMER
+            mmq_supported = false;
+            break;
+#endif
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q4_K:

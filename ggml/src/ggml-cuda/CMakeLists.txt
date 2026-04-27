@@ -76,6 +76,11 @@ if (CUDAToolkit_FOUND)
     # Notably the Blackwell FP4 tensor core instructions are not forwards compatible and therefore need 12Xa.
     # But while 12X vs. 12Xa can be checked in device code there is (to my knowledge) no easy way to do the same check in host code.
     # So for now just replace all instances of 12X with 12Xa, this should be fine until Rubin is released.
+    #
+    # Set GGML_CUDA_BLACKWELL_CONSUMER=ON to skip this replacement for consumer Blackwell GPUs
+    # (e.g. RTX 5090, SM 12.0) that don't have FP4 tensor cores and will fault on 12Xa instructions.
+    option(GGML_CUDA_BLACKWELL_CONSUMER "Skip sm_12X→sm_12Xa replacement for consumer Blackwell" OFF)
+    if(NOT GGML_CUDA_BLACKWELL_CONSUMER)
     foreach(ARCHS IN ITEMS CMAKE_CUDA_ARCHITECTURES CMAKE_CUDA_ARCHITECTURES_NATIVE)
         set(FIXED_ARCHS "")
         foreach(ARCH IN LISTS ${ARCHS})
@@ -89,6 +94,7 @@ if (CUDAToolkit_FOUND)
         endforeach()
         set(${ARCHS} ${FIXED_ARCHS})
     endforeach()
+    endif() # NOT GGML_CUDA_BLACKWELL_CONSUMER
 
     # If we try to compile a "native" build it will use the 12X architectures and fail.
     # So we should instead use the native architectures as determined by CMake after replacing 12X with 12Xa.
@@ -110,6 +116,18 @@ if (CUDAToolkit_FOUND)
     list(APPEND GGML_SOURCES_CUDA ${SRCS})
     file(GLOB   SRCS "template-instances/mmf*.cu")
     list(APPEND GGML_SOURCES_CUDA ${SRCS})
+
+    if(GGML_CUDA_BLACKWELL_CONSUMER)
+        # FP4 MMA kernels (mxfp4/nvfp4) require sm_120a instructions not present
+        # on consumer Blackwell (RTX 5090, SM 12.0).
+        list(REMOVE_ITEM GGML_SOURCES_CUDA
+            "${CMAKE_CURRENT_SOURCE_DIR}/template-instances/mmq-instance-mxfp4.cu"
+            "${CMAKE_CURRENT_SOURCE_DIR}/template-instances/mmq-instance-nvfp4.cu"
+        )
+        # Let dispatch code in mmq.cu know to skip FP4 cases.
+        add_compile_definitions(GGML_CUDA_BLACKWELL_CONSUMER)
+        message(STATUS "ggml-cuda: Excluding FP4 MMA kernels (GGML_CUDA_BLACKWELL_CONSUMER)")
+    endif()
 
     if (GGML_CUDA_FA_ALL_QUANTS)
         file(GLOB   SRCS "template-instances/fattn-vec*.cu")
