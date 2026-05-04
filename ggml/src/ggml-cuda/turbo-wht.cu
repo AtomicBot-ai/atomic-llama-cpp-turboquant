@@ -1,6 +1,9 @@
 #include "turbo-wht.cuh"
 #include "tq3-quant.cuh"
 
+// Each thread independently transforms one 128-element group.
+// We flatten the 3D grid (n_groups × ne01 × ne02) into a 1D index and
+// launch with many threads per block for high occupancy.
 static __global__ void k_turbo_wht(
         const char * __restrict__ src_base,
         char       * __restrict__ dst_base,
@@ -11,11 +14,17 @@ static __global__ void k_turbo_wht(
         const int64_t nb01,
         const int64_t nb02,
         const int64_t nb03,
+        const int64_t total_groups,
+        const int64_t groups_per_row,
         int           direction) {
-    const int64_t i01 = blockIdx.y;
-    const int64_t i02 = blockIdx.z;
-    const int64_t g   = blockIdx.x;
-    if (i01 >= ne01 || i02 >= ne02 || g * QK_TQ3_0_GROUP >= ne00) return;
+    const int64_t gid = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= total_groups) return;
+
+    // Decompose flat index → (group_in_row, i01, i02)
+    const int64_t g   = gid % groups_per_row;
+    const int64_t rem = gid / groups_per_row;
+    const int64_t i01 = rem % ne01;
+    const int64_t i02 = rem / ne01;
 
     const float * row = (const float *)(src_base + i01 * nb01 + i02 * nb02) + g * QK_TQ3_0_GROUP;
     float * out_row   = (float *)(dst_base + i01 * nb01 + i02 * nb02) + g * QK_TQ3_0_GROUP;
@@ -45,14 +54,18 @@ void ggml_cuda_op_turbo_wht(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
     const int64_t ne02 = src0->ne[2];
     GGML_ASSERT(ne00 % QK_TQ3_0_GROUP == 0);
 
-    const int64_t n_groups = ne00 / QK_TQ3_0_GROUP;
+    const int64_t groups_per_row = ne00 / QK_TQ3_0_GROUP;
+    const int64_t total_groups   = groups_per_row * ne01 * ne02;
 
-    dim3 grid(n_groups, ne01, ne02);
-    dim3 threads(1, 1, 1);
+    // Pack many independent groups into each block for high GPU occupancy.
+    // Each thread processes one 128-element group using 128 registers.
+    constexpr int THREADS_PER_BLOCK = 128;
+    const int n_blocks = (int)((total_groups + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK);
 
-    k_turbo_wht<<<grid, threads, 0, ctx.stream()>>>(
+    k_turbo_wht<<<n_blocks, THREADS_PER_BLOCK, 0, ctx.stream()>>>(
         (const char *)src0->data, (char *)dst->data,
         ne00, ne01, ne02,
         src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3],
+        total_groups, groups_per_row,
         direction);
 }
