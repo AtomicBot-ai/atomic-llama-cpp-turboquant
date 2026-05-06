@@ -475,6 +475,17 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
+            case LLAMA_VOCAB_PRE_TYPE_LAGUNA:
+                // Laguna pre_tokenizer is a Sequence of:
+                //   1. Split (?:\r?\n)+(?!\r?\n) MergedWithNext  (collapse non-final newlines)
+                //   2. Split <gpt2-style regex with single \p{N}> Isolated
+                //   3. ByteLevel add_prefix_space=false
+                // We approximate by running the standard GPT-2 byte-level regex; the leading
+                // newline-collapse pass tends to be absorbed by BPE merges in practice.
+                regex_exprs = {
+                    "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+                };
+                break;
             case LLAMA_VOCAB_PRE_TYPE_AFMOE:
                 regex_exprs = {
                     // Digit handling - uses custom implementation in unicode.cpp
@@ -2151,6 +2162,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             } else if (
                 tokenizer_pre == "afmoe") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_AFMOE;
+                clean_spaces = false;
+            } else if (
+                tokenizer_pre == "laguna") {
+                pre_type = LLAMA_VOCAB_PRE_TYPE_LAGUNA;
                 clean_spaces = false;
             } else if (
                 tokenizer_pre == "minimax-m2") {
