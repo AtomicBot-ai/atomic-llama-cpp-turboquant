@@ -1539,6 +1539,9 @@ class TextModel(ModelBase):
         if chkhsh == "862f827721df956049dff5ca81a57f29e575280bc622e290d3bf4e35eca29015":
             # ref: https://huggingface.co/codefuse-ai/F2LLM-v2-4B
             res = "f2llmv2"
+        if chkhsh == "972da7b59cec44d1f0a490a86c96df53859e486e481563e5dddac155013d87ac":
+            # ref: https://huggingface.co/poolside/Laguna-XS.2
+            res = "laguna"
 
         if res is None:
             logger.warning("\n")
@@ -3057,6 +3060,125 @@ class AfmoeModel(LlamaModel):
             name = name.replace(".expert_bias", ".expert_bias.bias")
 
         yield from ModelBase.modify_tensors(self, data_torch, name, bid)
+
+
+@ModelBase.register("LagunaForCausalLM")
+class LagunaModel(LlamaModel):
+    """Poolside Laguna-XS.2: iSWA + per-layer head count + softplus per-head attention gate +
+    sigmoid-routed MoE with score-correction bias and always-on shared expert.
+    See modeling_laguna.py / configuration_laguna.py."""
+
+    model_arch = gguf.MODEL_ARCH.LAGUNA
+    undo_permute = False  # Laguna q/k_proj are not Llama-permuted
+
+    def set_vocab(self):
+        # Laguna uses a GPT-2 style BPE tokenizer.json without a sentencepiece model.
+        self._set_vocab_gpt2()
+
+    def set_gguf_parameters(self):
+        # TextModel.set_gguf_parameters handles the standard fields including the per-layer-type
+        # rope_parameters dict (it pulls full_attention rope_theta + YaRN params, and emits
+        # rope_freq_base_swa from sliding_attention rope_theta).
+        super().set_gguf_parameters()
+
+        hparams = self.hparams
+
+        # Per-layer head count override (full layers: 48, sliding: 64). add_head_count accepts
+        # Sequence[int] and emits an INT32 array which llama-model.cpp loads via get_key_or_arr
+        # into hparams.n_head_arr. Re-emits to override the scalar add_head_count from parent.
+        n_heads_per_layer = hparams["num_attention_heads_per_layer"]
+        assert len(n_heads_per_layer) == hparams["num_hidden_layers"]
+        self.gguf_writer.add_head_count(n_heads_per_layer)
+        logger.info(f"gguf: head count per layer = {n_heads_per_layer}")
+
+        # MoE-only params not handled by parent.
+        self.gguf_writer.add_expert_feed_forward_length(hparams["moe_intermediate_size"])
+        self.gguf_writer.add_expert_shared_feed_forward_length(hparams["shared_expert_intermediate_size"])
+        self.gguf_writer.add_expert_weights_norm(True)  # routing_weights / sum normalization
+        self.gguf_writer.add_expert_weights_scale(float(hparams.get("moe_routed_scaling_factor", 1.0)))
+        # Sigmoid router (LagunaTopKRouter applies sigmoid before topk).
+        self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
+
+        # leading_dense_block_count = number of contiguous dense layers from the start.
+        # mlp_layer_types[0] = 'dense', rest 'sparse'.
+        mlp_types = hparams["mlp_layer_types"]
+        n_dense = 0
+        for t in mlp_types:
+            if t == "dense":
+                n_dense += 1
+            else:
+                break
+        # Validate: only the leading run is dense and the rest are sparse.
+        for t in mlp_types[n_dense:]:
+            assert t == "sparse", "LagunaModel converter only supports leading-dense + tail-sparse pattern"
+        self.gguf_writer.add_leading_dense_block_count(n_dense)
+
+        # iSWA window
+        sw = hparams.get("sliding_window")
+        if sw is None:
+            raise ValueError("Laguna config missing sliding_window")
+        self.gguf_writer.add_sliding_window(sw)
+
+        # Per-layer-type RoPE: full layers use partial_rotary_factor=0.5 (rotate first 64 of 128),
+        # sliding layers use full rotation (partial_rotary_factor=1.0). Emit n_rot for each.
+        head_dim = hparams.get("head_dim", hparams["hidden_size"] // hparams["num_attention_heads"])
+        rope_params = hparams["rope_parameters"]
+        full_prf = float(rope_params["full_attention"].get("partial_rotary_factor", 1.0))
+        swa_prf  = float(rope_params["sliding_attention"].get("partial_rotary_factor", 1.0))
+        n_rot_full = int(head_dim * full_prf)
+        n_rot_swa  = int(head_dim * swa_prf)
+        # Make even (RoPE pairs)
+        n_rot_full -= n_rot_full % 2
+        n_rot_swa  -= n_rot_swa  % 2
+        # Override parent's add_rope_dimension_count (which was set to head_dim)
+        self.gguf_writer.add_rope_dimension_count(n_rot_full)
+        self.gguf_writer.add_rope_dimension_count_swa(n_rot_swa)
+        logger.info(f"gguf: rope_dim full={n_rot_full}, swa={n_rot_swa}")
+
+    _experts: list[dict[str, Tensor]] | None = None
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # Stack per-expert {gate,up,down}_proj into single 3D tensors per layer.
+        if name.find("mlp.experts") != -1 and not name.endswith("e_score_correction_bias"):
+            n_experts = self.hparams["num_experts"]
+            assert bid is not None
+
+            if self._experts is None:
+                self._experts = [{} for _ in range(self.block_count)]
+
+            self._experts[bid][name] = data_torch
+
+            # 3 projections (gate, up, down) per expert => n_experts * 3 entries per block.
+            if len(self._experts[bid]) >= n_experts * 3:
+                for w_name in ["gate_proj", "up_proj", "down_proj"]:
+                    datas: list[Tensor] = []
+                    for xid in range(n_experts):
+                        ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
+                        datas.append(self._experts[bid][ename])
+                        del self._experts[bid][ename]
+                    data_torch = torch.stack(datas, dim=0)
+                    merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
+                    yield from ModelBase.modify_tensors(self, data_torch, merged_name, bid)
+                return
+            return
+
+        # Router score-correction bias: HF param `mlp.experts.e_score_correction_bias` =>
+        # rename to `mlp.experts.e_score_correction.bias` so map_tensor_name finds the
+        # FFN_EXP_PROBS_B entry above (with `.bias` stripped via try_suffixes).
+        if name.endswith(".mlp.experts.e_score_correction_bias"):
+            name = name.replace(
+                ".mlp.experts.e_score_correction_bias",
+                ".mlp.experts.e_score_correction.bias",
+            )
+
+        yield from ModelBase.modify_tensors(self, data_torch, name, bid)
+
+    def prepare_tensors(self):
+        super().prepare_tensors()
+        if self._experts is not None:
+            leftover = [k for d in self._experts for k in d.keys()]
+            if leftover:
+                raise ValueError(f"Unprocessed Laguna experts: {leftover}")
 
 
 @ModelBase.register(

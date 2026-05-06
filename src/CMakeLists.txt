@@ -89,6 +89,7 @@ add_library(llama
             models/jais2.cpp
             models/jamba.cpp
             models/kimi-linear.cpp
+            models/laguna.cpp
             models/lfm2.cpp
             models/llada-moe.cpp
             models/llada.cpp

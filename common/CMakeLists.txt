@@ -37,6 +37,7 @@ configure_file(${TEMPLATE_FILE} ${OUTPUT_FILE})
 
 set(TARGET build_info)
 add_library(${TARGET} OBJECT ${OUTPUT_FILE})
+target_include_directories(${TARGET} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 if (BUILD_SHARED_LIBS)
     set_target_properties(${TARGET} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
