@@ -4764,7 +4764,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             }
             break;
         case GGML_OP_TURBO_WHT:
-            return ggml_is_contiguous(op->src[0]);
+            // Only requires dim0 contiguous (nb[0] == sizeof(float));
+            // the kernel handles strided dim1/dim2 via separate src/dst strides.
+            return op->src[0]->nb[0] == ggml_type_size(op->src[0]->type);
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
             {
