@@ -19,6 +19,7 @@
 
 #include "common.cuh"
 #include "fattn-common.cuh"
+#include "tq3-quant.cuh"
 
 // Adaptive chunk-size configuration
 static constexpr int CHUNKED_PF_MAX = 8192;
@@ -218,6 +219,35 @@ static __global__ void k_chunked_attn_finalize(
     dst[q_pos * nh_q * D + head * D + d] = O_acc[hq_idx * D + d] / l;
 }
 
+// Apply TQ3 FWHT rotation in-place to a flat [nh, nq, D] fp32 buffer.
+// One warp (32 threads) per (head, token, group-of-128) tuple.
+// direction == 0 → forward, 1 → inverse.
+static __global__ void k_tq3_rotate_inplace_f32(
+        float * __restrict__ data,
+        int nh, int nq, int D,
+        int direction)
+{
+    const int t = blockIdx.x;
+    const int h = blockIdx.y;
+    const int g = blockIdx.z;
+    if (t >= nq || h >= nh) return;
+    float * row = data + (h * nq + t) * D + g * 128;
+    const int lane = threadIdx.x & 31;
+    float v0 = row[lane * 4 + 0];
+    float v1 = row[lane * 4 + 1];
+    float v2 = row[lane * 4 + 2];
+    float v3 = row[lane * 4 + 3];
+    if (direction == 0) {
+        warp_tq3_rotate_forward(v0, v1, v2, v3);
+    } else {
+        warp_tq3_rotate_inverse(v0, v1, v2, v3);
+    }
+    row[lane * 4 + 0] = v0;
+    row[lane * 4 + 1] = v1;
+    row[lane * 4 + 2] = v2;
+    row[lane * 4 + 3] = v3;
+}
+
 // ─── Strided chunk dequant kernels ─────────────────────────────────────────
 //
 // Extract a [chunk_len, nh_kv] window from a ggml KV tensor (layout
@@ -246,6 +276,13 @@ static __global__ void k_chunked_dequant_f16_f32(
     float      * out = dst + (h * chunk_len + kv_local) * D;
     for (int64_t d = threadIdx.x; d < D; d += blockDim.x) {
         out[d] = __half2float(src[d]);
+    }
+    __syncthreads();
+    if (kv_start == 0 && kv_local == 0 && h == 0 && threadIdx.x == 0) {
+        printf("[F16-DEQ] D=%d K[0..15]=[%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f]\n",
+            (int)D,
+            out[0],out[1],out[2],out[3],out[4],out[5],out[6],out[7],
+            out[8],out[9],out[10],out[11],out[12],out[13],out[14],out[15]);
     }
 }
 
@@ -350,6 +387,11 @@ static __global__ void k_chunked_dequant_tq3_0_f32(
             const uint8_t hi1  = (blk->signs[i/8] >> (i%8)) & 0x1;
             out_blk[i] = d_tq3_centroids[low2 | (hi1 << 2)] * norm;
         }
+    }
+    if (kv_start == 0 && kv_local == 0 && h == 0 && threadIdx.x == 0) {
+        printf("[TQ3-DEQ] D=%d K128=", (int)D);
+        for (int i = 0; i < 128; i++) printf("%.4f,", out[i]);
+        printf("\n");
     }
 }
 

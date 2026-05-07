@@ -62,6 +62,7 @@
 #include "ggml-cuda/tri.cuh"
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/fill.cuh"
+#include "ggml-cuda/moe-fused.cuh"
 #include "ggml.h"
 
 #include <algorithm>
@@ -2718,6 +2719,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_TURBO_WHT:
             ggml_cuda_op_turbo_wht(ctx, dst);
             break;
+        case GGML_OP_MOE_FUSED:
+            ggml_cuda_op_moe_fused(ctx, dst);
+            break;
         case GGML_OP_GROUP_NORM:
             ggml_cuda_op_group_norm(ctx, dst);
             break;
@@ -4767,6 +4771,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             // Only requires dim0 contiguous (nb[0] == sizeof(float));
             // the kernel handles strided dim1/dim2 via separate src/dst strides.
             return op->src[0]->nb[0] == ggml_type_size(op->src[0]->type);
+        case GGML_OP_MOE_FUSED:
+            return true;
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
             {

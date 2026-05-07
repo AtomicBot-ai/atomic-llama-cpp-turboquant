@@ -1075,7 +1075,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "TURBO_WHT",
 };
 
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
+static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1187,7 +1187,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "turbo_wht(a)",
 };
 
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
+static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -7857,5 +7857,45 @@ struct ggml_tensor * ggml_turbo_wht(
     result->op = GGML_OP_TURBO_WHT;
     result->src[0] = a;
     ggml_set_op_params_i32(result, 0, direction);
+    return result;
+}
+
+struct ggml_tensor * ggml_moe_fused(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * input,
+        struct ggml_tensor  * gate_w,
+        struct ggml_tensor  * up_w,
+        struct ggml_tensor  * down_w,
+        struct ggml_tensor  * expert_ids,
+        struct ggml_tensor  * expert_weights,
+        struct ggml_tensor  * sh_gate_w,
+        struct ggml_tensor  * sh_up_w,
+        struct ggml_tensor  * sh_down_w,
+        struct ggml_tensor  * sh_gate_inp_w,
+        int64_t               n_embd,
+        int64_t               ff_dim,
+        int64_t               n_expert_used) {
+    GGML_ASSERT(ggml_is_contiguous(input));
+    GGML_ASSERT(input->type == GGML_TYPE_F32);
+
+    const int64_t ne[4] = { n_embd, 1, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op = GGML_OP_MOE_FUSED;
+    result->src[0] = input;
+    result->src[1] = gate_w;
+    result->src[2] = up_w;
+    result->src[3] = down_w;
+    result->src[4] = expert_ids;
+    result->src[5] = expert_weights;
+    result->src[6] = sh_gate_w;
+    result->src[7] = sh_up_w;
+    result->src[8] = sh_down_w;
+    result->src[9] = sh_gate_inp_w;
+
+    ggml_set_op_params_i32(result, 0, (int32_t) n_embd);
+    ggml_set_op_params_i32(result, 1, (int32_t) ff_dim);
+    ggml_set_op_params_i32(result, 2, (int32_t) n_expert_used);
+
     return result;
 }

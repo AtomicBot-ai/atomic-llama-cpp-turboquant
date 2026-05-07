@@ -580,6 +580,8 @@ extern "C" {
 
         GGML_OP_TURBO_WHT,  // FWHT rotation for TurboQuant KV cache
 
+        GGML_OP_MOE_FUSED,  // Fused MoE FFN: gate+up+swiglu+down+weighted_sum+shared_expert
+
         GGML_OP_COUNT,
     };
 
@@ -2361,6 +2363,22 @@ extern "C" {
             struct ggml_context * ctx,
              struct ggml_tensor * a,
                               int direction);
+
+    GGML_API struct ggml_tensor * ggml_moe_fused(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * input,
+            struct ggml_tensor  * gate_w,
+            struct ggml_tensor  * up_w,
+            struct ggml_tensor  * down_w,
+            struct ggml_tensor  * expert_ids,
+            struct ggml_tensor  * expert_weights,
+            struct ggml_tensor  * sh_gate_w,
+            struct ggml_tensor  * sh_up_w,
+            struct ggml_tensor  * sh_down_w,
+            struct ggml_tensor  * sh_gate_inp_w,
+            int64_t               n_embd,
+            int64_t               ff_dim,
+            int64_t               n_expert_used);
 
     // TODO: needs to be adapted to ggml_flash_attn_ext
     GGML_API struct ggml_tensor * ggml_flash_attn_back(

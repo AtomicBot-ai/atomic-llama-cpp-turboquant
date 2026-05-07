@@ -76,8 +76,61 @@ static float * ensure_buf(float ** p, size_t * cur_bytes, size_t need_bytes) {
     return *p;
 }
 
+// Self-test: round-trip forward→inverse rotation on 128 deterministic floats.
+// Runs once per process when DFLASH_TQ3_VERIFY=1.
+// Validates that k_tq3_rotate_inplace_f32 is mathematically reversible.
+static void tq3_verify_roundtrip(cudaStream_t stream) {
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    constexpr int N = 128;
+    float h_orig[N], h_result[N];
+    for (int i = 0; i < N; i++) {
+        h_orig[i] = sinf((float)i);
+    }
+
+    float * d_buf = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_buf, N * sizeof(float)));
+    CUDA_CHECK(cudaMemcpyAsync(d_buf, h_orig, N * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+    // Forward rotation (direction=0): one warp, nq=1, nh=1, D=128, one group-of-128
+    const dim3 grid1(1, 1, 1);
+    k_tq3_rotate_inplace_f32<<<grid1, 32, 0, stream>>>(d_buf, /*nh=*/1, /*nq=*/1, N, /*direction=*/0);
+    CUDA_CHECK(cudaGetLastError());
+
+    // Inverse rotation (direction=1)
+    k_tq3_rotate_inplace_f32<<<grid1, 32, 0, stream>>>(d_buf, /*nh=*/1, /*nq=*/1, N, /*direction=*/1);
+    CUDA_CHECK(cudaGetLastError());
+
+    CUDA_CHECK(cudaMemcpyAsync(h_result, d_buf, N * sizeof(float), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(cudaFree(d_buf));
+
+    float max_diff = 0.0f, sum_diff = 0.0f;
+    for (int i = 0; i < N; i++) {
+        float diff = fabsf(h_result[i] - h_orig[i]);
+        if (diff > max_diff) max_diff = diff;
+        sum_diff += diff;
+    }
+    const float mean_diff = sum_diff / N;
+
+    if (max_diff > 1e-3f) {
+        std::fprintf(stderr, "[TQ3-VERIFY] FAIL roundtrip max_diff=%.6f mean_diff=%.6f\n",
+                     max_diff, mean_diff);
+    } else {
+        std::fprintf(stderr, "[TQ3-VERIFY] OK roundtrip max_diff=%.6f mean_diff=%.6f\n",
+                     max_diff, mean_diff);
+    }
+}
+
 void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     cudaStream_t stream = ctx.stream();
+
+    // TQ3 rotation roundtrip self-test (once per process).
+    if (std::getenv("DFLASH_TQ3_VERIFY")) {
+        tq3_verify_roundtrip(stream);
+    }
 
     const ggml_tensor * Q    = dst->src[0];
     const ggml_tensor * K    = dst->src[1];
@@ -154,6 +207,35 @@ void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tens
                     CUDA_CHECK(cudaMemcpyAsync(dst_ptr, src_ptr, D * sizeof(float),
                                                cudaMemcpyDeviceToDevice, stream));
                 }
+            }
+        }
+
+        // TQ3_0 K stored FWHT-rotated. Forward-rotate Q before kv loop so
+        // QK^T = (W·Q)·(W·K)^T = Q·K^T. Once per FA call.
+        if (K->type == GGML_TYPE_TQ3_0) {
+            GGML_ASSERT(D % 128 == 0);
+            // probe Q BEFORE rotation
+            static int dbg_cnt = 0;
+            if (std::getenv("DFLASH_TQ3_DEBUG") && dbg_cnt < 1) {
+                float qpre[128];
+                CUDA_CHECK(cudaMemcpyAsync(qpre, Q_f32, 128*sizeof(float), cudaMemcpyDeviceToHost, stream));
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+                std::fprintf(stderr, "[Q-PRE] Q128=");
+                for (int i = 0; i < 128; i++) std::fprintf(stderr, "%.4f,", qpre[i]);
+                std::fprintf(stderr, "\n");
+            }
+            const dim3 grid_q((int)nq, (int)nh_q, (int)(D / 128));
+            k_tq3_rotate_inplace_f32<<<grid_q, 32, 0, stream>>>(Q_f32, (int)nh_q, (int)nq, (int)D, 0);
+            CUDA_CHECK(cudaGetLastError());
+            // probe Q AFTER rotation
+            if (std::getenv("DFLASH_TQ3_DEBUG") && dbg_cnt < 1) {
+                float qpost[128];
+                CUDA_CHECK(cudaMemcpyAsync(qpost, Q_f32, 128*sizeof(float), cudaMemcpyDeviceToHost, stream));
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+                std::fprintf(stderr, "[Q-POST] Q128=");
+                for (int i = 0; i < 128; i++) std::fprintf(stderr, "%.4f,", qpost[i]);
+                std::fprintf(stderr, "\n");
+                dbg_cnt++;
             }
         }
 
@@ -279,6 +361,14 @@ void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tens
                     }
                 }
             }
+        }
+
+        // TQ3_0 V stored FWHT-rotated. Inverse-rotate accumulated O before finalize.
+        if (V->type == GGML_TYPE_TQ3_0) {
+            GGML_ASSERT(D % 128 == 0);
+            const dim3 grid_o((int)nq, (int)nh_q, (int)(D / 128));
+            k_tq3_rotate_inplace_f32<<<grid_o, 32, 0, stream>>>(O_acc, (int)nh_q, (int)nq, (int)D, 1);
+            CUDA_CHECK(cudaGetLastError());
         }
 
         // Finalize.
