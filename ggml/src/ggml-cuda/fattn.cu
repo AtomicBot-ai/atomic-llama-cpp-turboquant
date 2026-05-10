@@ -442,11 +442,18 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             (V->type == GGML_TYPE_F16 || V->type == GGML_TYPE_BF16 ||
              V->type == GGML_TYPE_Q4_0 || V->type == GGML_TYPE_Q8_0 ||
              V->type == GGML_TYPE_TQ3_0);
-        // TQ3_0 has no MMA kernel support, so force chunked for all TQ3 paths.
-        // This includes decode (Q->ne[1]==1) when D>256 since the vec kernel
-        // only supports D<=256 and the MMA kernel lacks TQ3->F16 dequant.
+        // Force chunked for ALL TQ3_0 cases. The MMA-F16 path has no TQ3
+        // handler on this branch (the dequant intercept was deliberately
+        // dropped because it didn't honour the graph-level FWHT rotation
+        // contract), and the VEC path's TQ3 instances quantise Q to int8 in
+        // a way that doesn't compose cleanly with rotated Q from the graph.
+        // SWA decode (n_tokens=1, head_dim<=256) was the case that previously
+        // slipped through the (Q->ne[1]>1 || Q->ne[0]>256) guard and produced
+        // degenerate output. Chunked has the right contract: dequant K/V to
+        // f32 in compressed (rotated) domain, attend with graph-rotated Q,
+        // return rotated O for the graph to inverse-rotate.
         const bool tq3_any = (K->type == GGML_TYPE_TQ3_0 || V->type == GGML_TYPE_TQ3_0);
-        const bool tq3_needs_chunked = tq3_any && (Q->ne[1] > 1 || Q->ne[0] > 256);
+        const bool tq3_needs_chunked = tq3_any;
         if ((chunked_threshold > 0 && K->ne[1] > chunked_threshold) || tq3_needs_chunked) {
             if (Q->type == GGML_TYPE_F32 && kv_supported && mask != nullptr) {
                 return BEST_FATTN_KERNEL_CHUNKED;
