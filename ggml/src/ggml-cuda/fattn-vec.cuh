@@ -165,38 +165,10 @@ static __global__ void flash_attn_ext_vec(
             } else {
                 const float * Q_f = (const float *) (Q + j*nb01);
                 constexpr int nthreads_quantize = D/sizeof(int) < WARP_SIZE ? D/sizeof(int) : WARP_SIZE;
-                if constexpr (type_K == GGML_TYPE_TQ3_0 && D >= 128) {
-                    // Pre-rotate Q with forward FWHT before q8_1 quantization.
-                    // Stage rotated floats in KQ[j*D] (same buffer used for quantized output).
-                    // One warp cooperates over each 128-element group via warp_tq3_rotate_forward.
-                    // Note: KQ is float[], so &KQ[j*D] is already a float*.
-                    float * q_flt = &KQ[j*D];
-                    constexpr int n_groups = D / 128;
-                    #pragma unroll
-                    for (int g = 0; g < n_groups; ++g) {
-                        const int lane = threadIdx.x & 31;
-                        float v0 = Q_f[g*128 + lane*4 + 0];
-                        float v1 = Q_f[g*128 + lane*4 + 1];
-                        float v2 = Q_f[g*128 + lane*4 + 2];
-                        float v3 = Q_f[g*128 + lane*4 + 3];
-                        warp_tq3_rotate_forward(v0, v1, v2, v3);
-                        q_flt[g*128 + lane*4 + 0] = v0;
-                        q_flt[g*128 + lane*4 + 1] = v1;
-                        q_flt[g*128 + lane*4 + 2] = v2;
-                        q_flt[g*128 + lane*4 + 3] = v3;
-                    }
-                    __syncwarp();
-                    #pragma unroll
-                    for (int i0 = 0; i0 < int(D/sizeof(int)); i0 += nthreads_quantize) {
-                        quantize_q8_1_to_shared<float2, nthreads_quantize>
-                            (q_flt + i0*sizeof(int), scale, tmp_q_i32 + i0, tmp_q_ds + i0/QI8_1);
-                    }
-                } else {
 #pragma unroll
-                    for (int i0 = 0; i0 < int(D/sizeof(int)); i0 += nthreads_quantize) {
-                        quantize_q8_1_to_shared<float2, nthreads_quantize>
-                            (Q_f + i0*sizeof(int), scale, tmp_q_i32 + i0, tmp_q_ds + i0/QI8_1);
-                    }
+                for (int i0 = 0; i0 < int(D/sizeof(int)); i0 += nthreads_quantize) {
+                    quantize_q8_1_to_shared<float2, nthreads_quantize>
+                        (Q_f + i0*sizeof(int), scale, tmp_q_i32 + i0, tmp_q_ds + i0/QI8_1);
                 }
             }
         }
@@ -504,69 +476,20 @@ static __global__ void flash_attn_ext_vec(
             KQ_sum[j_VKQ] = KQ_sum_shared[j_VKQ][threadIdx.x];
             KQ_sum[j_VKQ] = warp_reduce_sum(KQ_sum[j_VKQ]);
 
-            if constexpr (type_V == GGML_TYPE_TQ3_0 && D >= 128) {
-                // Accumulate VKQ into KQ[0..D-1] (float), then apply inverse FWHT.
-                // We reuse the KQ shared buffer (per-warp VKQ data no longer needed).
-                // For TQ3_0, D >= 128 is required (group size = 128).
-                // With D >= 128 and nthreads = 128: nthreads <= D is always true, so
-                // all threads enter this block, making __syncthreads() safe.
-#ifndef V_DOT2_F32_F16_AVAILABLE
-                float * out_buf = (float *) KQ;
 #pragma unroll
-                for (int i0 = 0; i0 < D; i0 += nthreads) {
-                    float dst_val = 0;
+            for (int i0 = 0; i0 < D; i0 += nthreads) {
+                float dst_val = 0;
 #pragma unroll
-                    for (int w = 0; w < nwarps; ++w) {
+                for (int w = 0; w < nwarps; ++w) {
 #pragma unroll
-                        for (int v = 0; v < V_cols_per_iter; ++v) {
-                            dst_val += float(KQ[w*V_cols_per_iter*D + v*D + i0 + tid]);
-                        }
-                    }
-                    if (gridDim.y == 1) {
-                        dst_val /= KQ_sum[j_VKQ];
-                    }
-                    out_buf[i0 + tid] = dst_val;
-                }
-                __syncthreads();
-                // Warp 0 applies inverse FWHT per 128-element group.
-                if (threadIdx.y == 0) {
-                    constexpr int n_groups = D / 128;
-                    #pragma unroll
-                    for (int g = 0; g < n_groups; ++g) {
-                        const int lane = threadIdx.x & 31;
-                        float v0 = out_buf[g*128 + lane*4 + 0];
-                        float v1 = out_buf[g*128 + lane*4 + 1];
-                        float v2 = out_buf[g*128 + lane*4 + 2];
-                        float v3 = out_buf[g*128 + lane*4 + 3];
-                        warp_tq3_rotate_inverse(v0, v1, v2, v3);
-                        out_buf[g*128 + lane*4 + 0] = v0;
-                        out_buf[g*128 + lane*4 + 1] = v1;
-                        out_buf[g*128 + lane*4 + 2] = v2;
-                        out_buf[g*128 + lane*4 + 3] = v3;
+                    for (int v = 0; v < V_cols_per_iter; ++v) {
+                        dst_val += float(KQ[w*V_cols_per_iter*D + v*D + i0 + tid]);
                     }
                 }
-                __syncthreads();
-#pragma unroll
-                for (int i0 = 0; i0 < D; i0 += nthreads) {
-                    dst[(((sequence*int(ne01.z) + ic0 + j_VKQ)*ne02 + head)*gridDim.y + blockIdx.y)*D + i0 + tid] = out_buf[i0 + tid];
+                if (gridDim.y == 1) {
+                    dst_val /= KQ_sum[j_VKQ];
                 }
-#endif // !V_DOT2_F32_F16_AVAILABLE
-            } else {
-#pragma unroll
-                for (int i0 = 0; i0 < D; i0 += nthreads) {
-                    float dst_val = 0;
-#pragma unroll
-                    for (int w = 0; w < nwarps; ++w) {
-#pragma unroll
-                        for (int v = 0; v < V_cols_per_iter; ++v) {
-                            dst_val += float(KQ[w*V_cols_per_iter*D + v*D + i0 + tid]);
-                        }
-                    }
-                    if (gridDim.y == 1) {
-                        dst_val /= KQ_sum[j_VKQ];
-                    }
-                    dst[(((sequence*int(ne01.z) + ic0 + j_VKQ)*ne02 + head)*gridDim.y + blockIdx.y)*D + i0 + tid] = dst_val;
-                }
+                dst[(((sequence*int(ne01.z) + ic0 + j_VKQ)*ne02 + head)*gridDim.y + blockIdx.y)*D + i0 + tid] = dst_val;
             }
         }
 

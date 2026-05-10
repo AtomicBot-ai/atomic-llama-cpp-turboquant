@@ -223,35 +223,6 @@ void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tens
             }
         }
 
-        // TQ3_0 K stored FWHT-rotated. Forward-rotate Q before kv loop so
-        // QK^T = (W·Q)·(W·K)^T = Q·K^T. Once per FA call.
-        if (K->type == GGML_TYPE_TQ3_0) {
-            GGML_ASSERT(D % 128 == 0);
-            // probe Q BEFORE rotation
-            static int dbg_cnt = 0;
-            if (std::getenv("DFLASH_TQ3_DEBUG") && dbg_cnt < 1) {
-                float qpre[128];
-                CUDA_CHECK(cudaMemcpyAsync(qpre, Q_f32, 128*sizeof(float), cudaMemcpyDeviceToHost, stream));
-                CUDA_CHECK(cudaStreamSynchronize(stream));
-                std::fprintf(stderr, "[Q-PRE] Q128=");
-                for (int i = 0; i < 128; i++) std::fprintf(stderr, "%.4f,", qpre[i]);
-                std::fprintf(stderr, "\n");
-            }
-            const dim3 grid_q((int)nq, (int)nh_q, (int)(D / 128));
-            k_tq3_rotate_inplace_f32<<<grid_q, 32, 0, stream>>>(Q_f32, (int)nh_q, (int)nq, (int)D, 0);
-            CUDA_CHECK(cudaGetLastError());
-            // probe Q AFTER rotation
-            if (std::getenv("DFLASH_TQ3_DEBUG") && dbg_cnt < 1) {
-                float qpost[128];
-                CUDA_CHECK(cudaMemcpyAsync(qpost, Q_f32, 128*sizeof(float), cudaMemcpyDeviceToHost, stream));
-                CUDA_CHECK(cudaStreamSynchronize(stream));
-                std::fprintf(stderr, "[Q-POST] Q128=");
-                for (int i = 0; i < 128; i++) std::fprintf(stderr, "%.4f,", qpost[i]);
-                std::fprintf(stderr, "\n");
-                dbg_cnt++;
-            }
-        }
-
         // Init accumulators.
         {
             const int64_t nq_heads = nh_q * nq;
@@ -374,14 +345,6 @@ void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tens
                     }
                 }
             }
-        }
-
-        // TQ3_0 V stored FWHT-rotated. Inverse-rotate accumulated O before finalize.
-        if (V->type == GGML_TYPE_TQ3_0) {
-            GGML_ASSERT(D % 128 == 0);
-            const dim3 grid_o((int)nq, (int)nh_q, (int)(D / 128));
-            k_tq3_rotate_inplace_f32<<<grid_o, 32, 0, stream>>>(O_acc, (int)nh_q, (int)nq, (int)D, 1);
-            CUDA_CHECK(cudaGetLastError());
         }
 
         // Finalize.
