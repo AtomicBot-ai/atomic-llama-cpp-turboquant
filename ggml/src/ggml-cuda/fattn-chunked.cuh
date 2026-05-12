@@ -363,6 +363,17 @@ static __global__ void k_chunked_dequant_q8_0_f32(
     }
 }
 
+// One thread per output element (not one thread per block).
+//
+// The previous version used `for (b = threadIdx.x; b < n_blocks; b += blockDim.x)`,
+// which at the launch config (blockDim.x = min(D, 256), n_blocks = D/32) meant
+// only 8 of 256 threads did real work for D=256 (3% block utilization). With
+// thread-per-element, all 256 threads load and write coalesced.
+//
+// Output writes are 32-thread coalesced (one cache line per warp). Input reads
+// hit the small TQ3 codebook in __constant__ memory — same-norm reads across
+// the warp broadcast, centroid lookups serialize on different indices but the
+// table is only 8 entries so the serial cost is at worst 8 cycles per warp.
 static __global__ void k_chunked_dequant_tq3_0_f32(
         const char * __restrict__ src_base,
         float      * __restrict__ dst,
@@ -376,21 +387,16 @@ static __global__ void k_chunked_dequant_tq3_0_f32(
     if (kv_local >= chunk_len) return;
     const char * src_token = src_base + h * nb2 + (kv_start + kv_local) * nb1;
     float      * out       = dst + (h * chunk_len + kv_local) * D;
-    const int n_blocks = D / QK_TQ3_0;
-    for (int b = threadIdx.x; b < n_blocks; b += blockDim.x) {
+
+    for (int j = (int)threadIdx.x; j < (int)D; j += (int)blockDim.x) {
+        const int b           = j >> 5;     // j / QK_TQ3_0
+        const int idx_in_blk  = j & 31;     // j % QK_TQ3_0
         const block_tq3_0 * blk = (const block_tq3_0 *)(src_token + b * sizeof(block_tq3_0));
         const float norm = __half2float(blk->norm);
-        float * out_blk = out + b * QK_TQ3_0;
-        #pragma unroll
-        for (int i = 0; i < QK_TQ3_0; i++) {
-            const uint8_t low2 = (blk->qs[i/4] >> ((i%4)*2)) & 0x3;
-            const uint8_t hi1  = (blk->signs[i/8] >> (i%8)) & 0x1;
-            out_blk[i] = d_tq3_centroids[low2 | (hi1 << 2)] * norm;
-        }
+        const uint8_t low2 = (blk->qs   [idx_in_blk / 4] >> ((idx_in_blk % 4) * 2)) & 0x3;
+        const uint8_t hi1  = (blk->signs[idx_in_blk / 8] >> ( idx_in_blk % 8))      & 0x1;
+        out[j] = d_tq3_centroids[low2 | (hi1 << 2)] * norm;
     }
-    // (removed [TQ3-DEQ] debug printf — was left in by commit 694cea5e1
-    //  and tanks TQ3-path performance by ~8x even with the leading-thread
-    //  predicate.  Re-enable behind DFLASH_TQ3_DEQ_TRACE if needed.)
 }
 
 // Launch helper: dispatch by ggml type. Returns false if unsupported.
