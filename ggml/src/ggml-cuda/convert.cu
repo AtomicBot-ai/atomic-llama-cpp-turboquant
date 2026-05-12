@@ -1,5 +1,6 @@
 #include "convert.cuh"
 #include "dequantize.cuh"
+#include "tq3-quant.cuh"
 
 #include <cstdint>
 
@@ -532,6 +533,33 @@ static void dequantize_row_q4_0_cuda(const void * vx, dst_t * y, const int64_t k
     dequantize_block_q4_0<<<nb, 32, 0, stream>>>(vx, y, nb32);
 }
 
+// TQ3_0 contiguous dequant — compressed-domain (centroid * norm, no FWHT
+// inverse rotation). Callers that consume this via attention (e.g. pflash
+// sparse FA) pre-rotate Q and inverse-rotate O around the FA call so the
+// rotation cancels through QK^T and unwinds after P @ V. Matches the
+// contract of cpy_tq3_0_f16_kernel (cpy.cu).
+template<typename dst_t>
+static __global__ void dequantize_block_tq3_0(
+        const void * __restrict__ vx, dst_t * __restrict__ y, const int64_t k) {
+    const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= k) return;
+    const int64_t b = i / QK_TQ3_0;
+    const int j = (int)(i % QK_TQ3_0);
+    const block_tq3_0 * blk = (const block_tq3_0 *)vx + b;
+    const float norm = __half2float(blk->norm);
+    const uint8_t low2 = (blk->qs   [j / 4] >> ((j % 4) * 2)) & 0x3;
+    const uint8_t hi1  = (blk->signs[j / 8] >> ( j % 8))      & 0x1;
+    const float val = d_tq3_centroids[low2 | (hi1 << 2)] * norm;
+    y[i] = (dst_t)val;
+}
+
+template<typename dst_t>
+static void dequantize_row_tq3_0_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    const int threads = 256;
+    const int64_t blocks = (k + threads - 1) / threads;
+    dequantize_block_tq3_0<dst_t><<<(unsigned)blocks, threads, 0, stream>>>(vx, y, k);
+}
+
 template<typename dst_t>
 static void dequantize_row_q4_1_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     const int nb32 = k / 32;
@@ -711,6 +739,8 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
 
 to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
     switch (type) {
+        case GGML_TYPE_TQ3_0:
+            return dequantize_row_tq3_0_cuda;
         case GGML_TYPE_Q4_0:
             return dequantize_row_q4_0_cuda;
         case GGML_TYPE_Q4_1:
@@ -767,6 +797,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
 
 to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
     switch (type) {
+        case GGML_TYPE_TQ3_0:
+            return dequantize_row_tq3_0_cuda;
         case GGML_TYPE_Q4_0:
             return dequantize_row_q4_0_cuda;
         case GGML_TYPE_Q4_1:
