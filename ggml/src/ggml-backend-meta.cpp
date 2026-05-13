@@ -937,6 +937,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
             case GGML_OP_FLASH_ATTN_EXT: {
                 split_state = handle_flash_attn_ext(src_ss);
             } break;
+            case GGML_OP_FLASH_ATTN_SPARSE: {
+                // Block-sparse FA is CUDA-only; treat like flash_attn_ext for
+                // multi-device split (all sources on same device as output).
+                split_state = handle_flash_attn_ext(src_ss);
+            } break;
             case GGML_OP_FLASH_ATTN_BACK: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
             } break;

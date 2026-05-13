@@ -246,6 +246,104 @@ static __device__ void quantize_f32_tq3_0_group(const float * __restrict__ src, 
     for (int b = 0; b < 4; b++) dst[b].norm = h_norm;
 }
 
+// Warp-cooperative replacement for quantize_f32_tq3_0_group.
+//
+// Each warp (32 threads) quantizes one 128-element group. The caller must
+// launch with blockDim.x == 32 and one warp per group.
+//
+// Each lane holds 4 consecutive elements at indices [lane*4 .. lane*4+3];
+// reductions use __shfl_xor_sync, the FWHT reuses warp_tq3_rotate_forward
+// (already warp-cooperative), and the per-byte packing into qs/signs is
+// conflict-free: qs is 4-elements-per-byte so each lane writes its own
+// byte, signs is 8-elements-per-byte so paired lanes shfl-OR before the
+// even lane in each pair writes.
+//
+// vs the single-thread version this replaces:
+//   - 32x more parallel work per group (full warp instead of one thread)
+//   - no float x[128] stack array (was spilling to local memory)
+//   - reuses the already-warp-cooperative warp_tq3_rotate_forward
+static __device__ __forceinline__ void warp_quantize_f32_tq3_0_group(
+        const float * __restrict__ src,
+        block_tq3_0 * __restrict__ dst) {
+    const int lane = threadIdx.x & 31;
+
+    float v0 = src[lane*4 + 0];
+    float v1 = src[lane*4 + 1];
+    float v2 = src[lane*4 + 2];
+    float v3 = src[lane*4 + 3];
+
+    // Group L2 norm via warp reduction.
+    float norm_sq = v0*v0 + v1*v1 + v2*v2 + v3*v3;
+    #pragma unroll
+    for (int mask = 16; mask > 0; mask >>= 1) {
+        norm_sq += __shfl_xor_sync(0xFFFFFFFF, norm_sq, mask);
+    }
+    const float grp_norm = sqrtf(norm_sq);
+    const float inv_norm = (grp_norm > 1e-10f) ? 1.0f / grp_norm : 0.0f;
+    v0 *= inv_norm; v1 *= inv_norm; v2 *= inv_norm; v3 *= inv_norm;
+
+    // Forward FWHT rotation (already warp-cooperative).
+    warp_tq3_rotate_forward(v0, v1, v2, v3);
+
+    // Quantize each value to a 3-bit centroid index.
+    const uint8_t idx0 = tq3_find_nearest(v0);
+    const uint8_t idx1 = tq3_find_nearest(v1);
+    const uint8_t idx2 = tq3_find_nearest(v2);
+    const uint8_t idx3 = tq3_find_nearest(v3);
+
+    // Reconstruction norm for the per-block correction factor.
+    const float c0 = d_tq3_centroids[idx0];
+    const float c1 = d_tq3_centroids[idx1];
+    const float c2 = d_tq3_centroids[idx2];
+    const float c3 = d_tq3_centroids[idx3];
+    float recon_sq = c0*c0 + c1*c1 + c2*c2 + c3*c3;
+    #pragma unroll
+    for (int mask = 16; mask > 0; mask >>= 1) {
+        recon_sq += __shfl_xor_sync(0xFFFFFFFF, recon_sq, mask);
+    }
+    const float recon_norm = sqrtf(recon_sq);
+    const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    const half h_norm = __float2half(corrected_norm);
+
+    // Pack into block_tq3_0 layout.
+    //   block index b   = lane / 8   (4 blocks of 32 elements per group)
+    //   t_in_block      = lane & 7   (8 lanes per block)
+    //   qs[t_in_block]      holds elements [4*t_in_block .. 4*t_in_block+3]
+    //   signs[t_in_block/2] holds 8 elements; bits (t_in_block&1)*4 .. +3
+    const int b          = lane >> 3;
+    const int t_in_block = lane & 7;
+
+    const uint8_t my_qs =
+          (uint8_t)((idx0 & 0x3) << 0)
+        | (uint8_t)((idx1 & 0x3) << 2)
+        | (uint8_t)((idx2 & 0x3) << 4)
+        | (uint8_t)((idx3 & 0x3) << 6);
+
+    const int sign_bit_off = (t_in_block & 1) * 4;
+    const uint8_t my_signs_partial =
+          (uint8_t)(((idx0 >> 2) & 0x1) << (sign_bit_off + 0))
+        | (uint8_t)(((idx1 >> 2) & 0x1) << (sign_bit_off + 1))
+        | (uint8_t)(((idx2 >> 2) & 0x1) << (sign_bit_off + 2))
+        | (uint8_t)(((idx3 >> 2) & 0x1) << (sign_bit_off + 3));
+
+    // Combine the two halves of each signs byte across paired lanes.
+    const uint8_t partner = (uint8_t)__shfl_xor_sync(0xFFFFFFFF, my_signs_partial, 1);
+    const uint8_t my_signs_byte = my_signs_partial | partner;
+
+    // Each lane writes its own qs byte (no conflict).
+    dst[b].qs[t_in_block] = my_qs;
+
+    // Only the even lane of each pair writes the signs byte.
+    if ((t_in_block & 1) == 0) {
+        dst[b].signs[t_in_block >> 1] = my_signs_byte;
+    }
+
+    // Only the first lane of each block writes the norm.
+    if (t_in_block == 0) {
+        dst[b].norm = h_norm;
+    }
+}
+
 template<typename src_t, typename dst_t>
 static __device__ void cpy_1_scalar(const char * cxi, char * cdsti) {
     *(dst_t *) cdsti = ggml_cuda_cast<dst_t>(*(const src_t *) cxi);

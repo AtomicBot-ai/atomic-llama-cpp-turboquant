@@ -20,6 +20,69 @@ static __constant__ float d_tq3_wht_signs1[128] = {
 static __constant__ float d_tq3_wht_signs2[128] = {
     1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f};
 
+// ── Warp-cooperative FWHT (128 elements, 32 threads × 4 values) ─────
+// Replaces single-thread tq3_fwht_128 which spills 128 registers.
+// Each thread in a 32-thread warp holds 4 contiguous elements.
+// Stages 0-1: local butterfly (within thread's 4 values)
+// Stages 2-6: __shfl_xor_sync (across threads in warp)
+
+static __device__ __forceinline__
+void warp_fwht_128(float &v0, float &v1, float &v2, float &v3) {
+    // Stage 0: stride=1
+    {
+        float a, b;
+        a = v0; b = v1; v0 = a + b; v1 = a - b;
+        a = v2; b = v3; v2 = a + b; v3 = a - b;
+    }
+    // Stage 1: stride=2
+    {
+        float a, b;
+        a = v0; b = v2; v0 = a + b; v2 = a - b;
+        a = v1; b = v3; v1 = a + b; v3 = a - b;
+    }
+    // Stages 2-6: stride=4,8,16,32,64 → lane_mask=1,2,4,8,16
+    const int lane = threadIdx.x & 31;
+    #pragma unroll
+    for (int lane_mask = 1; lane_mask <= 16; lane_mask <<= 1) {
+        float s0 = __shfl_xor_sync(0xFFFFFFFF, v0, lane_mask);
+        float s1 = __shfl_xor_sync(0xFFFFFFFF, v1, lane_mask);
+        float s2 = __shfl_xor_sync(0xFFFFFFFF, v2, lane_mask);
+        float s3 = __shfl_xor_sync(0xFFFFFFFF, v3, lane_mask);
+        if ((lane & lane_mask) == 0) {
+            v0 = v0 + s0; v1 = v1 + s1; v2 = v2 + s2; v3 = v3 + s3;
+        } else {
+            v0 = s0 - v0; v1 = s1 - v1; v2 = s2 - v2; v3 = s3 - v3;
+        }
+    }
+    const float inv_sqrt_128 = 0.08838834764831845f;
+    v0 *= inv_sqrt_128; v1 *= inv_sqrt_128; v2 *= inv_sqrt_128; v3 *= inv_sqrt_128;
+}
+
+// Apply element-wise sign pattern. Thread t (within warp) applies signs at [4t..4t+3].
+static __device__ __forceinline__
+void warp_apply_signs(float &v0, float &v1, float &v2, float &v3,
+                      const float * __restrict__ signs) {
+    const int base = (threadIdx.x & 31) * 4;
+    v0 *= signs[base + 0]; v1 *= signs[base + 1];
+    v2 *= signs[base + 2]; v3 *= signs[base + 3];
+}
+
+// Forward rotation: signs1 → FWHT → signs2
+static __device__ __forceinline__
+void warp_tq3_rotate_forward(float &v0, float &v1, float &v2, float &v3) {
+    warp_apply_signs(v0, v1, v2, v3, d_tq3_wht_signs1);
+    warp_fwht_128(v0, v1, v2, v3);
+    warp_apply_signs(v0, v1, v2, v3, d_tq3_wht_signs2);
+}
+
+// Inverse rotation: signs2 → FWHT → signs1
+static __device__ __forceinline__
+void warp_tq3_rotate_inverse(float &v0, float &v1, float &v2, float &v3) {
+    warp_apply_signs(v0, v1, v2, v3, d_tq3_wht_signs2);
+    warp_fwht_128(v0, v1, v2, v3);
+    warp_apply_signs(v0, v1, v2, v3, d_tq3_wht_signs1);
+}
+
 static __device__ __forceinline__
 void tq3_fwht_128(float * x) {
     for (int h = 1; h < 128; h *= 2) {

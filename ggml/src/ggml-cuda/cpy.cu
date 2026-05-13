@@ -379,7 +379,8 @@ static __global__ void cpy_f32_tq3_0_kernel(
     const int64_t ne10, const int64_t ne11, const int64_t ne12,
     const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13) {
 
-    const int64_t group = (int64_t)blockDim.x * blockIdx.x + threadIdx.x;
+    // One warp per group: 32 threads cooperate on one 128-element group.
+    const int64_t group = blockIdx.x;
     const int64_t i = group * QK_TQ3_0_GROUP;
 
     if (i >= ne) return;
@@ -399,7 +400,7 @@ static __global__ void cpy_f32_tq3_0_kernel(
     const float * src = (const float *)(cx + x_offset);
     block_tq3_0 * dst_blocks = (block_tq3_0 *)(cdst + dst_offset);
 
-    quantize_f32_tq3_0_group(src, dst_blocks);
+    warp_quantize_f32_tq3_0_group(src, dst_blocks);
 }
 
 static void ggml_cpy_f32_tq3_0_cuda(
@@ -412,7 +413,65 @@ static void ggml_cpy_f32_tq3_0_cuda(
     GGML_ASSERT(ne % QK_TQ3_0_GROUP == 0);
     const int64_t num_groups = ne / QK_TQ3_0_GROUP;
     GGML_ASSERT(num_groups < UINT_MAX);
-    cpy_f32_tq3_0_kernel<<<num_groups, 1, 0, stream>>>
+    // One warp (32 threads) per group: each warp cooperatively quantizes one
+    // 128-element group via warp_quantize_f32_tq3_0_group (no stack spill, no
+    // single-thread FWHT).
+    cpy_f32_tq3_0_kernel<<<num_groups, 32, 0, stream>>>
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
+// TQ3_0 -> F16 dequant via the standard ggml_cpy dispatch. Compressed-domain
+// only (centroid * norm, no FWHT inverse rotation). This lets the rest of the
+// graph use the dequanted f16 tensor in any kernel that doesn't natively
+// support TQ3_0 — in particular ggml_flash_attn_sparse (pflash). Q forward
+// rotation and O inverse rotation continue to be applied around the FA call
+// in build_full_attn_block, so rotation cancels in QK^T and unwinds after PV.
+static __global__ void cpy_tq3_0_f16_kernel(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02,
+    const int64_t nb00, const int64_t nb01, const int64_t nb02, const int64_t nb03,
+    const int64_t ne10, const int64_t ne11, const int64_t ne12,
+    const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13) {
+
+    const int64_t i = (int64_t)blockDim.x * blockIdx.x + threadIdx.x;
+    if (i >= ne) return;
+
+    // Source (TQ3_0) coordinates. Treat src strides nb0x as bytes.
+    // The source is laid out by (i00, i01, i02, i03) in element space; the
+    // byte offset for the containing TQ3 block is found via i00 / QK_TQ3_0.
+    const int64_t i03 = i / (ne00 * ne01 * ne02);
+    const int64_t i02 = (i - i03 * ne00 * ne01 * ne02) / (ne00 * ne01);
+    const int64_t i01 = (i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00) / ne00;
+    const int64_t i00 = i - i03 * ne00 * ne01 * ne02 - i02 * ne01 * ne00 - i01 * ne00;
+    const int64_t blk_byte_offset = (i00 / QK_TQ3_0) * nb00 + i01 * nb01 + i02 * nb02 + i03 * nb03;
+    const block_tq3_0 * blk = (const block_tq3_0 *)(cx + blk_byte_offset);
+    const int j_in_blk = (int)(i00 % QK_TQ3_0);
+    const float norm = __half2float(blk->norm);
+    const uint8_t low2 = (blk->qs[j_in_blk/4]    >> ((j_in_blk%4)*2)) & 0x3;
+    const uint8_t hi1  = (blk->signs[j_in_blk/8] >>  (j_in_blk%8))    & 0x1;
+    const float val    = d_tq3_centroids[low2 | (hi1 << 2)] * norm;
+
+    // Destination (F16) coordinates.
+    const int64_t i13 = i / (ne10 * ne11 * ne12);
+    const int64_t i12 = (i - i13 * ne10 * ne11 * ne12) / (ne10 * ne11);
+    const int64_t i11 = (i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11) / ne10;
+    const int64_t i10 = i - i13 * ne10 * ne11 * ne12 - i12 * ne10 * ne11 - i11 * ne10;
+    const int64_t dst_byte_offset = i10 * nb10 + i11 * nb11 + i12 * nb12 + i13 * nb13;
+
+    *((half *)(cdst + dst_byte_offset)) = __float2half(val);
+}
+
+static void ggml_cpy_tq3_0_f16_cuda(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02,
+    const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+    const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+
+    const int threads = 256;
+    const int64_t num_blocks = (ne + threads - 1) / threads;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_tq3_0_f16_kernel<<<(int)num_blocks, threads, 0, stream>>>
         (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
@@ -511,6 +570,9 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ3_0) {
         ggml_cpy_f32_tq3_0_cuda
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F16) {
+        ggml_cpy_tq3_0_f16_cuda
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_IQ4_NL) {
         ggml_cpy_f32_iq4_nl_cuda

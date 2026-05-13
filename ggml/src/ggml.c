@@ -1044,6 +1044,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "FILL",
 
     "FLASH_ATTN_EXT",
+    "FLASH_ATTN_SPARSE",
     "FLASH_ATTN_BACK",
     "SSM_CONV",
     "SSM_SCAN",
@@ -1075,7 +1076,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "TURBO_WHT",
 };
 
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
+static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1156,6 +1157,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "fill(x, c)",
 
     "flash_attn_ext(x)",
+    "sparse_fa(x)",
     "flash_attn_back(x)",
     "ssm_conv(x)",
     "ssm_scan(x)",
@@ -1187,7 +1189,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "turbo_wht(a)",
 };
 
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
+static_assert(GGML_OP_COUNT == 99, "GGML_OP_COUNT != 99");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5392,6 +5394,33 @@ void ggml_flash_attn_ext_add_sinks(
     a->src[4] = sinks;
 }
 
+// ggml_flash_attn_sparse
+
+struct ggml_tensor * ggml_flash_attn_sparse(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        float                 scale,
+        float                 alpha) {
+
+    GGML_ASSERT(ggml_can_mul_mat(k, q));
+
+    // Output shape matches ggml_flash_attn_ext: [v->ne[0], q->ne[2], q->ne[1], q->ne[3]]
+    int64_t ne[4] = { v->ne[0], q->ne[2], q->ne[1], q->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    float params[] = { scale, alpha };
+    ggml_set_op_params(result, params, sizeof(params));
+
+    result->op     = GGML_OP_FLASH_ATTN_SPARSE;
+    result->src[0] = q;
+    result->src[1] = k;
+    result->src[2] = v;
+
+    return result;
+}
+
 // ggml_flash_attn_back
 
 struct ggml_tensor * ggml_flash_attn_back(
@@ -7857,5 +7886,45 @@ struct ggml_tensor * ggml_turbo_wht(
     result->op = GGML_OP_TURBO_WHT;
     result->src[0] = a;
     ggml_set_op_params_i32(result, 0, direction);
+    return result;
+}
+
+struct ggml_tensor * ggml_moe_fused(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * input,
+        struct ggml_tensor  * gate_w,
+        struct ggml_tensor  * up_w,
+        struct ggml_tensor  * down_w,
+        struct ggml_tensor  * expert_ids,
+        struct ggml_tensor  * expert_weights,
+        struct ggml_tensor  * sh_gate_w,
+        struct ggml_tensor  * sh_up_w,
+        struct ggml_tensor  * sh_down_w,
+        struct ggml_tensor  * sh_gate_inp_w,
+        int64_t               n_embd,
+        int64_t               ff_dim,
+        int64_t               n_expert_used) {
+    GGML_ASSERT(ggml_is_contiguous(input));
+    GGML_ASSERT(input->type == GGML_TYPE_F32);
+
+    const int64_t ne[4] = { n_embd, 1, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op = GGML_OP_MOE_FUSED;
+    result->src[0] = input;
+    result->src[1] = gate_w;
+    result->src[2] = up_w;
+    result->src[3] = down_w;
+    result->src[4] = expert_ids;
+    result->src[5] = expert_weights;
+    result->src[6] = sh_gate_w;
+    result->src[7] = sh_up_w;
+    result->src[8] = sh_down_w;
+    result->src[9] = sh_gate_inp_w;
+
+    ggml_set_op_params_i32(result, 0, (int32_t) n_embd);
+    ggml_set_op_params_i32(result, 1, (int32_t) ff_dim);
+    ggml_set_op_params_i32(result, 2, (int32_t) n_expert_used);
+
     return result;
 }

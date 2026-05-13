@@ -76,8 +76,61 @@ static float * ensure_buf(float ** p, size_t * cur_bytes, size_t need_bytes) {
     return *p;
 }
 
+// Self-test: round-trip forward→inverse rotation on 128 deterministic floats.
+// Runs once per process when DFLASH_TQ3_VERIFY=1.
+// Validates that k_tq3_rotate_inplace_f32 is mathematically reversible.
+static void tq3_verify_roundtrip(cudaStream_t stream) {
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    constexpr int N = 128;
+    float h_orig[N], h_result[N];
+    for (int i = 0; i < N; i++) {
+        h_orig[i] = sinf((float)i);
+    }
+
+    float * d_buf = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_buf, N * sizeof(float)));
+    CUDA_CHECK(cudaMemcpyAsync(d_buf, h_orig, N * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+    // Forward rotation (direction=0): one warp, nq=1, nh=1, D=128, one group-of-128
+    const dim3 grid1(1, 1, 1);
+    k_tq3_rotate_inplace_f32<<<grid1, 32, 0, stream>>>(d_buf, /*nh=*/1, /*nq=*/1, N, /*direction=*/0);
+    CUDA_CHECK(cudaGetLastError());
+
+    // Inverse rotation (direction=1)
+    k_tq3_rotate_inplace_f32<<<grid1, 32, 0, stream>>>(d_buf, /*nh=*/1, /*nq=*/1, N, /*direction=*/1);
+    CUDA_CHECK(cudaGetLastError());
+
+    CUDA_CHECK(cudaMemcpyAsync(h_result, d_buf, N * sizeof(float), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(cudaFree(d_buf));
+
+    float max_diff = 0.0f, sum_diff = 0.0f;
+    for (int i = 0; i < N; i++) {
+        float diff = fabsf(h_result[i] - h_orig[i]);
+        if (diff > max_diff) max_diff = diff;
+        sum_diff += diff;
+    }
+    const float mean_diff = sum_diff / N;
+
+    if (max_diff > 1e-3f) {
+        std::fprintf(stderr, "[TQ3-VERIFY] FAIL roundtrip max_diff=%.6f mean_diff=%.6f\n",
+                     max_diff, mean_diff);
+    } else {
+        std::fprintf(stderr, "[TQ3-VERIFY] OK roundtrip max_diff=%.6f mean_diff=%.6f\n",
+                     max_diff, mean_diff);
+    }
+}
+
 void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     cudaStream_t stream = ctx.stream();
+
+    // TQ3 rotation roundtrip self-test (once per process).
+    if (std::getenv("DFLASH_TQ3_VERIFY")) {
+        tq3_verify_roundtrip(stream);
+    }
 
     const ggml_tensor * Q    = dst->src[0];
     const ggml_tensor * K    = dst->src[1];
@@ -101,10 +154,23 @@ void ggml_cuda_flash_attn_ext_chunked(ggml_backend_cuda_context & ctx, ggml_tens
 
     const int q_batch_size = (int)std::min((int64_t)chunked_q_batch_env(nq), nq);
 
-    size_t free_bytes = 0, total_bytes = 0;
-    CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
-    const int vram_chunk = chunked_pf_compute_chunk_size(free_bytes, nh_q, nh_kv, q_batch_size, D);
-    const int tbq_chunk  = chunked_chunk_env(vram_chunk);
+    // Skip the host-blocking cudaMemGetInfo when the chunk size is fixed
+    // via env var (the default 4096 path). Saves ~500us * N calls per prefill;
+    // on a 60-layer 4-prompt-chunk Dense prefill this dropped 48 -> 918 tok/s.
+    static const bool dflash_chunk_env_set =
+        std::getenv("DFLASH27B_CHUNKED_CHUNK") != nullptr;
+    int tbq_chunk;
+    if (!dflash_chunk_env_set) {
+        // Default path: chunked_chunk_env(0) returns std::max(0, 4096) = 4096,
+        // avoiding the cudaMemGetInfo hop entirely.
+        tbq_chunk = chunked_chunk_env(0);
+    } else {
+        size_t free_bytes = 0, total_bytes = 0;
+        CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
+        const int vram_chunk = chunked_pf_compute_chunk_size(
+            free_bytes, nh_q, nh_kv, q_batch_size, D);
+        tbq_chunk = chunked_chunk_env(vram_chunk);
+    }
 
     const int device = ctx.device;
     GGML_ASSERT(device >= 0 && device < GGML_CUDA_MAX_DEVICES);

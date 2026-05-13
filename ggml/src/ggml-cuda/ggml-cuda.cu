@@ -23,6 +23,7 @@
 #include "ggml-cuda/diagmask.cuh"
 #include "ggml-cuda/diag.cuh"
 #include "ggml-cuda/fattn.cuh"
+#include "ggml-cuda/fattn-sparse.cuh"
 #include "ggml-cuda/getrows.cuh"
 #include "ggml-cuda/turbo-wht.cuh"
 #include "ggml-cuda/im2col.cuh"
@@ -62,6 +63,7 @@
 #include "ggml-cuda/tri.cuh"
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/fill.cuh"
+#include "ggml-cuda/moe-fused.cuh"
 #include "ggml.h"
 
 #include <algorithm>
@@ -2718,6 +2720,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_TURBO_WHT:
             ggml_cuda_op_turbo_wht(ctx, dst);
             break;
+        case GGML_OP_MOE_FUSED:
+            ggml_cuda_op_moe_fused(ctx, dst);
+            break;
         case GGML_OP_GROUP_NORM:
             ggml_cuda_op_group_norm(ctx, dst);
             break;
@@ -2858,6 +2863,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             break;
         case GGML_OP_FLASH_ATTN_EXT:
             ggml_cuda_flash_attn_ext(ctx, dst);
+            break;
+        case GGML_OP_FLASH_ATTN_SPARSE:
+            ggml_cuda_flash_attn_sparse(ctx, dst);
             break;
         case GGML_OP_CROSS_ENTROPY_LOSS:
             ggml_cuda_cross_entropy_loss(ctx, dst);
@@ -4767,6 +4775,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             // Only requires dim0 contiguous (nb[0] == sizeof(float));
             // the kernel handles strided dim1/dim2 via separate src/dst strides.
             return op->src[0]->nb[0] == ggml_type_size(op->src[0]->type);
+        case GGML_OP_MOE_FUSED:
+            return true;
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
             {
@@ -5071,6 +5081,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
 #endif // GGML_USE_MUSA
         case GGML_OP_FLASH_ATTN_EXT:
             return ggml_cuda_flash_attn_ext_supported(dev_ctx->device, op);
+        case GGML_OP_FLASH_ATTN_SPARSE:
+            return true;  // Always supported on CUDA
         case GGML_OP_CROSS_ENTROPY_LOSS:
         case GGML_OP_CROSS_ENTROPY_LOSS_BACK:
         case GGML_OP_OPT_STEP_ADAMW:

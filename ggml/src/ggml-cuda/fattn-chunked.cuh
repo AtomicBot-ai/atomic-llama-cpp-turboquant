@@ -19,6 +19,7 @@
 
 #include "common.cuh"
 #include "fattn-common.cuh"
+#include "tq3-quant.cuh"
 
 // Adaptive chunk-size configuration
 static constexpr int CHUNKED_PF_MAX = 8192;
@@ -218,6 +219,35 @@ static __global__ void k_chunked_attn_finalize(
     dst[q_pos * nh_q * D + head * D + d] = O_acc[hq_idx * D + d] / l;
 }
 
+// Apply TQ3 FWHT rotation in-place to a flat [nh, nq, D] fp32 buffer.
+// One warp (32 threads) per (head, token, group-of-128) tuple.
+// direction == 0 → forward, 1 → inverse.
+static __global__ void k_tq3_rotate_inplace_f32(
+        float * __restrict__ data,
+        int nh, int nq, int D,
+        int direction)
+{
+    const int t = blockIdx.x;
+    const int h = blockIdx.y;
+    const int g = blockIdx.z;
+    if (t >= nq || h >= nh) return;
+    float * row = data + (h * nq + t) * D + g * 128;
+    const int lane = threadIdx.x & 31;
+    float v0 = row[lane * 4 + 0];
+    float v1 = row[lane * 4 + 1];
+    float v2 = row[lane * 4 + 2];
+    float v3 = row[lane * 4 + 3];
+    if (direction == 0) {
+        warp_tq3_rotate_forward(v0, v1, v2, v3);
+    } else {
+        warp_tq3_rotate_inverse(v0, v1, v2, v3);
+    }
+    row[lane * 4 + 0] = v0;
+    row[lane * 4 + 1] = v1;
+    row[lane * 4 + 2] = v2;
+    row[lane * 4 + 3] = v3;
+}
+
 // ─── Strided chunk dequant kernels ─────────────────────────────────────────
 //
 // Extract a [chunk_len, nh_kv] window from a ggml KV tensor (layout
@@ -326,6 +356,17 @@ static __global__ void k_chunked_dequant_q8_0_f32(
     }
 }
 
+// One thread per output element (not one thread per block).
+//
+// The previous version used `for (b = threadIdx.x; b < n_blocks; b += blockDim.x)`,
+// which at the launch config (blockDim.x = min(D, 256), n_blocks = D/32) meant
+// only 8 of 256 threads did real work for D=256 (3% block utilization). With
+// thread-per-element, all 256 threads load and write coalesced.
+//
+// Output writes are 32-thread coalesced (one cache line per warp). Input reads
+// hit the small TQ3 codebook in __constant__ memory — same-norm reads across
+// the warp broadcast, centroid lookups serialize on different indices but the
+// table is only 8 entries so the serial cost is at worst 8 cycles per warp.
 static __global__ void k_chunked_dequant_tq3_0_f32(
         const char * __restrict__ src_base,
         float      * __restrict__ dst,
@@ -339,17 +380,15 @@ static __global__ void k_chunked_dequant_tq3_0_f32(
     if (kv_local >= chunk_len) return;
     const char * src_token = src_base + h * nb2 + (kv_start + kv_local) * nb1;
     float      * out       = dst + (h * chunk_len + kv_local) * D;
-    const int n_blocks = D / QK_TQ3_0;
-    for (int b = threadIdx.x; b < n_blocks; b += blockDim.x) {
+
+    for (int j = (int)threadIdx.x; j < (int)D; j += (int)blockDim.x) {
+        const int b           = j >> 5;     // j / QK_TQ3_0
+        const int idx_in_blk  = j & 31;     // j % QK_TQ3_0
         const block_tq3_0 * blk = (const block_tq3_0 *)(src_token + b * sizeof(block_tq3_0));
         const float norm = __half2float(blk->norm);
-        float * out_blk = out + b * QK_TQ3_0;
-        #pragma unroll
-        for (int i = 0; i < QK_TQ3_0; i++) {
-            const uint8_t low2 = (blk->qs[i/4] >> ((i%4)*2)) & 0x3;
-            const uint8_t hi1  = (blk->signs[i/8] >> (i%8)) & 0x1;
-            out_blk[i] = d_tq3_centroids[low2 | (hi1 << 2)] * norm;
-        }
+        const uint8_t low2 = (blk->qs   [idx_in_blk / 4] >> ((idx_in_blk % 4) * 2)) & 0x3;
+        const uint8_t hi1  = (blk->signs[idx_in_blk / 8] >> ( idx_in_blk % 8))      & 0x1;
+        out[j] = d_tq3_centroids[low2 | (hi1 << 2)] * norm;
     }
 }
 
