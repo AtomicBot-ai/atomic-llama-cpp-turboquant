@@ -453,7 +453,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // f32 in compressed (rotated) domain, attend with graph-rotated Q,
         // return rotated O for the graph to inverse-rotate.
         const bool tq3_any = (K->type == GGML_TYPE_TQ3_0 || V->type == GGML_TYPE_TQ3_0);
-        const bool tq3_needs_chunked = tq3_any;
+        // VEC dispatch can handle TQ3 only at SWA-shaped decode: single token AND
+        // head_dim<=256 (the can_use_vector_kernel ceiling). Everything else
+        // (prefill S>1, full-attn head_dim=512) still routes to CHUNKED.
+        const bool tq3_can_vec = (Q->ne[1] == 1) && (Q->ne[0] <= 256);
+        const bool tq3_needs_chunked = tq3_any && !tq3_can_vec;
         if ((chunked_threshold > 0 && K->ne[1] > chunked_threshold) || tq3_needs_chunked) {
             if (Q->type == GGML_TYPE_F32 && kv_supported && mask != nullptr) {
                 return BEST_FATTN_KERNEL_CHUNKED;

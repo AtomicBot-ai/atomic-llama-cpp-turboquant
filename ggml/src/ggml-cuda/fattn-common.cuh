@@ -583,27 +583,46 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_tq3_0(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
 
     const block_tq3_0 * K_tq3 = (const block_tq3_0 *) K_c;
-    GGML_UNUSED(Q_v);
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    // Mirror the f16/bf16 vec_dot loop structure so K-pair access aligns with the
+    // Q_reg layout produced by fattn-vec.cuh's Q-loader (Q_q8_1=false branch):
+    // each thread holds cpy_ne consecutive Q-pairs starting at offset (tid%nthreads)*cpy_ne
+    // within an outer chunk of nthreads*cpy_ne pairs. See bench/test_qreg_layout.cu for proof.
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
 
     float sum = 0.0f;
 
 #pragma unroll
-    for (int k_KQ_0 = 0; k_KQ_0 < D; k_KQ_0 += nthreads) {
-        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+        const int k_KQ_base = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads)*cpy_ne;
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int pair = k_KQ_base + k_KQ_1;   // K-pair index (covers K[2*pair] and K[2*pair+1])
+            const int elem0 = pair * 2;             // even
+            // elem0 and elem1=elem0+1 share the same TQ3 block (j0 even, j1=j0+1 odd, same byte pair).
+            const int ib = elem0 / QK_TQ3_0;
+            const int j0 = elem0 % QK_TQ3_0;
+            const int j1 = j0 + 1;
 
-        const int ib = k_KQ / QK_TQ3_0;
-        const int j  = k_KQ % QK_TQ3_0;
-        const float K_norm = __half2float(K_tq3[ib].norm);
-        const uint8_t low2 = (K_tq3[ib].qs[j/4] >> ((j%4)*2)) & 0x3;
-        const uint8_t hi1  = (K_tq3[ib].signs[j/8] >> (j%8)) & 0x1;
-        const float Kv = d_tq3_centroids[low2 | (hi1 << 2)] * K_norm;
+            const float norm = __half2float(K_tq3[ib].norm);
+            const uint8_t low2_0 = (K_tq3[ib].qs   [j0/4] >> ((j0%4)*2)) & 0x3;
+            const uint8_t hi1_0  = (K_tq3[ib].signs[j0/8] >>  (j0%8))    & 0x1;
+            const uint8_t low2_1 = (K_tq3[ib].qs   [j1/4] >> ((j1%4)*2)) & 0x3;
+            const uint8_t hi1_1  = (K_tq3[ib].signs[j1/8] >>  (j1%8))    & 0x1;
+            const float kx = d_tq3_centroids[low2_0 | (hi1_0 << 2)] * norm;
+            const float ky = d_tq3_centroids[low2_1 | (hi1_1 << 2)] * norm;
 
-        const int qi = k_KQ / 4;
-        const int shift = (k_KQ % 4) * 8;
-        const int8_t Qv = (int8_t)((Q_q8[qi] >> shift) & 0xFF);
-        const float2 Q_ds = ((const float2 *) Q_ds_v)[k_KQ / QK8_1];
-
-        sum += Kv * Qv * Q_ds.x;
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const half2 qv = ((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            ggml_cuda_mad(sum, make_float2(kx, ky), __half22float2(qv));
+#else
+            const float2 qv = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+            sum += kx * qv.x + ky * qv.y;
+#endif // V_DOT2_F32_F16_AVAILABLE
+        }
     }
 
     return sum;
