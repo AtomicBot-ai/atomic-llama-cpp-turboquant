@@ -12,6 +12,28 @@ struct mrope_sections {
     int v[4];
 };
 
+// FP64 angle computation: avoids the FP32 "precision wall"
+// (RoPE base must be < 1/eps_mach ~ 8.4e6, see arXiv:2602.10959).
+// Empirically required for Qwen3.5 (freq_base=1e7).
+//
+// Computes  theta = (pos * theta_scale^exp_int)  in double,
+// reduces mod 2pi in double, returns float in [0, 2*pi).
+//
+// CAVEAT: the mod-2pi reduction is only equivalence-preserving when the
+// downstream rope_yarn() does NOT scale the angle (i.e. freq_scale == 1.0,
+// freq_factor == 1.0, ext_factor == 0.0). All call sites in this file
+// satisfy that for the qwen35 graph in dflash. If a future graph changes
+// these, push the reduction into rope_yarn() right before cosf/sinf instead.
+static __device__ __forceinline__ float rope_theta_fp64(int32_t p, float theta_scale, int exp_int) {
+    const double TAU = 6.2831853071795864769;
+    // Dim 0: theta_scale^0 == 1 exactly. Skip pow (costly on Turing).
+    double angle = (exp_int == 0)
+        ? (double)p
+        : (double)p * pow((double)theta_scale, (double)exp_int);
+    angle -= TAU * floor(angle * (1.0 / TAU));
+    return (float)angle;
+}
+
 static __device__ float rope_yarn_ramp(const float low, const float high, const int i0) {
     const float y = (i0 / 2 - low) / max(0.001f, high - low);
     return 1.0f - min(1.0f, max(0.0f, y));
@@ -97,7 +119,7 @@ static __global__ void rope_norm(const T *            x,
         return;
     }
 
-    const float theta_base = pos[i2]*powf(theta_scale, i0/2.0f);
+    const float theta_base = rope_theta_fp64(pos[i2], theta_scale, i0/2);
 
     const float freq_factor = has_ff ? freq_factors[i0/2] : 1.0f;
 
@@ -163,7 +185,7 @@ static __global__ void rope_neox(const T *            x,
         return;
     }
 
-    const float theta_base = pos[i2]*powf(theta_scale, i0/2.0f);
+    const float theta_base = rope_theta_fp64(pos[i2], theta_scale, i0/2);
 
     const float freq_factor = has_ff ? freq_factors[i0/2] : 1.0f;
 
@@ -230,23 +252,23 @@ static __global__ void rope_multi(const T *            x,
     float theta_base = 0.0;
     if (is_imrope) {
         if (sector % 3 == 1 && sector < 3 * sections.v[1]) {         // h
-            theta_base = pos[i2 + ne02 * 1] * powf(theta_scale, i0 / 2.0f);
+            theta_base = rope_theta_fp64(pos[i2 + ne02 * 1], theta_scale, i0/2);
         } else if (sector % 3 == 2 && sector < 3 * sections.v[2]) {  // w
-            theta_base = pos[i2 + ne02 * 2] * powf(theta_scale, i0 / 2.0f);
+            theta_base = rope_theta_fp64(pos[i2 + ne02 * 2], theta_scale, i0/2);
         } else if (sector % 3 == 0 && sector < 3 * sections.v[0]) {  // t
-            theta_base = pos[i2] * powf(theta_scale, i0 / 2.0f);
+            theta_base = rope_theta_fp64(pos[i2], theta_scale, i0/2);
         } else {
-            theta_base = pos[i2 + ne02 * 3] * powf(theta_scale, i0 / 2.0f);
+            theta_base = rope_theta_fp64(pos[i2 + ne02 * 3], theta_scale, i0/2);
         }
     } else {
         if (sector < sections.v[0]) {
-            theta_base = pos[i2] * powf(theta_scale, i0 / 2.0f);
+            theta_base = rope_theta_fp64(pos[i2], theta_scale, i0/2);
         } else if (sector >= sections.v[0] && sector < sec_w) {
-            theta_base = pos[i2 + ne02 * 1] * powf(theta_scale, i0 / 2.0f);
+            theta_base = rope_theta_fp64(pos[i2 + ne02 * 1], theta_scale, i0/2);
         } else if (sector >= sec_w && sector < sec_w + sections.v[2]) {
-            theta_base = pos[i2 + ne02 * 2] * powf(theta_scale, i0 / 2.0f);
+            theta_base = rope_theta_fp64(pos[i2 + ne02 * 2], theta_scale, i0/2);
         } else if (sector >= sec_w + sections.v[2]) {
-            theta_base = pos[i2 + ne02 * 3] * powf(theta_scale, i0 / 2.0f);
+            theta_base = rope_theta_fp64(pos[i2 + ne02 * 3], theta_scale, i0/2);
         }
     }
 
@@ -307,10 +329,10 @@ static __global__ void rope_vision(const T *            x,
     float theta_base = 0.0;
     if (sector < sections.v[0]) {
         const int p = sector;
-        theta_base  = pos[i2] * powf(theta_scale, p);
+        theta_base  = rope_theta_fp64(pos[i2], theta_scale, p);
     } else if (sector >= sections.v[0] && sector < sec_w) {
         const int p = sector - sections.v[0];
-        theta_base  = pos[i2 + ne02] * powf(theta_scale, p);
+        theta_base  = rope_theta_fp64(pos[i2 + ne02], theta_scale, p);
     }
 
     const float freq_factor = has_ff ? freq_factors[i0/2] : 1.0f;
