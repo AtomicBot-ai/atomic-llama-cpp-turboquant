@@ -379,7 +379,15 @@ void server_tokens::push_back(server_tokens & tokens) {
 }
 
 void server_tokens::insert(const llama_tokens & inp_tokens) {
-    GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
+    // Phase C.2.3 — appending text tokens at the tail is safe even when has_mtmd:
+    // map_idx_to_media is keyed by chunk start_idx, which is unaffected by tail appends.
+    // Speculative-accept path (server-context.cpp:3040) and slot-restore from file
+    // (server-context.cpp:1941) both append at the end. set_token() remains assert-guarded
+    // because position-overwrite could clobber an image chunk slot.
+    // Callers must pass only text tokens (no LLAMA_TOKEN_NULL) — debug-only check.
+#ifdef GGML_DEBUG
+    for (const auto t : inp_tokens) { GGML_ASSERT(t != LLAMA_TOKEN_NULL); }
+#endif
     tokens.insert(tokens.end(), inp_tokens.begin(), inp_tokens.end());
 }
 

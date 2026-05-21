@@ -2937,7 +2937,16 @@ private:
                     slot.state = SLOT_STATE_GENERATING;
 
                     if (slot.can_speculate()) {
-                        common_speculative_begin(slot.spec, slot.prompt.tokens.get_text_tokens());
+                        // Phase C.2.3 — multimodal-safe begin: get_text_tokens() asserts !has_mtmd,
+                        // so when mmproj is loaded use the post-media view (suffix after last image).
+                        // Matches the pattern used in the per-batch dispatch hot path below.
+                        const llama_tokens   mctx_view_begin = slot.prompt.tokens.has_mtmd
+                                                             ? slot.prompt.tokens.get_text_tokens_post_media()
+                                                             : llama_tokens{};
+                        const llama_tokens & tokens_for_begin = slot.prompt.tokens.has_mtmd
+                                                              ? mctx_view_begin
+                                                              : slot.prompt.tokens.get_text_tokens();
+                        common_speculative_begin(slot.spec, tokens_for_begin);
                     }
                 } else if (slot.state != SLOT_STATE_GENERATING) {
                     continue; // continue loop of slots
