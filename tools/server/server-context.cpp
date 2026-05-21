@@ -735,6 +735,11 @@ private:
 
             if (params_base.speculative.type != COMMON_SPECULATIVE_TYPE_NONE) {
                 params_base.speculative.type =  COMMON_SPECULATIVE_TYPE_NONE;
+                // Also clear the draft model path so common_speculative_init does not
+                // observe an orphan has_draft=true with type=NONE (would build a DRAFT
+                // config and crash on ctx_dft=nullptr). See common/speculative.cpp init.
+                params_base.speculative.mparams_dft.path.clear();
+                params_base.speculative.model_dft = nullptr;
                 SRV_WRN("%s\n", "speculative decoding is not supported by multimodal, it will be disabled");
             }
         }

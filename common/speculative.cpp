@@ -1314,6 +1314,15 @@ done:
 common_speculative * common_speculative_init(
         common_params_speculative & params,
         llama_context             * ctx_tgt) {
+    // Defensive: if speculative was disabled upstream (e.g. server disables it when mmproj
+    // is loaded), bail out before any impl construction. Without this guard, a caller that
+    // sets params.type=NONE but leaves params.mparams_dft.path (set via --mtp-head/--model-draft)
+    // would still trigger the DRAFT config below with ctx_dft=nullptr, crashing in the
+    // common_speculative_state_draft ctor at llama_n_batch(ctx_dft).
+    if (params.type == COMMON_SPECULATIVE_TYPE_NONE) {
+        return nullptr;
+    }
+
     llama_context * ctx_dft = nullptr;
     // Gemma4 MTP loads the assistant into the target model (llama_model_load_mtp_from_file); no second context.
     if (params.model_dft && params.type != COMMON_SPECULATIVE_TYPE_MTP) {
