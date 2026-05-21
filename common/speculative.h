@@ -58,5 +58,22 @@ void common_speculative_prepare_next(common_speculative * spec, llama_token id_l
 // snapshot (e.g. slot stop / release / new request seq_rm). Safe no-op when nothing is pending.
 void common_speculative_cancel(common_speculative * spec);
 
+// Phase C.2.1 — Cold-restart the speculative state machine (foundational API, no behavior change here).
+//
+// Stronger than cancel(): in addition to draining any in-flight draft, this clears all
+// per-iteration state accumulated during a generation — h_idx is reset to its default
+// (-1 = "last output"), draft-history counters used by adaptive skip (prev_n_acc_drafts,
+// zero_accept_streak, skip_streak_last_draft) are zeroed, and any cached spec params from
+// the previous draft() call are forgotten. After reset(), the implementation behaves as
+// if begin() had just been called on a fresh prompt.
+//
+// Intended use: at known state-boundaries that are NOT prompt boundaries but DO invalidate
+// the assistant's hidden-state assumptions — e.g. when a slot transitions from image-encoding
+// (where MTP was gated off) back to text continuation (where MTP should re-engage from a clean
+// slate). The next few text tokens incur the usual warmup cost but state desync is avoided.
+//
+// Safe no-op for non-MTP implementations.
+void common_speculative_reset(common_speculative * spec);
+
 // print statistics about the speculative decoding
 void common_speculative_print_stats(const common_speculative * spec);

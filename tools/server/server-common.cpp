@@ -388,6 +388,54 @@ const llama_tokens & server_tokens::get_text_tokens() const {
     return tokens;
 }
 
+// Phase C.2.0 — coexistence APIs (see header for contract).
+
+size_t server_tokens::last_image_end_idx() const {
+    if (!has_mtmd || map_idx_to_media.empty()) {
+        return 0;
+    }
+    // map_idx_to_media is std::map sorted by start idx; rbegin() is O(1).
+    auto last = map_idx_to_media.rbegin();
+    const size_t start_idx = last->first;
+    const size_t n_tokens  = mtmd_input_chunk_get_n_tokens(last->second.get());
+    return start_idx + n_tokens;
+}
+
+bool server_tokens::is_pure_text_continuation(size_t from_idx) const {
+    if (!has_mtmd || map_idx_to_media.empty()) {
+        return true;
+    }
+    return from_idx >= last_image_end_idx();
+}
+
+llama_tokens server_tokens::get_text_tokens_post_media() const {
+    if (!has_mtmd || map_idx_to_media.empty()) {
+        // Defensive: even in pure-text mode the buffer should not contain LLAMA_TOKEN_NULL,
+        // but strip just in case to keep the post-condition invariant uniform.
+        llama_tokens out;
+        out.reserve(tokens.size());
+        for (const auto & t : tokens) {
+            if (t != LLAMA_TOKEN_NULL) {
+                out.push_back(t);
+            }
+        }
+        return out;
+    }
+    const size_t start = last_image_end_idx();
+    llama_tokens out;
+    if (start >= tokens.size()) {
+        return out;
+    }
+    out.reserve(tokens.size() - start);
+    for (size_t i = start; i < tokens.size(); ++i) {
+        const llama_token t = tokens[i];
+        if (t != LLAMA_TOKEN_NULL) {
+            out.push_back(t);
+        }
+    }
+    return out;
+}
+
 void server_tokens::set_token(llama_pos pos, llama_token id) {
     GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
     tokens[pos] = id;

@@ -189,6 +189,30 @@ public:
     // for compatibility with speculative decoding, ctx shift, slot save/load
     const llama_tokens & get_text_tokens() const;
 
+    // Phase C.2.0 — coexistence APIs for MTP + mmproj dispatch (foundational, no behavior change here).
+    //
+    // is_pure_text_continuation(from_idx) — O(log n) oracle:
+    //   "if a caller decodes starting at position from_idx, will all tokens through end-of-buffer
+    //    be pure text (no image chunks remaining)?"
+    //   Used by the server to gate per-batch MTP draft dispatch when mmproj is also loaded.
+    //   - !has_mtmd          → always true
+    //   - map empty          → always true
+    //   - from_idx >= last_image_end_idx() → true (we're past every image chunk)
+    //   - otherwise          → false (an image chunk still extends past from_idx)
+    bool is_pure_text_continuation(size_t from_idx) const;
+
+    // End-exclusive idx of the last image/audio chunk in the buffer (start + n_tokens).
+    // Returns 0 if there are no media chunks. !has_mtmd → 0.
+    size_t last_image_end_idx() const;
+
+    // Returns the suffix of text tokens after the last media chunk.
+    // - !has_mtmd          → returns a copy of all tokens
+    // - map empty          → returns a copy of all tokens
+    // - otherwise          → tokens[last_image_end_idx() ..] with any LLAMA_TOKEN_NULL stripped
+    // Returned by value because the underlying buffer may interleave images and the suffix is
+    // not a contiguous slice. Callers typically bind to a const ref of the temporary.
+    llama_tokens get_text_tokens_post_media() const;
+
     // for compatibility with speculative decoding
     void set_token(llama_pos pos, llama_token id);
 

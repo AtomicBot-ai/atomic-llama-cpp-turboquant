@@ -1,4 +1,5 @@
 #include "llama.h"
+#include "speculative.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -10,6 +11,13 @@
 // Set env vars to run non-skip paths; otherwise exits 0.
 
 int main() {
+    // Phase C.2.1 — contract smoke: common_speculative_reset / common_speculative_cancel
+    // must be safe no-ops on a null spec (matches the documented contract in speculative.h).
+    // Runs unconditionally — no model files required.
+    common_speculative_cancel(nullptr);
+    common_speculative_reset(nullptr);
+    std::cout << "[common_speculative] null-spec cancel + reset OK\n";
+
     const char * path_tgt  = std::getenv("LLAMA_MTP_TEST_TARGET");
     const char * path_head = std::getenv("LLAMA_MTP_TEST_HEAD");
     const char * path_bad  = std::getenv("LLAMA_MTP_TEST_BAD_ARCH");

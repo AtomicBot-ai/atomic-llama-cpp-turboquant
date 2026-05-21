@@ -201,6 +201,12 @@ struct common_speculative_state {
 
     // Optional hook: drain any in-flight async work (prepare_next) and discard.
     virtual void cancel() {}
+
+    // Phase C.2.1 — cold-restart hook (foundational, no behavior change here).
+    // Stronger than cancel(): clears all per-iteration state accumulated during a generation.
+    // Default is cancel(); MTP overrides to also zero h_idx + adaptive-skip counters +
+    // cached spec params.
+    virtual void reset() { cancel(); }
 };
 
 struct common_speculative_state_draft : public common_speculative_state {
@@ -843,6 +849,26 @@ struct common_speculative_state_mtp : public common_speculative_state {
     void cancel() override {
         skip_streak_last_draft = false;
         mtp_drain_pending_discard();
+    }
+
+    // Phase C.2.1 — cold-restart MTP state at a known boundary (e.g. image-encoding → text continuation).
+    // Drains any in-flight draft (like cancel) AND zeroes h_idx + adaptive-skip counters +
+    // cached spec params. Post-condition: next begin()/draft() pair behaves as if MTP was
+    // just constructed. KV memory and embeddings setting on the target are untouched —
+    // the host owns those.
+    void reset() override {
+        // 1. drain in-flight async draft and clear the one-shot skip flag (cancel semantics)
+        skip_streak_last_draft = false;
+        mtp_drain_pending_discard();
+
+        // 2. zero per-iteration h_prev pointer + adaptive-skip tracking
+        h_idx               = -1;
+        prev_n_acc_drafts   = 0;
+        zero_accept_streak  = 0;
+
+        // 3. forget cached spec params from prior draft() call so the next draft re-computes
+        //    n_steps from scratch when the host passes fresh params.
+        last_spec_params = common_params_speculative{};
     }
 
     void prepare_next(llama_token id_last) override {
@@ -1566,6 +1592,15 @@ void common_speculative_cancel(common_speculative * spec) {
     }
     for (auto & impl : spec->impls) {
         impl->cancel();
+    }
+}
+
+void common_speculative_reset(common_speculative * spec) {
+    if (spec == nullptr) {
+        return;
+    }
+    for (auto & impl : spec->impls) {
+        impl->reset();
     }
 }
 
