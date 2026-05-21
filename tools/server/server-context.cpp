@@ -59,6 +59,14 @@ struct server_slot {
 
     common_speculative * spec = nullptr;
 
+    // Phase C.2.3 — tracks whether the prior decode batch for this slot was inside an
+    // image-encoding phase (image tokens still pending in slot.prompt.tokens). Used by
+    // the per-batch MTP dispatch gate in the main inference loop: on the first batch
+    // where this is true but the new batch is pure-text continuation, common_speculative_reset
+    // is called to cold-restart MTP state. Only meaningful when slot has mctx + slot.spec
+    // (i.e. --allow-mtp-with-mmproj path).
+    bool mtp_was_image_phase = false;
+
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
     std::unique_ptr<const server_task> task;
@@ -734,13 +742,22 @@ private:
             }
 
             if (params_base.speculative.type != COMMON_SPECULATIVE_TYPE_NONE) {
-                params_base.speculative.type =  COMMON_SPECULATIVE_TYPE_NONE;
-                // Also clear the draft model path so common_speculative_init does not
-                // observe an orphan has_draft=true with type=NONE (would build a DRAFT
-                // config and crash on ctx_dft=nullptr). See common/speculative.cpp init.
-                params_base.speculative.mparams_dft.path.clear();
-                params_base.speculative.model_dft = nullptr;
-                SRV_WRN("%s\n", "speculative decoding is not supported by multimodal, it will be disabled");
+                // Phase C.2.2 — opt-in coexistence with multimodal. Default behavior (flag off)
+                // keeps the PR #17 SEGV safety net: disable speculative decoding entirely when
+                // mmproj is loaded. With --allow-mtp-with-mmproj set, the speculative state is
+                // kept alive and dispatch is gated per-batch in the main inference loop using
+                // server_tokens::is_pure_text_continuation.
+                if (!params_base.speculative.allow_mtp_with_mmproj) {
+                    params_base.speculative.type =  COMMON_SPECULATIVE_TYPE_NONE;
+                    // Also clear the draft model path so common_speculative_init does not
+                    // observe an orphan has_draft=true with type=NONE (would build a DRAFT
+                    // config and crash on ctx_dft=nullptr). See common/speculative.cpp init.
+                    params_base.speculative.mparams_dft.path.clear();
+                    params_base.speculative.model_dft = nullptr;
+                    SRV_WRN("%s\n", "speculative decoding is not supported by multimodal, it will be disabled");
+                } else {
+                    SRV_INF("%s\n", "speculative decoding kept enabled alongside multimodal (--allow-mtp-with-mmproj): per-batch gate active");
+                }
             }
         }
 
@@ -799,13 +816,19 @@ private:
             if (can_spec) {
                 slot.spec = common_speculative_init(params_base.speculative, slot.ctx);
                 if (slot.spec) {
-                    if (mctx) {
+                    if (mctx && !params_base.speculative.allow_mtp_with_mmproj) {
+                        // Phase C.2.2 — without the opt-in flag, refuse spec+mmproj coexistence
+                        // (PR #17 safety net). With the flag set, fall through: per-batch dispatch
+                        // in the main inference loop will gate MTP invocation based on whether the
+                        // current batch is pure-text continuation or contains image tokens.
                         SRV_ERR("%s\n", "speculative decoding is not supported with multimodal");
                         return false;
                     }
                     // MTP reads target's KV memory by sequence id; bind to slot.id (server uses slot.id as seq_id).
                     common_speculative_set_seq_id(slot.spec, slot.id);
-                    SLT_INF(slot, "%s", "speculative decoding context initialized\n");
+                    SLT_INF(slot, "%s%s\n",
+                            "speculative decoding context initialized",
+                            mctx ? " (gated per-batch for multimodal slot)" : "");
                 } else {
                     SLT_INF(slot, "%s", "speculative decoding context not initialized\n");
                 }
@@ -2117,13 +2140,44 @@ private:
             // TODO: rework to have a single draft llama_context shared across all slots [TAG_SERVER_SPEC_REWORK]
             //       perform the speculative drafting for all sequences at the same time in a single batch
             const int n_draft_max = slot.get_n_draft_max();
-            if (n_draft_max > 0) {
-                if (mctx) {
-                    // we should never reach this, as speculative is automatically disabled if mmproj is loaded
-                    GGML_ABORT("not supported by multimodal");
-                }
 
-                const llama_tokens & cached_text_tokens = slot.prompt.tokens.get_text_tokens();
+            // Phase C.2.3 — per-batch MTP dispatch gate for multimodal slots.
+            // Possible runtime states for (mctx, slot.spec, can_mtp_now):
+            //   (null,    null,    -)     : no spec, no mmproj         → standard decode
+            //   (null,    non-null,true)  : spec, no mmproj            → MTP always (existing behavior)
+            //   (non-null,null,    -)     : mmproj, no spec            → standard decode (flag off path)
+            //   (non-null,non-null,true)  : mmproj+spec, pure-text now → MTP draft (NEW)
+            //   (non-null,non-null,false) : mmproj+spec, image pending → standard decode + reset on next text
+            const bool slot_has_mmproj   = (mctx != nullptr);
+            const bool slot_has_spec     = (slot.spec != nullptr);
+            const bool is_text_now       = !slot_has_mmproj
+                                        || slot.prompt.tokens.is_pure_text_continuation(slot.prompt.tokens.size());
+            const bool can_mtp_now       = slot_has_spec && is_text_now;
+            const bool image_to_text_now = slot_has_spec && slot_has_mmproj
+                                        && slot.mtp_was_image_phase && is_text_now;
+
+            // If we just transitioned from image-encoding to text continuation, cold-restart MTP
+            // state so the assistant head starts from a clean slate. The next few draft tokens
+            // incur warmup cost but state desync is impossible (Option 2 from design brief §6).
+            if (image_to_text_now) {
+                common_speculative_reset(slot.spec);
+                SLT_DBG(slot, "%s\n", "MTP state cold-restarted at image-to-text boundary");
+            }
+
+            // Update per-slot phase tracking for next iteration. Only meaningful when both
+            // mmproj and spec are live (the only case where image phases can re-occur).
+            if (slot_has_mmproj && slot_has_spec) {
+                slot.mtp_was_image_phase = !is_text_now;
+            }
+
+            if (n_draft_max > 0 && can_mtp_now) {
+                // Pure-text path: choose the cached-token view based on whether the slot has mmproj.
+                // For pure-text-only slots (no mmproj), get_text_tokens() returns the canonical reference.
+                // For multimodal slots in a pure-text continuation, the suffix after the last image is what
+                // MTP should reason about. Bound the temporary's lifetime to the rest of the block via
+                // const-ref binding.
+                const llama_tokens   mctx_view = slot_has_mmproj ? slot.prompt.tokens.get_text_tokens_post_media() : llama_tokens{};
+                const llama_tokens & cached_text_tokens = slot_has_mmproj ? mctx_view : slot.prompt.tokens.get_text_tokens();
 
                 const auto & params_spec = slot.task->params.speculative;
 

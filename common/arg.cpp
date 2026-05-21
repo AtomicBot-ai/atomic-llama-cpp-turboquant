@@ -3505,6 +3505,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_MTP_HEAD"));
     add_opt(common_arg(
+        {"--allow-mtp-with-mmproj"},
+        "EXPERIMENTAL: keep MTP speculative decoding enabled when --mmproj is also loaded. "
+        "Default (off) is to disable MTP whenever mmproj is loaded (safe path, no SEGV). "
+        "When on, MTP is gated per-batch by server_tokens::is_pure_text_continuation: image-encoding batches "
+        "fall through to standard decode; pure-text continuation batches use the MTP draft head. "
+        "MTP state is cold-restarted at the image-to-text transition (common_speculative_reset). "
+        "Use this to get MTP speedup on the text reply portion of vision+text requests on the same llama-server "
+        "process. May incur a few tokens of warmup at image-to-text boundaries (cold-restart mode).",
+        [](common_params & params) {
+            params.speculative.allow_mtp_with_mmproj = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ALLOW_MTP_WITH_MMPROJ"));
+    add_opt(common_arg(
         {"--spec-replace"}, "TARGET", "DRAFT",
         "translate the string in TARGET into DRAFT if the draft model and main model are not compatible",
         [](common_params & params, const std::string & tgt, const std::string & dft) {

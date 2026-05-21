@@ -359,6 +359,16 @@ struct common_params_speculative {
     std::vector<std::pair<std::string, std::string>> replacements; // main to speculative model replacements
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
 
+    // Phase C.2.2 — opt-in coexistence with multimodal (--mmproj loaded).
+    // When false (default): existing behavior — speculative decoding is unconditionally
+    // disabled if mmproj is loaded (cf. server-context.cpp PR #17 SEGV safety net).
+    // When true: speculative decoding (only MTP is exercised by this path today) stays
+    // enabled, and per-batch dispatch in the server inference loop gates draft invocation
+    // by server_tokens::is_pure_text_continuation. MTP state is cold-restarted at the
+    // image→text transition via common_speculative_reset. Behind a flag because this is
+    // a fundamental dispatch-policy change for multimodal slots.
+    bool allow_mtp_with_mmproj = false;
+
     bool has_dft() const {
         return !mparams_dft.path.empty() || !mparams_dft.hf_repo.empty();
     }
