@@ -616,16 +616,16 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
         const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
         if (draft[i] != id) {
             if (p_accept > 0.0f) {
-                const float * logits = llama_get_logits_ith(ctx, idxs[i]);
-                const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
-                float max_l = *std::max_element(logits, logits + n_vocab);
-                float sum = 0.0f;
-                for (int j = 0; j < n_vocab; j++) sum += expf(logits[j] - max_l);
-                const float p_main = expf(logits[draft[i]] - max_l) / sum;
-                if (p_main >= p_accept) {
-                    common_sampler_accept(gsmpl, draft[i], true);
-                    result.push_back(draft[i]);
-                    continue;
+                // use already-computed GPU-side candidate probabilities
+                // avoids 262K float softmax on CPU per rejection
+                llama_token_data_array * cur_p = common_sampler_get_candidates(gsmpl, false);
+                for (size_t j = 0; j < cur_p->size; j++) {
+                    if (cur_p->data[j].id == draft[i] && cur_p->data[j].p >= p_accept) {
+                        common_sampler_accept(gsmpl, draft[i], true);
+                        result.push_back(draft[i]);
+                        goto next_draft_token;
+                        break;
+                    }
                 }
             }
             common_sampler_accept(gsmpl, id, true);
@@ -634,6 +634,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
         }
         common_sampler_accept(gsmpl, id, true);
         result.push_back(id);
+        next_draft_token:;
     }
 
     if (i == draft.size()) {
