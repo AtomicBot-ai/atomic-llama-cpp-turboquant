@@ -175,7 +175,11 @@ void ggml_cuda_mul_mat_q(
     GGML_ASSERT(ne1 == n_expert_used);
 
     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx.pool(), ne_get_rows);
-    ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), ne_get_rows);
+    // Pad ids_dst by mmq_x to prevent OOB reads in the stream-k kernel.
+    // The kernel loads a full mmq_x-wide tile from ids_dst (line 3709 in mmq.cuh)
+    // without bounds-checking the load, only the write-back is bounded.
+    const int64_t mmq_x_pad = (int64_t)get_mmq_x_max_host(cc);
+    ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), ne_get_rows + mmq_x_pad);
     ggml_cuda_pool_alloc<int32_t> expert_bounds(ctx.pool(), ne02 + 1);
 
     {
