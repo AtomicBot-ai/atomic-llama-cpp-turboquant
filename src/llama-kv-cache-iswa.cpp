@@ -217,18 +217,44 @@ llama_memory_context_ptr llama_kv_cache_iswa::init_update(llama_context * lctx, 
     return std::make_unique<llama_kv_cache_iswa_context>(this, lctx, optimize);
 }
 
-llama_memory_context_ptr llama_kv_cache_iswa::init_mtp(llama_seq_id seq_id, llama_ubatch ubatch) {
+llama_memory_context_ptr llama_kv_cache_iswa::init_mtp_with_slot_info(
+        llama_kv_cache::slot_info sinfo_base,
+        llama_kv_cache::slot_info sinfo_swa,
+        llama_ubatch ubatch) {
     llama_kv_cache::slot_info_vec_t sinfos_base;
     llama_kv_cache::slot_info_vec_t sinfos_swa;
 
-    sinfos_base.push_back(kv_base->mtp_slot_info(seq_id));
-    sinfos_swa.push_back(kv_swa->mtp_slot_info(seq_id));
+    sinfos_base.push_back(std::move(sinfo_base));
+    sinfos_swa.push_back(std::move(sinfo_swa));
 
     std::vector<llama_ubatch> ubatches;
     ubatches.push_back(std::move(ubatch));
 
     return std::make_unique<llama_kv_cache_iswa_context>(
             this, std::move(sinfos_base), std::move(sinfos_swa), std::move(ubatches));
+}
+
+llama_memory_context_ptr llama_kv_cache_iswa::init_mtp(llama_seq_id seq_id, llama_ubatch ubatch) {
+    return init_mtp_with_slot_info(
+            kv_base->mtp_slot_info(seq_id),
+            kv_swa->mtp_slot_info(seq_id),
+            std::move(ubatch));
+}
+
+llama_memory_context_ptr llama_kv_cache_iswa::init_mtp_reserve(llama_ubatch ubatch) {
+    // Shape-only reserve context: one stream, one index, one ubatch. We intentionally
+    // avoid seq_id-dependent helpers here so the reserve path cannot accidentally claim
+    // to represent a real user sequence or read its KV placement.
+    llama_kv_cache::slot_info sinfo_base;
+    sinfo_base.s0   = 0;
+    sinfo_base.s1   = 0;
+    sinfo_base.strm = { 0 };
+    sinfo_base.idxs.resize(1);
+    sinfo_base.idxs[0] = { 0 };
+
+    llama_kv_cache::slot_info sinfo_swa = sinfo_base;
+
+    return init_mtp_with_slot_info(std::move(sinfo_base), std::move(sinfo_swa), std::move(ubatch));
 }
 
 bool llama_kv_cache_iswa::get_can_shift() const {
