@@ -1919,6 +1919,7 @@ private:
 
                     int n_idle_slots       = 0;
                     int n_processing_slots = 0;
+                    std::map<std::string, common_speculative_stats> speculative_stats_by_type;
 
                     for (server_slot & slot : slots) {
                         json slot_data = slot.to_json(slots_debug == 0);
@@ -1927,6 +1928,15 @@ private:
                             n_processing_slots++;
                         } else {
                             n_idle_slots++;
+                        }
+
+                        for (const auto & stats : common_speculative_get_stats(slot.spec)) {
+                            auto & agg = speculative_stats_by_type[stats.spec_type];
+                            agg.spec_type      = stats.spec_type;
+                            agg.n_gen_drafts  += stats.n_gen_drafts;
+                            agg.n_acc_drafts  += stats.n_acc_drafts;
+                            agg.n_gen_tokens  += stats.n_gen_tokens;
+                            agg.n_acc_tokens  += stats.n_acc_tokens;
                         }
 
                         slots_data.push_back(slot_data);
@@ -1955,6 +1965,9 @@ private:
 
                     res->n_decode_total          = metrics.n_decode_total;
                     res->n_busy_slots_total      = metrics.n_busy_slots_total;
+                    for (const auto & el : speculative_stats_by_type) {
+                        res->speculative_stats.push_back(el.second);
+                    }
 
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
@@ -3642,6 +3655,46 @@ void server_routes::init_routes() {
                 prometheus << "# HELP llamacpp:" << name << " " << help  << "\n"
                             << "# TYPE llamacpp:" << name << " " << type  << "\n"
                             << "llamacpp:"        << name << " " << value << "\n";
+            }
+        }
+
+        struct speculative_metric_def {
+            const char * name;
+            const char * help;
+            uint64_t common_speculative_stats::* value;
+        };
+
+        static const speculative_metric_def speculative_metrics_def[] = {
+            {
+                "speculative_drafts_generated_total",
+                "Number of speculative draft batches generated.",
+                &common_speculative_stats::n_gen_drafts,
+            },
+            {
+                "speculative_drafts_accepted_total",
+                "Number of speculative draft batches accepted at least partially.",
+                &common_speculative_stats::n_acc_drafts,
+            },
+            {
+                "speculative_draft_tokens_generated_total",
+                "Number of speculative draft tokens generated.",
+                &common_speculative_stats::n_gen_tokens,
+            },
+            {
+                "speculative_draft_tokens_accepted_total",
+                "Number of speculative draft tokens accepted by the target model.",
+                &common_speculative_stats::n_acc_tokens,
+            },
+        };
+
+        for (const auto & metric_def : speculative_metrics_def) {
+            prometheus << "# HELP llamacpp:" << metric_def.name << " " << metric_def.help << "\n"
+                       << "# TYPE llamacpp:" << metric_def.name << " counter\n";
+
+            for (const auto & stats : res_task->speculative_stats) {
+                prometheus << "llamacpp:" << metric_def.name
+                           << "{spec_type=\"" << stats.spec_type << "\"} "
+                           << stats.*(metric_def.value) << "\n";
             }
         }
 

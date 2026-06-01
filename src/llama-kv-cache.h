@@ -193,7 +193,9 @@ public:
     // return empty slot_info on failure
     slot_info find_slot(const llama_ubatch & ubatch, bool cont) const;
 
-    // Gemma4 MTP: one-token slot_info pointing at the last populated cell for seq_id (read-only graphs).
+    // Gemma4 MTP real-decode path: one-token slot_info pointing at the last populated
+    // cell for seq_id (read-only graphs). Reserve-only callers should use the
+    // dedicated shape-only context in llama_kv_cache_iswa instead.
     slot_info mtp_slot_info(llama_seq_id seq_id) const;
 
     // emplace the ubatch context into slot: [sinfo.idxs[0...ubatch.n_tokens - 1]]

@@ -81,7 +81,17 @@ public:
     //   for the same seq_id does not trigger eviction during an in-flight MTP request.
     llama_memory_context_ptr init_mtp(llama_seq_id seq_id, llama_ubatch ubatch);
 
+    // Reserve-only MTP context used to size/allocate the single-token MTP graph. This
+    // is shape-only: it does not correspond to a real sequence and must never be used
+    // for actual MTP decode or for reading user-visible KV state.
+    llama_memory_context_ptr init_mtp_reserve(llama_ubatch ubatch);
+
 private:
+    llama_memory_context_ptr init_mtp_with_slot_info(
+            llama_kv_cache::slot_info sinfo_base,
+            llama_kv_cache::slot_info sinfo_swa,
+            llama_ubatch ubatch);
+
     const llama_hparams & hparams;
 
     const bool unified;
