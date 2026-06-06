@@ -1650,6 +1650,13 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                 hparams.n_layer_kv_from_start = hparams.n_layer - (int32_t) n_kv_shared_layers;
                 hparams.f_attention_scale     = 1.0f;
 
+                if (hparams.n_layer > 0 && hparams.n_layer_kv_from_start <= 0) {
+                    LLAMA_LOG_WARN("%s: gemma4_assistant KV sharing metadata leaves no dedicated KV layers "
+                                   "(n_layer=%u, shared_kv_layers=%u); disabling reuse\n",
+                            __func__, hparams.n_layer, n_kv_shared_layers);
+                    hparams.n_layer_kv_from_start = (int32_t) hparams.n_layer;
+                }
+
                 ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA,          hparams.rope_freq_base_train_swa, false);
                 ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW,    hparams.n_swa);
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
@@ -9573,11 +9580,21 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
             GGML_ABORT("fatal error");
     }
 
-    // add on pooling layer
-    llm->build_pooling(cls, cls_b, cls_out, cls_out_b, cls_norm);
+    // The Gemma-4 MTP graph is self-contained: it produces its own logits / h_post /
+    // on-device argmax and is driven on a dedicated scheduler. The shared embedding
+    // pooling and backend-sampling epilogues are for the main decode path only. They
+    // must be skipped for MTP graphs: the speculative path forces cparams.embeddings=true
+    // (so the main decode emits backbone hidden states), and that flag would otherwise
+    // make build_pooling run against the MTP graph's t_embd (h_post) -- which has no
+    // pooling inputs and crashes -- and build_sampling attach backend samplers to the
+    // MTP logits, which MTP never consumes.
+    if (params.gtype != LLM_GRAPH_TYPE_MTP) {
+        // add on pooling layer
+        llm->build_pooling(cls, cls_b, cls_out, cls_out_b, cls_norm);
 
-    // add backend sampling layers (if any)
-    llm->build_sampling();
+        // add backend sampling layers (if any)
+        llm->build_sampling();
+    }
 
     // if the gguf model was converted with --sentence-transformers-dense-modules
     // there will be two additional dense projection layers
