@@ -409,10 +409,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             if (V->ne[0] != K->ne[0]) {
                 return BEST_FATTN_KERNEL_NONE;
             }
-            if (!gqa_opt_applies) {
-                return BEST_FATTN_KERNEL_NONE;
-            }
-            break;
+            // MMA template instances for DKQ=512 only exist for ncols2 in {4,8},
+            // requiring gqa_ratio < 3. Gemma-4 (12B/26B/31B) has gqa_ratio=8 and
+            // aborts in switch_ncols2<512,512>. fattn-tile supports DKQ=512 with
+            // ncols2 fallback to {2,1}. Route ALL DKQ=512 cases to TILE here so
+            // the early-return path and the no-mask MTP cross-attn path are both covered.
+            return BEST_FATTN_KERNEL_TILE;
         case 576:
         case 640:
             if (V->ne[0] != 512) {

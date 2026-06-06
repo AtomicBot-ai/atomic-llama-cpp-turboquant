@@ -1105,10 +1105,14 @@ void llama_context::set_abort_callback(bool (*abort_callback)(void * data), void
 void llama_context::set_embeddings(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
+    const bool changed = (cparams.embeddings != value);
     cparams.embeddings = value;
-
-    // TODO: not sure yet if we want to reserve here
-    //sched_need_reserve = true;
+    // Changing embeddings mode changes the graph topology (adds/removes the backbone
+    // hidden-state output node). Re-reserve so compute buffers are sized correctly.
+    // Only trigger re-reserve on actual change — not on redundant same-value calls.
+    if (changed) {
+        sched_need_reserve = true;
+    }
 }
 
 void llama_context::set_embeddings_pre_norm(bool value) {
@@ -2691,6 +2695,11 @@ int32_t llama_context::decode_mtp_async(
         LLAMA_LOG_ERROR("%s: failed to initialize MTP scheduler\n", __func__);
         return -8;
     }
+
+    // Flush main scheduler so KV cache writes from the preceding llama_decode are
+    // visible to the MTP worker's CUDA reads before it starts. Without this sync
+    // the worker races the still-in-flight CUDA async writes and reads stale K/V.
+    ggml_backend_sched_synchronize(sched.get());
 
     {
         std::unique_lock<std::mutex> lk(mtp_mu);

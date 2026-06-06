@@ -79,7 +79,13 @@ void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
         ggml_backend_tensor_set(tokens, ubatch->token, 0, n_tokens*ggml_element_size(tokens));
     }
 
-    if (ubatch->embd) {
+    // Guard on `embd` being non-null (mirrors the can_reuse() check below): gemma4's
+    // per-layer-token input reuses this same input class but only allocates `tokens`
+    // (never `embd`). When the batch carries raw embeddings (ubatch->embd != null) --
+    // e.g. the Gemma-4 MTP / embeddings verify path -- that per-layer input would
+    // otherwise dereference a null `embd` here. Only the input that actually built an
+    // `embd` tensor should consume ubatch->embd.
+    if (ubatch->embd && embd) {
         GGML_ASSERT(n_embd == embd->ne[0]);
 
         const int64_t n_tokens = ubatch->n_tokens;
