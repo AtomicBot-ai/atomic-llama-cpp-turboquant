@@ -198,9 +198,24 @@ void ggml_cuda_flash_attn_sparse(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
     // Call the registered pFlash kernel.
     // Expects Q[B,S,H,D], K[B,S,Hk,D], V[B,S,Hk,D], O[B,S,H,D] all BF16 contiguous.
+    // The registered pFlash kernel launches on the default stream, but the
+    // Q/K/V conversions above ran on ctx.stream().  Order them with events so
+    // the default stream waits for the conversions and ctx.stream() waits for
+    // pFlash's output, without stalling the host (ggml streams are non-blocking,
+    // so the legacy default stream does not auto-synchronize with them).
+    cudaEvent_t ev_conv;
+    CUDA_CHECK(cudaEventCreateWithFlags(&ev_conv, cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventRecord(ev_conv, stream));
+    CUDA_CHECK(cudaStreamWaitEvent(cudaStreamDefault, ev_conv, 0));
+    CUDA_CHECK(cudaEventDestroy(ev_conv));
     int err = s_sparse_kernel(Q_pf, K_pf, V_pf, O_pf,
                               B, S, H, Hk, D, scale, alpha);
     GGML_ASSERT(err == 0 && "sparse attention kernel failed");
+    cudaEvent_t ev_pf;
+    CUDA_CHECK(cudaEventCreateWithFlags(&ev_pf, cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventRecord(ev_pf, cudaStreamDefault));
+    CUDA_CHECK(cudaStreamWaitEvent(stream, ev_pf, 0));
+    CUDA_CHECK(cudaEventDestroy(ev_pf));
 
     // pFlash output [B,S,H,D] row-major matches ggml dst ne={D,H,S,B} column-major —
     // no transpose needed; flat BF16->F32 copy is correct.
