@@ -206,14 +206,14 @@ void ggml_cuda_flash_attn_sparse(ggml_backend_cuda_context & ctx, ggml_tensor * 
     cudaEvent_t ev_conv;
     CUDA_CHECK(cudaEventCreateWithFlags(&ev_conv, cudaEventDisableTiming));
     CUDA_CHECK(cudaEventRecord(ev_conv, stream));
-    CUDA_CHECK(cudaStreamWaitEvent(cudaStreamDefault, ev_conv, 0));
+    CUDA_CHECK(cudaStreamWaitEvent(((cudaStream_t)0), ev_conv, 0));
     CUDA_CHECK(cudaEventDestroy(ev_conv));
     int err = s_sparse_kernel(Q_pf, K_pf, V_pf, O_pf,
                               B, S, H, Hk, D, scale, alpha);
     GGML_ASSERT(err == 0 && "sparse attention kernel failed");
     cudaEvent_t ev_pf;
     CUDA_CHECK(cudaEventCreateWithFlags(&ev_pf, cudaEventDisableTiming));
-    CUDA_CHECK(cudaEventRecord(ev_pf, cudaStreamDefault));
+    CUDA_CHECK(cudaEventRecord(ev_pf, ((cudaStream_t)0)));
     CUDA_CHECK(cudaStreamWaitEvent(stream, ev_pf, 0));
     CUDA_CHECK(cudaEventDestroy(ev_pf));
 
