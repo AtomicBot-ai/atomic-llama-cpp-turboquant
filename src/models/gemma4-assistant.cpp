@@ -106,7 +106,7 @@ static void gemma4_mtp_build_one_step(
         ggml_tensor * Qcur = gctx.build_lora_mm(mtp.layers[il].wq, cur);
         cb(Qcur, "Qcur", il);
 
-        Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head, n_tokens);
+        Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head, 1);
 
         Qcur = gctx.build_norm(Qcur, mtp.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
         cb(Qcur, "Qcur_normed", il);

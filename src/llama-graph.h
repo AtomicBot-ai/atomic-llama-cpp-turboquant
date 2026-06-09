@@ -742,6 +742,7 @@ using llm_graph_get_rows_fn = std::function<ggml_tensor * (ggml_context *, ggml_
 
 struct llm_graph_context {
     const llm_arch arch;
+    const llm_graph_type gtype;
 
     const llama_hparams & hparams;
     const llama_cparams & cparams;

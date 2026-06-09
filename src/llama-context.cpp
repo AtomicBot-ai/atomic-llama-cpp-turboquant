@@ -1279,14 +1279,6 @@ bool llama_context::ensure_sched_mtp() {
             return false;
         }
 
-        llama_memory_context_ptr mctx = memory->init_full();
-        if (!mctx) {
-            LLAMA_LOG_ERROR("%s: failed to init memory context for MTP reserve\n", __func__);
-            sched_mtp.reset();
-            gf_res_prev_mtp.reset();
-            return false;
-        }
-
         const uint32_t n_bb = model.mtp_assistant->hparams.n_embd_backbone;
         auto data = std::make_shared<llama_ubatch::data_t>();
         data->token.resize(1);
@@ -1320,6 +1312,14 @@ bool llama_context::ensure_sched_mtp() {
         ub.seq_idx      = data->seq_idx.data();
         ub.output       = data->output.data();
         ub.data         = data;
+
+        llama_memory_context_ptr mctx = kv_iswa->init_mtp(0, ub);
+        if (!mctx) {
+            LLAMA_LOG_ERROR("%s: failed to init memory context for MTP reserve\n", __func__);
+            sched_mtp.reset();
+            gf_res_prev_mtp.reset();
+            return false;
+        }
 
         const uint32_t save_n_outputs = n_outputs;
         n_outputs = 1;
