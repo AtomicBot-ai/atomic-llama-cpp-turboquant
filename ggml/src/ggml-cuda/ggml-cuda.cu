@@ -545,7 +545,17 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
             access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
             access.location.id = device;
             access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-            CU_CHECK(cuMemSetAccess((CUdeviceptr)((char *)(pool_addr) + pool_size), reserve_size, &access, 1));
+            // The sync above is not enough under concurrency: other threads
+            // (snapshot D2H, a second client, the draft backend) can queue
+            // async work between it and this remap, and cuMemSetAccess then
+            // returns CUDA_ERROR_NOT_READY (observed on WSL2 at >19GB load).
+            // NOT_READY is transient: re-sync and retry instead of aborting.
+            CUresult set_err = cuMemSetAccess(start_ptr, reserve_size, &access, 1);
+            for (int retry = 0; set_err == CUDA_ERROR_NOT_READY && retry < 100; ++retry) {
+                CUDA_CHECK(cudaDeviceSynchronize());
+                set_err = cuMemSetAccess(start_ptr, reserve_size, &access, 1);
+            }
+            CU_CHECK(set_err);
 
             // add to the pool
             pool_size += reserve_size;
