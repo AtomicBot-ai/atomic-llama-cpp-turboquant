@@ -8820,6 +8820,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_set_rows_tq4_1s(GGML_TYPE_I32, 128, 256, 64));
 
 
+    // turbo3 D=256 inline-dequant TILE path on HIP/gfx1201. nb=3/4/6 = speculative-verify
+    // widths; nb=64/128/256 = prefill-like batches (validate the prefill win is correct).
+    // Emitted FIRST so they run before any stock case that might abort the suite.
+    for (int nb : { 3, 4, 6, 64, 128, 256 }) {
+        for (int kv : { 512, 1024 }) {
+            test_cases.emplace_back(new test_flash_attn_ext(
+                256, 256, 4, {4, 1}, kv, nb, true, false, 0.0f, 0.0f, GGML_PREC_F32, GGML_TYPE_TURBO3_0));
+        }
+    }
+
     for (int hsk : { 40, 64, 72, 80, 96, 128, 192, 256, 320, 512, 576 }) {
         for (int hsv : { 40, 64, 72, 80, 96, 128, 192, 256, 512 }) {
             if (hsk != 192 && hsk != 320 && hsk != 576 && hsk != hsv) continue;

@@ -492,6 +492,28 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // Force VEC path which does inline dequant with zero temp buffer overhead.
     // Trade-off: prefill is slower (sequential query processing).
     // Limitation: head_dim > 256 cannot use VEC (falls through to TILE).
+    //
+    // NOTE (MTP investigation, 2026-06): routing the speculative verify batch
+    // (Q->ne[1] >= 3) to TILE/MMA was tested and is STRICTLY WORSE for quantized
+    // KV — TILE/MMA hardcode need_f16_K/V=true and materialize the full KV cache
+    // to f16 every step (fattn-common.cuh ~1366), a per-step O(KV) dequant tax that
+    // outweighs the parallel-verify benefit. VEC's inline dequant is correct here.
+    // Self-spec MTP is capped at ~1.0x on gfx1201 regardless (no KV-load
+    // amortization across verify columns); see benchmarks/gemma4-mtp/results.
+    //
+    // UPDATE (inline-dequant TILE): all multi-row batches (D=256, turbo3/turbo3 KV,
+    // Q->ne[1] >= 3) route to the TILE kernel, which inline-dequantizes turbo3 K/V
+    // during the global->shared tile load (no full-KV->f16 materialization). This
+    // covers BOTH the speculative-verify batch AND prefill. Measured win: turbo3
+    // PREFILL 1.4-1.9x faster than the sequential VEC path (pp2048 1038->1929 t/s),
+    // within ~6-12% of f16 prefill -> makes 3-bit turbo3 KV practical for long-context
+    // RAG. (MTP self-spec decode still <=1.0x: that wall is GEMM weight-load
+    // amortization on RDNA4, not attention.) Only Q->ne[1] <= 2 (decode) keeps VEC
+    // below, where inline dequant with zero temp buffer is optimal.
+    if (Q->ne[0] == 256 && K->type == GGML_TYPE_TURBO3_0 && V->type == GGML_TYPE_TURBO3_0 &&
+        Q->ne[1] >= 3 && can_use_vector_kernel) {
+        return BEST_FATTN_KERNEL_TILE;
+    }
     if ((ggml_is_quantized(K->type) || ggml_is_quantized(V->type)) && can_use_vector_kernel) {
         return BEST_FATTN_KERNEL_VEC;
     }
