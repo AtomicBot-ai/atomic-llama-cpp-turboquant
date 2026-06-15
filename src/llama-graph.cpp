@@ -2232,9 +2232,15 @@ ggml_tensor * llm_graph_context::build_attn(
         // cur is 2D: (n_embd_head * n_head, n_tokens) after build_attn_mha
         const int64_t padded_v_head = v->ne[0];
         if (padded_v_head != orig_v_head) {
-            // Reshape to 4D, extract original head_dim, reshape back to 2D
-            const int64_t n_head_v = hparams.n_head_kv(il);
+            // Reshape to 3D, extract original head_dim, reshape back to 2D.
+            // The MHA output carries one slice per QUERY head (n_head), not per
+            // KV head. Under GQA (n_head != n_head_kv) using n_head_kv(il) here
+            // mis-sizes the reshape and trips GGML_ASSERT — e.g. the lfm2moe
+            // sparse-attention layout (ATO-137). Derive the head count from the
+            // tensor so it is correct for both MHA and GQA.
             const int64_t n_tokens_cur = cur->ne[1];
+            GGML_ASSERT(cur->ne[0] % padded_v_head == 0);
+            const int64_t n_head_v = cur->ne[0] / padded_v_head;
             cur = ggml_reshape_3d(ctx0, cur, padded_v_head, n_head_v, n_tokens_cur);
             // ggml_view_3d to extract first orig_v_head elements per head
             cur = ggml_view_3d(ctx0, cur, orig_v_head, n_head_v, n_tokens_cur,
