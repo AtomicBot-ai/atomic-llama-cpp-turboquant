@@ -3114,7 +3114,7 @@ private:
                 const size_t n_draft = slot.drafted.size();
 
                 // the accepted tokens from the speculation
-                const auto ids = common_sampler_sample_and_accept_n(slot.smpl.get(), ctx, slot.i_batch_dft, slot.drafted);
+                const auto ids = common_sampler_sample_and_accept_n(slot.smpl.get(), ctx, slot.i_batch_dft, slot.drafted, false, params_base.speculative.p_accept);
 
                 // For MTP speculation, h_prev for the next draft must come from the LAST ACCEPTED
                 // batch output - not embeddings_ith(-1), which would point at a rejected draft's

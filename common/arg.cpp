@@ -3448,6 +3448,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.p_split = std::stof(value);
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE}).set_env("LLAMA_ARG_DRAFT_P_SPLIT"));
+    
     add_opt(common_arg(
         {"--draft-p-min"}, "P",
         string_format("minimum speculative decoding probability (greedy) (default: %.2f)", (double)params.speculative.p_min),
@@ -3455,6 +3456,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.p_min = std::stof(value);
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_P_MIN"));
+    
+    add_opt(common_arg(
+        {"--draft-p-accept"}, "P",
+        string_format("MTP draft acceptance probability threshold - accept non-argmax draft token if main model assigns it at least this probability (default: %.2f, 0.0 = greedy match only)", (double)params.speculative.p_accept),
+        [](common_params & params, const std::string & value) {
+            params.speculative.p_accept = std::stof(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_P_ACCEPT"));
+
     add_opt(common_arg(
         {"-cd", "--ctx-size-draft"}, "N",
         string_format("size of the prompt context for the draft model (default: %d, 0 = loaded from model)", params.speculative.n_ctx),

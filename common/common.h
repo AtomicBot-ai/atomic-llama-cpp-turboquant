@@ -326,6 +326,8 @@ struct common_params_speculative {
     int32_t draft_block_size = 3;
     float   p_split = 0.1f; // speculative decoding split probability
     float   p_min   = 0.75f; // minimum speculative decoding probability (greedy)
+    float   p_accept = 0.0f;  // min probability for main model to accept a non-argmax MTP draft token
+
 
     // ngram-based speculative decoding
 
