@@ -1,0 +1,156 @@
+name: Build & Release TurboQuant (Linux x64 Vulkan)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/turboquant-kv-cache
+    paths:
+      - '.github/workflows/build-turboquant-vulkan.yml'
+      - '**/CMakeLists.txt'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/*.c'
+      - '**/*.cpp'
+      - '**/*.comp'
+      - '**/*.glsl'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_LOG_COLORS: 1
+  LLAMA_LOG_PREFIX: 1
+  LLAMA_LOG_TIMESTAMPS: 1
+
+jobs:
+  linux-x64-vulkan:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Set version tag
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          TAG="turboquant-linux-x64-vulkan-${SHORT_SHA}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-linux-x64-vulkan
+          evict-old-files: 1d
+
+      - name: Dependencies
+        run: |
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential mesa-vulkan-drivers vulkan-sdk
+
+      - name: Build
+        id: cmake_build
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_VULKAN=ON \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Verify turbo3 support
+        run: |
+          ./build/bin/llama-server --help 2>&1 | grep -A2 "cache-type-k" || true
+          echo "---"
+          file ./build/bin/llama-server
+          ./build/bin/llama-server --version 2>&1 || true
+
+      - name: Verify bundled dependencies
+        run: |
+          echo "=== Shared objects in build/bin ==="
+          find build/bin -name "*.so*" -printf '%f\n' | sort
+          echo "---"
+          echo "=== llama-server dynamic dependencies ==="
+          ldd build/bin/llama-server || true
+          echo "---"
+          echo "=== Binary sizes ==="
+          ls -lh build/bin/llama-server build/bin/llama-cli
+
+      - name: Prepare release archive
+        run: |
+          mkdir -p release/build/bin
+          cp build/bin/llama-server release/build/bin/
+          cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
+          cp LICENSE release/build/bin/ 2>/dev/null || true
+          cd release
+          zip -r ../llama-turboquant-linux-x64-vulkan.zip .
+          tar -czf ../llama-turboquant-linux-x64-vulkan.tar.gz .
+          cd ..
+          ls -lh llama-turboquant-linux-x64-vulkan.zip llama-turboquant-linux-x64-vulkan.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-turboquant-linux-x64-vulkan
+          path: release/
+          retention-days: 30
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: "TurboQuant Linux x64 Vulkan (${{ steps.version.outputs.short_sha }})"
+          body: |
+            ## TurboQuant KV Cache — Linux x64 (Vulkan)
+
+            Built from `feature/turboquant-kv-cache` branch at commit `${{ steps.version.outputs.short_sha }}`.
+
+            ### What's included
+            - `llama-server` with `--cache-type-k turbo3` / `turbo4` support
+            - `llama-cli`, `llama-bench`, `llama-perplexity`
+            - Vulkan backend (works on any Vulkan 1.2+ GPU: NVIDIA / AMD / Intel)
+            - Portable CPU backend (`GGML_CPU_ALL_VARIANTS`) with bundled shared libraries (`$ORIGIN` rpath)
+
+            ### Requirements
+            A working Vulkan runtime/driver on the host (`libvulkan1` + GPU driver, e.g. `mesa-vulkan-drivers` or the NVIDIA driver).
+
+            ### Usage
+            ```bash
+            # Option 1: zip
+            unzip llama-turboquant-linux-x64-vulkan.zip
+            # Option 2: tar.gz
+            tar -xzf llama-turboquant-linux-x64-vulkan.tar.gz
+
+            ./build/bin/llama-server -m model.gguf -ngl 99 --cache-type-k turbo3 --cache-type-v turbo3
+            ```
+
+            ### For Atomic Chat integration
+            Replace the binary at:
+            ```
+            ~/.config/Atomic Chat/data/llamacpp/backends/<version>/linux-x64/build/bin/llama-server
+            ```
+          files: |
+            llama-turboquant-linux-x64-vulkan.zip
+            llama-turboquant-linux-x64-vulkan.tar.gz
+          draft: false
+          prerelease: true
