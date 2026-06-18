@@ -1650,6 +1650,13 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                 hparams.n_layer_kv_from_start = hparams.n_layer - (int32_t) n_kv_shared_layers;
                 hparams.f_attention_scale     = 1.0f;
 
+                if (hparams.n_layer > 0 && hparams.n_layer_kv_from_start <= 0) {
+                    LLAMA_LOG_WARN("%s: gemma4_assistant KV sharing metadata leaves no dedicated KV layers "
+                                   "(n_layer=%u, shared_kv_layers=%u); disabling reuse\n",
+                            __func__, hparams.n_layer, n_kv_shared_layers);
+                    hparams.n_layer_kv_from_start = (int32_t) hparams.n_layer;
+                }
+
                 ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA,          hparams.rope_freq_base_train_swa, false);
                 ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW,    hparams.n_swa);
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
