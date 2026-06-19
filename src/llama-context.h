@@ -1,30 +1,21 @@
 #pragma once
 
 #include "llama.h"
+#include "llama-ext.h"
 #include "llama-cparams.h"
 #include "llama-graph.h"
 #include "llama-adapter.h"
 #include "llama-impl.h"
+#include "llama-memory.h"
+
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
 
-#include <atomic>
-#include <condition_variable>
 #include <map>
-#include <mutex>
-#include <optional>
-#include <thread>
 #include <vector>
 
 struct llama_model;
 class llama_batch_allocr;
-
-struct llama_context;
-
-// Qwen NextN: non-owning draft context for paired KV seq_rm (drafting uses embeddings_pre_norm buffers).
-struct llama_nextn {
-    llama_context * ctx_nextn = nullptr;
-};
 
 class llama_io_read_i;
 class llama_io_write_i;
@@ -33,16 +24,20 @@ class llama_io_write_i;
 struct llama_memory_i;
 struct llama_memory_context_i;
 
-// "memory" as in physical memory for a buffer type, in bytes
-struct llama_memory_breakdown_data {
-    size_t model   = 0; // memory allocated for the model
-    size_t context = 0; // memory allocated for the context
-    size_t compute = 0; // memory allocated for temporary compute buffers
+// stores copy of the memory in device buffer. used for fast state save/load
+struct llama_memory_buffer {
+    int n_tensors = 0;
+    size_t total_size = 0;
 
-    size_t total() const {
-        return model + context + compute;
-    }
+    ggml_backend_buffer_ptr buf;
+
+    ggml_context_ptr ctx;
+
+    std::vector<ggml_tensor *> org;
+    std::vector<ggml_tensor *> cpy;
 };
+
+using llama_memory_buffers = std::map<ggml_backend_buffer_type_t, llama_memory_buffer>;
 
 struct llama_context {
     // init scheduler and compute buffers, reserve worst-case graphs
@@ -90,8 +85,10 @@ struct llama_context {
     float * get_embeddings_ith(int32_t i);
     float * get_embeddings_seq(llama_seq_id seq_id);
 
-    float * get_embeddings_pre_norm();
-    float * get_embeddings_pre_norm_ith(int32_t i);
+    float * get_embeddings_nextn();
+    float * get_embeddings_nextn_ith(int32_t i);
+
+    float * get_embeddings_layer_inp(uint32_t lid);
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
@@ -116,7 +113,8 @@ struct llama_context {
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
     void set_embeddings (bool value);
-    void set_embeddings_pre_norm(bool value);
+    void set_embeddings_nextn(bool value, bool masked);
+    void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
@@ -139,70 +137,10 @@ struct llama_context {
                 const llama_ubatch & ubatch,
                     llm_graph_type   gtype,
             llama_memory_context_i * mctx,
-                       ggml_status & ret,
-                           bool     apply_mctx = true);
-
-    llm_graph_params graph_params_mtp(
-            llm_graph_result * res,
-            const llama_ubatch & ubatch,
-            const llama_memory_context_i * mctx) const;
-
-    // Gemma4 MTP: greedy multi-step draft using nested gemma4_assistant + target KV (seq_id / attn_pos for masks).
-    // Synchronous facade: equivalent to decode_mtp_async() immediately followed by decode_mtp_wait().
-    // Kept for backward compatibility with existing callers.
-    int32_t decode_mtp(
-            llama_seq_id seq_id,
-            llama_pos attn_pos,
-            llama_token last_token,
-            float * h_prev,
-            int32_t n_steps,
-            llama_token * out_drafts,
-            float * out_logits,
-            float * out_h_prev_last);
-
-    // Async MTP draft pipeline (see plan async-mtp-pipeline). Submits the request to a
-    // dedicated worker thread that runs the MTP graph on its own ggml_backend_sched
-    // (sched_mtp), allowing CPU-side encoding to overlap with target verify.
-    //
-    // Contract:
-    //   - At most one in-flight request per context. Calling _async while a previous
-    //     request is unwaited returns an error.
-    //   - Caller must ensure target KV positions ≤ attn_pos remain stable until _wait
-    //     returns (KV cache is append-only in current model architectures).
-    int32_t decode_mtp_async(
-            llama_seq_id  seq_id,
-            llama_pos     attn_pos,
-            llama_token   last_token,
-            const float * h_prev,
-            int32_t       n_steps);
-
-    // Block until the in-flight MTP request completes. Copies drafts into out_drafts
-    // and the last hidden state into out_h_prev_last (optional). Returns 0 on success.
-    int32_t decode_mtp_wait(
-            llama_token * out_drafts,
-            float       * out_h_prev_last);
-
-    // In-thread synchronous MTP path used as a fallback when out_logits != NULL
-    // (the async worker contract does not stream per-step logits).
-    int32_t decode_mtp_sync(
-            llama_seq_id seq_id,
-            llama_pos attn_pos,
-            llama_token last_token,
-            float * h_prev,
-            int32_t n_steps,
-            llama_token * out_drafts,
-            float * out_logits,
-            float * out_h_prev_last);
+                       ggml_status & ret);
 
     int encode(const llama_batch & batch_inp);
     int decode(const llama_batch & batch_inp);
-
-    // Qwen NextN: secondary draft context (same GGUF as target; separate ctx). Used for paired KV seq_rm.
-    void set_nextn(llama_context * ctx_nextn_in);
-
-    llama_context * get_nextn() const {
-        return nextn.ctx_nextn;
-    }
 
     //
     // state save/load
@@ -213,6 +151,7 @@ struct llama_context {
     size_t state_set_data(const uint8_t * src, size_t size);
 
     size_t state_seq_get_size(llama_seq_id seq_id, llama_state_seq_flags flags);
+
     size_t state_seq_get_data(llama_seq_id seq_id,       uint8_t * dst, size_t size, llama_state_seq_flags flags);
     size_t state_seq_set_data(llama_seq_id seq_id, const uint8_t * src, size_t size, llama_state_seq_flags flags);
 
@@ -247,7 +186,7 @@ struct llama_context {
     llama_perf_context_data perf_get_data() const;
     void perf_reset();
 
-    std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> memory_breakdown() const;
+    llama_memory_breakdown memory_breakdown() const;
 
     //
     // training
@@ -289,6 +228,10 @@ private:
 
     // map the output row index `i` to batch index
     int64_t output_resolve_row(int32_t i) const;
+
+    // async-copy enabled layer-input tensors (per cparams.output_layer_inp)
+    // from backend into host-side embd_layer_inp buffers
+    void extract_layer_inputs(const llm_graph_result * res, size_t token_offset, size_t n_tokens);
 
     //
     // graph
@@ -338,7 +281,7 @@ private:
 
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
-    std::unique_ptr<llama_memory_i> memory;
+    llama_memory_ptr memory;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};
@@ -347,7 +290,14 @@ private:
     // populated only when pooling_type == LLAMA_POOLING_TYPE_NONE
     buffer_view<float> embd = {nullptr, 0};
 
-    buffer_view<float> embd_pre_norm = {nullptr, 0};
+    // hidden state required by the nextn layers (2-dimensional array: [n_outputs][n_embd])
+    // populated only when cparams.embeddings_nextn is enabled and the model graph
+    // sets llm_graph_result::t_h_nextn
+    buffer_view<float> embd_nextn = {nullptr, 0};
+
+    // host buffers for output layer input embeddings, per layer
+    // populated when cparams.output_layer_inp[il] is true
+    std::vector<buffer_view<float>> embd_layer_inp;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active
@@ -412,64 +362,11 @@ private:
     llm_graph_result_ptr gf_res_prev;
     llm_graph_result_ptr gf_res_reserve;
 
-    llama_nextn nextn;
-
-    // Async MTP pipeline (Phase C of async-mtp-pipeline plan).
-    // sched_mtp is a dedicated scheduler so the MTP draft graph can be encoded on a
-    // worker thread without contending with the target's sched. gf_res_prev_mtp keeps
-    // its own graph cache so reuse across MTP steps survives target decode calls.
-    ggml_backend_sched_ptr sched_mtp;
-    llm_graph_result_ptr   gf_res_prev_mtp;
-
-    struct mtp_request {
-        llama_seq_id       seq_id   = 0;
-        llama_pos          attn_pos = 0;
-        llama_token        last_token = 0;
-        std::vector<float> h_prev;
-        int32_t            n_steps  = 0;
-    };
-
-    struct mtp_response {
-        int32_t                  status      = 0;
-        std::vector<llama_token> drafts;
-        std::vector<float>       h_prev_last;
-    };
-
-    std::thread             mtp_worker;
-    std::atomic<bool>       mtp_worker_stop{false};
-    std::mutex              mtp_mu;
-    std::condition_variable mtp_cv_request;
-    std::condition_variable mtp_cv_response;
-    std::optional<mtp_request>  mtp_pending;   // submitted, not yet picked up by worker
-    bool                        mtp_in_flight = false; // worker is processing
-    std::optional<mtp_response> mtp_completed; // worker finished, awaiting _wait
-
-    // Serializes shared-backend reconfiguration (set_threadpool_fn, set_n_threads_fns)
-    // between the main thread (graph_compute) and the MTP worker (graph_compute_mtp).
-    // Currently the depth-1 sync-wrapper integration in speculative.cpp does not run
-    // them concurrently, but this guard is required for any future pipeline-depth-2
-    // or multi-worker variant where target encode and MTP encode actually overlap.
-    std::mutex backend_cfg_mu;
-
-    // Lazily create sched_mtp and reserve its compute buffers on the first MTP call.
-    bool ensure_sched_mtp();
-
-    // Run the MTP graph for one ubatch on sched_mtp / gf_res_prev_mtp. Mirrors
-    // process_ubatch() but is fully isolated from the target sched.
-    llm_graph_result * process_ubatch_mtp(
-                const llama_ubatch & ubatch,
-            llama_memory_context_i * mctx,
-                       ggml_status & ret);
-
-    ggml_status graph_compute_mtp(ggml_cgraph * gf);
-
-    // Worker-side execution of one mtp_request (sequential N-step loop on sched_mtp).
-    int32_t decode_mtp_run(const mtp_request & req, mtp_response & resp);
-
-    void mtp_worker_loop();
-
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;
+
+    // keep copies of the per-sequence memory on the device
+    std::map<llama_seq_id, llama_memory_buffers> mem_storage;
 
     bool has_evaluated_once = false;
 

@@ -11,6 +11,14 @@
 #include <memory>
 #include <set>
 
+// Signals between router parent and model child processes.
+// Also used by server.cpp (the child process entry point).
+#define CMD_ROUTER_TO_CHILD_EXIT  "cmd_router_to_child:exit"
+#define CMD_CHILD_TO_ROUTER_READY "cmd_child_to_router:ready"
+#define CMD_CHILD_TO_ROUTER_SLEEP "cmd_child_to_router:sleep"
+#define CMD_CHILD_TO_ROUTER_INFO  "cmd_child_to_router:info:"
+#define CMD_CHILD_TO_ROUTER_ERROR "cmd_child_to_router:error:"
+
 /**
  * state diagram:
  *
@@ -63,8 +71,11 @@ struct server_model_meta {
     server_model_status status = SERVER_MODEL_STATUS_UNLOADED;
     int64_t last_used = 0; // for LRU unloading
     std::vector<std::string> args; // args passed to the model instance, will be populated by render_args()
+    json loaded_info; // info to be reflected via /v1/models endpoint
     int exit_code = 0; // exit code of the model instance process (only valid if status == FAILED)
     int stop_timeout = 0; // seconds to wait before force-killing the model instance during shutdown
+    mtmd_caps multimodal; // multimodal capabilities
+    bool need_download = false; // whether the model needs to be downloaded before loading
 
     bool is_ready() const {
         return status == SERVER_MODEL_STATUS_LOADED;
@@ -78,7 +89,21 @@ struct server_model_meta {
         return status == SERVER_MODEL_STATUS_UNLOADED && exit_code != 0;
     }
 
+    // true when the child was killed by a signal (e.g. SIGABRT from OOM,
+    // SIGTERM from force-kill).  exit_code is the negated signal number.
+    bool is_signaled() const {
+        return status == SERVER_MODEL_STATUS_UNLOADED && exit_code < 0;
+    }
+
+    // the signal number if is_signaled(), 0 otherwise
+    int exit_signal() const {
+        return is_signaled() ? -exit_code : 0;
+    }
+
+    std::string last_error = {}; // error message from CMD_CHILD_TO_ROUTER_ERROR or GGML_ABORT
+
     void update_args(common_preset_context & ctx_presets, std::string bin_path);
+    void update_caps();
 };
 
 struct subprocess_s;
@@ -96,9 +121,14 @@ private:
     std::condition_variable cv;
     std::map<std::string, instance_t> mapping;
 
-    // for stopping models
+    // for stopping models — separate mutex prevents cv_stop from contending
+    // with update_status() on mutex.
+    std::mutex stop_mutex;
     std::condition_variable cv_stop;
     std::set<std::string> stopping_models;
+
+    // set to true while load_models() is executing a reload; load() will wait until clear
+    bool is_reloading = false;
 
     common_preset_context ctx_preset;
 
@@ -118,6 +148,11 @@ private:
 public:
     server_models(const common_params & params, int argc, char ** argv);
 
+    // (re-)load the list of models from various sources and prepare the metadata mapping
+    // - if this is called the first time, simply populate the metadata
+    // - if this is called subsequently (e.g. when refreshing from disk):
+    //   - if a model is running but updated or removed from the source, it will be unloaded
+    //   - if a model is not running, it will be added or updated according to the source
     void load_models();
 
     // check if a model instance exists (thread-safe)
@@ -137,6 +172,8 @@ public:
 
     // update the status of a model instance (thread-safe)
     void update_status(const std::string & name, server_model_status status, int exit_code);
+    void update_loaded_info(const std::string & name, std::string & raw_info);
+    void update_last_error(const std::string & name, const std::string & error);
 
     // wait until the model instance is fully loaded (thread-safe)
     // return when the model no longer in "loading" state
@@ -155,7 +192,7 @@ public:
 
     // notify the router server that a model instance is ready
     // return the monitoring thread (to be joined by the caller)
-    static std::thread setup_child_server(const std::function<void(int)> & shutdown_handler);
+    static std::thread setup_child_server(const std::function<void(int)> & shutdown_handler, const json & model_info);
 
     // notify the router server that the sleeping state has changed
     static void notify_router_sleeping_state(bool sleeping);
@@ -163,15 +200,22 @@ public:
 
 struct server_models_routes {
     common_params params;
-    json webui_settings = json::object();
+    json ui_settings = json::object();          // Primary: new name
+    json webui_settings = json::object();        // Deprecated: use ui_settings (kept for compat)
     server_models models;
     server_models_routes(const common_params & params, int argc, char ** argv)
             : params(params), models(params, argc, argv) {
-        if (!this->params.webui_config_json.empty()) {
+        // Support both new ui_config_json and deprecated webui_config_json
+        const std::string & cfg = !this->params.ui_config_json.empty()
+            ? this->params.ui_config_json
+            : this->params.webui_config_json;
+        if (!cfg.empty()) {
             try {
-                webui_settings = json::parse(this->params.webui_config_json);
+                json json_settings = json::parse(cfg);
+                ui_settings = json_settings;
+                webui_settings = json_settings;  // Deprecated: keep in sync
             } catch (const std::exception & e) {
-                LOG_ERR("%s: failed to parse webui config: %s\n", __func__, e.what());
+                LOG_ERR("%s: failed to parse UI config: %s\n", __func__, e.what());
                 throw;
             }
         }
@@ -202,6 +246,7 @@ public:
                       const std::string & path,
                       const std::map<std::string, std::string> & headers,
                       const std::string & body,
+                      const std::map<std::string, uploaded_file> & files,
                       const std::function<bool()> should_stop,
                       int32_t timeout_read,
                       int32_t timeout_write

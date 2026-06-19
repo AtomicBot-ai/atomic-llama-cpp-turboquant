@@ -15,6 +15,7 @@ if (CUDAToolkit_FOUND)
         # 80     == Ampere, asynchronous data loading, faster tensor core instructions
         # 86     == RTX 3000, needs CUDA v11.1
         # 89     == RTX 4000, needs CUDA v11.8
+        # 90     == Hopper H100/200, needs CUDA v11.8
         # 120    == Blackwell, needs CUDA v12.8, FP4 tensor cores
         #
         # XX-virtual == compile CUDA code as PTX, do JIT compilation to binary code on first run
@@ -33,7 +34,7 @@ if (CUDAToolkit_FOUND)
             list(APPEND CMAKE_CUDA_ARCHITECTURES 75-virtual 80-virtual 86-real)
 
             if (CUDAToolkit_VERSION VERSION_GREATER_EQUAL "11.8")
-                list(APPEND CMAKE_CUDA_ARCHITECTURES 89-real)
+                list(APPEND CMAKE_CUDA_ARCHITECTURES 89-real 90-virtual)
             endif()
 
             if (CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.8")
@@ -125,16 +126,19 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-turbo3_0-q8_0.cu
             template-instances/fattn-vec-instance-q8_0-turbo3_0.cu
             template-instances/fattn-vec-instance-f16-turbo3_0.cu
+            template-instances/fattn-vec-instance-turbo3_0-f16.cu
             template-instances/fattn-vec-instance-turbo2_0-turbo2_0.cu
             template-instances/fattn-vec-instance-turbo2_0-q8_0.cu
             template-instances/fattn-vec-instance-q8_0-turbo2_0.cu
             template-instances/fattn-vec-instance-f16-turbo2_0.cu
+            template-instances/fattn-vec-instance-turbo2_0-f16.cu
             template-instances/fattn-vec-instance-turbo3_0-turbo2_0.cu
             template-instances/fattn-vec-instance-turbo2_0-turbo3_0.cu
             template-instances/fattn-vec-instance-turbo4_0-turbo4_0.cu
             template-instances/fattn-vec-instance-turbo4_0-q8_0.cu
             template-instances/fattn-vec-instance-q8_0-turbo4_0.cu
             template-instances/fattn-vec-instance-f16-turbo4_0.cu
+            template-instances/fattn-vec-instance-turbo4_0-f16.cu
             template-instances/fattn-vec-instance-turbo4_0-turbo3_0.cu
             template-instances/fattn-vec-instance-turbo3_0-turbo4_0.cu
             template-instances/fattn-vec-instance-turbo4_0-turbo2_0.cu
@@ -224,7 +228,8 @@ if (CUDAToolkit_FOUND)
         # - speed (nvcc's default)
         # - balance
         # - size
-        list(APPEND CUDA_FLAGS -compress-mode=${GGML_CUDA_COMPRESSION_MODE})
+        # Disabled: -compress-mode causes issues with GCC 12 host compiler
+        # list(APPEND CUDA_FLAGS -compress-mode=${GGML_CUDA_COMPRESSION_MODE})
     endif()
 
     if (GGML_FATAL_WARNINGS)

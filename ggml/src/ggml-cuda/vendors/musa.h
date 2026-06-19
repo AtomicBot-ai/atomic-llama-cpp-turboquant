@@ -32,6 +32,7 @@
 #define cublasSetMathMode mublasSetMathMode
 #define cublasSetStream mublasSetStream
 #define cublasSgemm mublasSgemm
+#define cublasSgemmStridedBatched mublasSgemmStridedBatched
 #define cublasStatus_t mublasStatus_t
 #define cublasOperation_t mublasOperation_t
 #define cublasGetStatusString mublasGetStatusString
@@ -39,11 +40,14 @@
 #define cudaDeviceCanAccessPeer musaDeviceCanAccessPeer
 #define cudaDeviceDisablePeerAccess musaDeviceDisablePeerAccess
 #define cudaDeviceEnablePeerAccess musaDeviceEnablePeerAccess
+#define cudaDeviceGetPCIBusId musaDeviceGetPCIBusId
 #define cudaDeviceProp musaDeviceProp
 #define cudaDeviceSynchronize musaDeviceSynchronize
 #define cudaError_t musaError_t
+#define cudaErrorMemoryAllocation musaErrorMemoryAllocation
 #define cudaErrorPeerAccessAlreadyEnabled musaErrorPeerAccessAlreadyEnabled
 #define cudaErrorPeerAccessNotEnabled musaErrorPeerAccessNotEnabled
+#define cudaEventCreate musaEventCreate
 #define cudaEventCreateWithFlags musaEventCreateWithFlags
 #define cudaEventDisableTiming musaEventDisableTiming
 #define cudaEventRecord musaEventRecord
@@ -73,7 +77,9 @@
 #define cudaMemcpyDeviceToDevice musaMemcpyDeviceToDevice
 #define cudaMemcpyDeviceToHost musaMemcpyDeviceToHost
 #define cudaMemcpyHostToDevice musaMemcpyHostToDevice
+#define cudaMemcpyFromSymbol musaMemcpyFromSymbol
 #define cudaMemcpyKind musaMemcpyKind
+#define cudaMemcpyToSymbol musaMemcpyToSymbol
 #define cudaMemset musaMemset
 #define cudaMemsetAsync musaMemsetAsync
 #define cudaMemGetInfo musaMemGetInfo
