@@ -1029,6 +1029,40 @@ Available metrics:
 - `llamacpp:requests_processing`: Number of requests processing.
 - `llamacpp:requests_deferred`: Number of requests deferred.
 - `llamacpp:n_tokens_max`: High watermark of the context size observed.
+- `llamacpp:speculative_drafts_generated_total{spec_type="..."}`: Number of speculative draft batches generated.
+- `llamacpp:speculative_drafts_accepted_total{spec_type="..."}`: Number of speculative draft batches accepted at least partially.
+- `llamacpp:speculative_draft_tokens_generated_total{spec_type="..."}`: Number of speculative draft tokens generated.
+- `llamacpp:speculative_draft_tokens_accepted_total{spec_type="..."}`: Number of speculative draft tokens accepted by the target model.
+
+The speculative counters use the same source counters as the server's `statistics <type>` log line and are aggregated across slots. The `spec_type` label is the speculative implementation name, such as `mtp`, `nextn`, `draft`, `eagle3`, or an n-gram type. A server with no configured speculative implementation exports the metric metadata but no speculative series.
+
+Example Grafana/Prometheus expressions:
+
+```promql
+rate(llamacpp:speculative_drafts_accepted_total[5m])
+/
+rate(llamacpp:speculative_drafts_generated_total[5m])
+```
+
+```promql
+rate(llamacpp:speculative_draft_tokens_accepted_total[5m])
+/
+rate(llamacpp:speculative_draft_tokens_generated_total[5m])
+```
+
+To graph all speculative modes together, aggregate before dividing:
+
+```promql
+sum(rate(llamacpp:speculative_drafts_accepted_total[5m]))
+/
+sum(rate(llamacpp:speculative_drafts_generated_total[5m]))
+```
+
+Verify locally with:
+
+```bash
+curl -s http://localhost:8080/metrics | rg 'speculative|draft'
+```
 
 ### POST `/slots/{id_slot}?action=save`: Save the prompt cache of the specified slot to a file.
 

@@ -3,7 +3,20 @@
 #include "llama.h"
 #include "common.h"
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 struct common_speculative;
+
+struct common_speculative_stats {
+    std::string spec_type;
+
+    uint64_t n_gen_drafts = 0;
+    uint64_t n_acc_drafts = 0;
+    uint64_t n_gen_tokens = 0;
+    uint64_t n_acc_tokens = 0;
+};
 
 // comma separated list of all types
 std::string common_speculative_type_name_str();
@@ -67,3 +80,6 @@ void common_speculative_cancel(common_speculative * spec);
 
 // print statistics about the speculative decoding
 void common_speculative_print_stats(const common_speculative * spec);
+
+// snapshot statistics about the speculative decoding
+std::vector<common_speculative_stats> common_speculative_get_stats(const common_speculative * spec);

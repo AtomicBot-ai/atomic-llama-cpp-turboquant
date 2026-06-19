@@ -2099,3 +2099,23 @@ void common_speculative_print_stats(const common_speculative * spec) {
                 str_perf.c_str());
     }
 }
+
+std::vector<common_speculative_stats> common_speculative_get_stats(const common_speculative * spec) {
+    std::vector<common_speculative_stats> result;
+    if (spec == nullptr) {
+        return result;
+    }
+
+    result.reserve(spec->impls.size());
+    for (const auto & impl : spec->impls) {
+        result.push_back({
+            common_speculative_type_to_str(impl->type),
+            (uint64_t) impl->n_gen_drafts,
+            (uint64_t) impl->n_acc_drafts,
+            (uint64_t) impl->n_gen_tokens,
+            (uint64_t) impl->n_acc_tokens,
+        });
+    }
+
+    return result;
+}
