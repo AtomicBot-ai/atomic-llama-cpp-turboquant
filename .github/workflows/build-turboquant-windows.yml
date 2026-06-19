@@ -1,0 +1,183 @@
+name: Build & Release TurboQuant (Windows x64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/turboquant-kv-cache
+    paths:
+      - '.github/workflows/build-turboquant-windows.yml'
+      - '.github/actions/windows-setup-cuda/**'
+      - '**/CMakeLists.txt'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/*.c'
+      - '**/*.cpp'
+      - '**/*.cu'
+      - '**/*.cuh'
+      - '**/*.comp'
+      - '**/*.glsl'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_LOG_COLORS: 1
+  LLAMA_LOG_PREFIX: 1
+  LLAMA_LOG_TIMESTAMPS: 1
+  # Keep in sync with the upstream `windows` release job.
+  VULKAN_VERSION: 1.4.313.2
+
+jobs:
+  windows-x64:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            cmake_flags: ''
+          - variant: vulkan
+            cmake_flags: '-DGGML_VULKAN=ON'
+          - variant: cuda-12.4
+            cuda: '12.4'
+            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON'
+          - variant: cuda-13.3
+            cuda: '13.3'
+            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Set version tag
+        id: version
+        shell: pwsh
+        run: |
+          $SHORT_SHA = git rev-parse --short HEAD
+          "tag=turboquant-windows-x64-${{ matrix.variant }}-$SHORT_SHA" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "short_sha=$SHORT_SHA" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-windows-x64-${{ matrix.variant }}
+          evict-old-files: 1d
+
+      - name: Install CUDA Toolkit
+        if: ${{ startsWith(matrix.variant, 'cuda') }}
+        uses: ./.github/actions/windows-setup-cuda
+        with:
+          cuda_version: ${{ matrix.cuda }}
+
+      - name: Install Vulkan SDK
+        if: ${{ matrix.variant == 'vulkan' }}
+        shell: pwsh
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Build
+        id: cmake_build
+        shell: cmd
+        # NOTE: GGML_CUDA_CUB_3DOT2 can be dropped once CCCL 3.2 ships in the CTK used here.
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=ON ^
+            -DGGML_RPC=OFF ^
+            -DLLAMA_CURL=OFF ^
+            -DLLAMA_OPENSSL=OFF ^
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DLLAMA_BUILD_TOOLS=ON ^
+            -DLLAMA_BUILD_TESTS=OFF ^
+            -DLLAMA_BUILD_EXAMPLES=OFF ^
+            ${{ matrix.cmake_flags }}
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config Release -j %NINJA_JOBS% -t ggml
+          cmake --build build --config Release -j %NINJA_JOBS%
+
+      - name: Verify turbo3 support
+        shell: pwsh
+        run: |
+          .\build\bin\Release\llama-server.exe --version 2>&1 | Write-Output
+          Write-Output "---"
+          .\build\bin\Release\llama-server.exe --help 2>&1 | Select-String -Pattern "cache-type-k" -Context 0,2
+          Write-Output "=== build\bin\Release contents ==="
+          Get-ChildItem .\build\bin\Release | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Bundle CUDA runtime DLLs
+        if: ${{ startsWith(matrix.variant, 'cuda') }}
+        shell: pwsh
+        run: |
+          $dst = ".\build\bin\Release"
+          Get-ChildItem "$env:CUDA_PATH\bin" -Filter *.dll |
+            Where-Object { $_.Name -match '^(cudart64|cublas64|cublasLt64)_.*\.dll$' } |
+            ForEach-Object {
+              Write-Output "Bundling $($_.Name)"
+              Copy-Item $_.FullName -Destination $dst -Force
+            }
+
+      - name: Prepare release archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release\build\bin | Out-Null
+          Copy-Item .\build\bin\Release\* release\build\bin\ -Recurse -Force
+          Copy-Item .\LICENSE release\build\bin\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path release\build\bin\* -DestinationPath llama-turboquant-windows-x64-${{ matrix.variant }}.zip -Force
+          Get-Item llama-turboquant-windows-x64-${{ matrix.variant }}.zip | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-turboquant-windows-x64-${{ matrix.variant }}
+          path: release/
+          retention-days: 30
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: "TurboQuant Windows x64 ${{ matrix.variant }} (${{ steps.version.outputs.short_sha }})"
+          body: |
+            ## TurboQuant KV Cache — Windows x64 (${{ matrix.variant }})
+
+            Built from `feature/turboquant-kv-cache` branch at commit `${{ steps.version.outputs.short_sha }}`.
+
+            ### What's included
+            - `llama-server.exe` with `--cache-type-k turbo3` / `turbo4` support
+            - `llama-cli`, `llama-bench`, `llama-perplexity`
+            - Dynamically-loaded GGML backends (`GGML_BACKEND_DL`): portable CPU (`GGML_CPU_ALL_VARIANTS`)${{ matrix.variant == 'vulkan' && ' + Vulkan (`ggml-vulkan.dll`)' || '' }}${{ startsWith(matrix.variant, 'cuda') && format(' + CUDA {0} (`ggml-cuda.dll` + bundled `cudart64`/`cublas64`/`cublasLt64` DLLs)', matrix.cuda) || '' }}
+
+            ### Requirements
+            ${{ matrix.variant == 'cpu' && 'CPU-only — no GPU driver needed.' || '' }}${{ matrix.variant == 'vulkan' && 'A working Vulkan 1.2+ driver (NVIDIA / AMD / Intel).' || '' }}${{ startsWith(matrix.variant, 'cuda') && format('An NVIDIA driver supporting CUDA {0}. The CUDA runtime DLLs are bundled — no system CUDA Toolkit install required.', matrix.cuda) || '' }}
+
+            > GitHub Windows runners have no GPU, so CI only verifies the build + `llama-server.exe --version/--help`. Real GPU `turbo3` validation is a manual step on Windows hardware.
+
+            ### Usage
+            ```bat
+            tar -xf llama-turboquant-windows-x64-${{ matrix.variant }}.zip
+            .\build\bin\llama-server.exe -m model.gguf --cache-type-k turbo3 --cache-type-v turbo3
+            ```
+
+            ### For Atomic Chat integration
+            Replace the binary at:
+            ```
+            %LOCALAPPDATA%\Atomic Chat\data\llamacpp\backends\<version>\win-x64\build\bin\llama-server.exe
+            ```
+          files: |
+            llama-turboquant-windows-x64-${{ matrix.variant }}.zip
+          draft: false
+          prerelease: true

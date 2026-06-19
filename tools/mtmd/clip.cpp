@@ -1643,14 +1643,6 @@ struct clip_model_loader {
                         get_u32(KEY_A_PROJ_DOWNSAMPLE_RATE, hparams.audio_proj_downsample_rate);
                         get_u32(KEY_A_PROJ_HEAD_COUNT,      hparams.audio_proj_head_count);
                     } break;
-                case PROJECTOR_TYPE_GEMMA4UA:
-                    {
-                        // Encoder-free: raw 16 kHz waveform chunked into 640-sample frames.
-                        hparams.audio_chunk_len   = 0;
-                        hparams.audio_sample_rate = 16000;
-                        hparams.eps               = 1e-6f;
-                        hparams.n_mel_bins        = 640;
-                    } break;
                 case PROJECTOR_TYPE_JANUS_PRO:
                     {
                         hparams.image_pad_color   = {127, 127, 127};
@@ -4149,7 +4141,6 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         case PROJECTOR_TYPE_JANUS_PRO:
         case PROJECTOR_TYPE_PHI4:
         case PROJECTOR_TYPE_COGVLM:
-        case PROJECTOR_TYPE_HUNYUANOCR:
         case PROJECTOR_TYPE_YASA2:
         case PROJECTOR_TYPE_GEMMA4UA:
             {

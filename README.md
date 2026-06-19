@@ -351,6 +351,27 @@ because of the lighter memory traffic.
 | HIP / ROCm | `turbo3` KV; F16-K + TURBO-V mixed dispatch | reference |
 | CPU | reference (correctness, not throughput) | reference |
 
+### Pre-built binaries
+
+Each push to `feature/turboquant-kv-cache` publishes self-contained
+`llama-server` release archives (server + `llama-cli` / `llama-bench` /
+`llama-perplexity` + bundled backend libraries) for the following targets:
+
+| Platform | Archive | Backends in the build |
+|---|---|---|
+| macOS arm64 | `llama-turboquant-macos-arm64.{zip,tar.gz}` | Metal (`TurboFlash`) + CPU |
+| Linux x64 | `llama-turboquant-linux-x64-vulkan.{zip,tar.gz}` | Vulkan + portable CPU |
+| Windows x64 | `llama-turboquant-windows-x64-cpu.zip` | portable CPU |
+| Windows x64 | `llama-turboquant-windows-x64-vulkan.zip` | Vulkan + portable CPU |
+| Windows x64 | `llama-turboquant-windows-x64-cuda-12.4.zip` | CUDA 12.4 (`cudart` bundled) + portable CPU |
+| Windows x64 | `llama-turboquant-windows-x64-cuda-13.3.zip` | CUDA 13.3 (`cudart` bundled) + portable CPU |
+
+`turbo2` / `turbo3` / `turbo4` KV and `TQ3_1S` / `TQ4_1S` weights work on every
+backend per the table above; the Metal-only `TurboFlash` flash-attn decode
+kernel ships exclusively in the macOS arm64 archive. Windows CUDA archives
+bundle the matching `cudart64` / `cublas64` / `cublasLt64` runtime DLLs, so no
+system CUDA Toolkit install is required.
+
 For combining TurboQuant KV with **Gemma 4 MTP speculative decoding**, see
 [MTP.md §11-12](MTP.md). The matrix bench shows that the combo
 (`turbo3` KV + MTP) is the right pick when the target model is bandwidth-bound

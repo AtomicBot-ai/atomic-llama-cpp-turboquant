@@ -254,7 +254,7 @@ uint32_t llama_hparams::n_embd_head_v_mla() const {
 
 bool llama_hparams::has_kv(uint32_t il) const {
     if (kv_only_nextn) {
-        return n_layer_nextn > 0 && il >= (n_layer - n_layer_nextn);
+        return n_layer_nextn > 0 && il >= (n_layer() - n_layer_nextn);
     }
 
     if (n_layer_kv_from_start >= 0) {
