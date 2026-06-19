@@ -151,9 +151,6 @@ struct llama_vocab {
 
     const std::vector<llama_token> & get_suppress_tokens() const;
 
-
-    const std::vector<llama_token> & get_suppress_tokens() const;
-
     int max_token_len() const;
 
     int find_bpe_rank(const std::string & token_left, const std::string & token_right) const;
