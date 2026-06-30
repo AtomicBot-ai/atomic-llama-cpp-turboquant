@@ -135,7 +135,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release\build\bin | Out-Null
           Copy-Item .\build\bin\Release\* release\build\bin\ -Recurse -Force
           Copy-Item .\LICENSE release\build\bin\ -ErrorAction SilentlyContinue
-          Compress-Archive -Path release\build\bin\* -DestinationPath llama-turboquant-windows-x64-${{ matrix.variant }}.zip -Force
+          Compress-Archive -Path release\build -DestinationPath llama-turboquant-windows-x64-${{ matrix.variant }}.zip -Force
           Get-Item llama-turboquant-windows-x64-${{ matrix.variant }}.zip | Select-Object Name, Length | Format-Table -AutoSize
 
       - name: Upload artifact
