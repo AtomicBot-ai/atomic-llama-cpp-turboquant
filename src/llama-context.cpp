@@ -6,6 +6,7 @@
 #include "llama-impl.h"
 #include "llama-batch.h"
 #include "llama-io.h"
+#include "llama-kv-cache.h"
 #include "llama-memory.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
@@ -332,6 +333,23 @@ llama_context::llama_context(
         };
 
         memory.reset(model.create_memory(params_mem, cparams));
+
+        // Delta KV cache: enable post-processing filter (video-compression-style delta quantization)
+        if (params.delta_kv) {
+            auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+            if (kv) {
+                kv->delta_kv.enabled = true;
+                kv->delta_kv.kf_interval = params.delta_kv_interval > 0 ? params.delta_kv_interval : 32;
+#if defined(GGML_USE_CUDA) || defined(GGML_USE_HIP)
+                const bool gpu_ok = kv->delta_kv.init_gpu(0);
+                LLAMA_LOG_INFO("%s: delta KV cache enabled (kf_interval = %d, GPU = %s)\n",
+                        __func__, kv->delta_kv.kf_interval, gpu_ok ? "yes" : "no, CPU fallback");
+#else
+                LLAMA_LOG_INFO("%s: delta KV cache enabled (kf_interval = %d, CPU fallback)\n",
+                        __func__, kv->delta_kv.kf_interval);
+#endif
+            }
+        }
     }
 
     // init backends
@@ -1842,6 +1860,14 @@ int llama_context::decode(const llama_batch & batch_inp) {
         ggml_status status;
 
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
+
+        // Delta KV compression post-processing: apply delta filter to newly written KV entries
+        if (res) {
+            auto * kv_ctx = dynamic_cast<llama_kv_cache_context *>(mctx.get());
+            if (kv_ctx) {
+                kv_ctx->delta_kv_post_process();
+            }
+        }
 
         if (!res) {
             // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
@@ -3484,6 +3510,8 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
+        /*.delta_kv_interval           =*/ 32,
+        /*.delta_kv                    =*/ false,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
         /*.ctx_other                   =*/ nullptr,

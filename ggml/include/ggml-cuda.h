@@ -45,6 +45,26 @@ GGML_BACKEND_API void ggml_backend_cuda_unregister_host_buffer(void * buffer);
 
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_cuda_reg(void);
 
+// Delta KV cache: in-place delta compression on GPU KV cache tensors
+// Applies lossy delta compression filter: for each slot, computes delta from
+// reference, quantizes to Q4_0, dequantizes, and writes back to KV cache.
+// ref_buf: GPU buffer holding previous reconstructed values (F16, same layout as tensor)
+// ref_initialized: CPU-side flag array [kv_size] tracking which slots have references
+// slot_indices: CPU-side array of slot indices that were just written
+// kf_interval: keyframe interval (0 = all keyframes)
+// Returns: number of tokens processed, or -1 on error
+GGML_BACKEND_API int ggml_backend_cuda_delta_kv_filter(
+    struct ggml_tensor * kv_tensor,
+    void * ref_buf,
+    bool * ref_initialized,
+    const int64_t * slot_indices,
+    int n_tokens,
+    int kf_interval,
+    int * tokens_since_keyframe);
+
+GGML_BACKEND_API void * ggml_backend_cuda_delta_kv_alloc_ref(int device, size_t n_bytes);
+GGML_BACKEND_API void   ggml_backend_cuda_delta_kv_free_ref(void * ptr);
+
 #ifdef  __cplusplus
 }
 #endif

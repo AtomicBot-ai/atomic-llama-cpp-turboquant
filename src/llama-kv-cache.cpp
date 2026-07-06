@@ -3026,3 +3026,43 @@ void llama_kv_cache_context::set_input_k_rot(ggml_tensor * dst) const {
 void llama_kv_cache_context::set_input_v_rot(ggml_tensor * dst) const {
     kv->set_input_v_rot(dst);
 }
+
+// ============================================================================
+// Delta KV cache post-processing
+// ============================================================================
+
+void llama_kv_cache_context::delta_kv_post_process() {
+    if (!kv->delta_kv.enabled) return;
+    if (i_cur >= sinfos.size() || i_cur >= ubatches.size()) return;
+
+    kv->delta_kv_process(sinfos[i_cur], ubatches[i_cur].n_tokens);
+}
+
+void llama_kv_cache::delta_kv_process(const slot_info & sinfo, int n_tokens) {
+    if (!delta_kv.enabled || n_tokens == 0) return;
+
+    // Initialize delta processor on first use
+    if (delta_kv.n_processed == 0) {
+        const uint32_t n_embd_k = hparams.n_embd_k_gqa(layers[0].il);
+        const uint32_t n_embd_v = hparams.n_embd_v_gqa(layers[0].il);
+        delta_kv.init(n_embd_k, n_embd_v, get_size());
+    }
+
+    // Get slot indices from sinfo
+    if (sinfo.empty() || sinfo.idxs.empty() || sinfo.idxs[0].empty()) return;
+
+    // Convert uint32_t indices to int64_t for the processor
+    std::vector<int64_t> indices(sinfo.idxs[0].begin(), sinfo.idxs[0].end());
+
+    // Process each layer
+    for (size_t li = 0; li < layers.size(); li++) {
+        const auto & layer = layers[li];
+        if (layer.k) {
+            delta_kv.process(layer.k, indices.data(), n_tokens, (int)li, true);
+        }
+        if (layer.v && !v_trans) {
+            // Only process V if not transposed (standard layout for flash attention)
+            delta_kv.process(layer.v, indices.data(), n_tokens, (int)li, false);
+        }
+    }
+}

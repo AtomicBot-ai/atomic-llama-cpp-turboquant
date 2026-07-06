@@ -3,6 +3,7 @@
 #include "llama-batch.h"
 #include "llama-graph.h"
 #include "llama-kv-cells.h"
+#include "llama-kv-cache-delta.h"
 #include "llama-memory.h"
 
 #include <unordered_map>
@@ -208,6 +209,9 @@ public:
     // emplace the ubatch context into slot: [sinfo.idxs[0...ubatch.n_tokens - 1]]
     void apply_ubatch(const slot_info & sinfo, const llama_ubatch & ubatch);
 
+    // Delta KV: apply delta compression post-processing to newly written entries
+    void delta_kv_process(const slot_info & sinfo, int n_tokens);
+
     //
     // input API
     //
@@ -228,6 +232,9 @@ public:
 
     void set_input_k_rot(ggml_tensor * dst) const;
     void set_input_v_rot(ggml_tensor * dst) const;
+
+    // Delta KV cache post-processing filter (video-compression-style delta quantization)
+    llama_kv_cache_delta delta_kv;
 
 private:
     const llama_model & model;
@@ -382,6 +389,9 @@ public:
     //
 
     uint32_t get_n_kv() const;
+
+    // Delta KV: apply delta compression post-processing for the current ubatch
+    void delta_kv_post_process();
 
     ggml_type type_k() const;
     ggml_type type_v() const;

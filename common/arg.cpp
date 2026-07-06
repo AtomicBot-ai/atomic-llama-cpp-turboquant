@@ -2200,6 +2200,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
     add_opt(common_arg(
+        {"--delta-kv"},
+        "enable delta-quantized KV cache compression [EXPERIMENTAL]\n"
+        "reduces quantization error by encoding deltas between tokens instead of absolute values",
+        [](common_params & params) {
+            params.delta_kv = true;
+        }
+    ).set_env("LLAMA_ARG_DELTA_KV"));
+    add_opt(common_arg(
+        {"--delta-kv-interval"}, "N",
+        string_format("keyframe interval for delta KV compression (default: %d)", 32),
+        [](common_params & params, int value) {
+            params.delta_kv_interval = value;
+        }
+    ).set_env("LLAMA_ARG_DELTA_KV_INTERVAL"));
+    add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
         [](common_params & params) {
