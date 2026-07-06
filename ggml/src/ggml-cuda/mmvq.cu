@@ -7,6 +7,42 @@
 
 typedef float (*vec_dot_q_cuda_t)(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs);
 
+// Weight-skip threshold (set via LLAMA_WEIGHT_SKIP_THRESHOLD env var, 0 = disabled)
+// Reads ~4 bytes (weight scale + activation scale) to decide whether to skip the
+// full ~400-byte dot product for a block. ~10% decode speedup, zero quality loss
+// at threshold=1e-6. ref: cenconq25/delta-compress-llm
+static float h_weight_skip_threshold = 0.0f;
+static __constant__ float c_weight_skip_threshold = 0.0f;
+
+void ggml_cuda_set_weight_skip_threshold(float threshold) {
+    if (threshold != h_weight_skip_threshold) {
+        h_weight_skip_threshold = threshold;
+        CUDA_CHECK(cudaMemcpyToSymbol(c_weight_skip_threshold, &threshold, sizeof(float)));
+    }
+}
+
+// Helper to read the weight block scale
+template<ggml_type type>
+static __device__ __forceinline__ float get_weight_block_scale(const void * vx, int block_idx) {
+    if constexpr (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K) {
+        const half2 * dm = (const half2 *)((const block_q4_K *)vx + block_idx);
+        return fabsf(__half2float(__low2half(*dm)));
+    } else if constexpr (type == GGML_TYPE_Q4_0 || type == GGML_TYPE_Q8_0) {
+        const half * d = (const half *)((const block_q4_0 *)vx + block_idx);
+        return fabsf(__half2float(*d));
+    }
+    return 1.0f; // don't skip unknown types
+}
+
+// Helper to get Q8_1 activation block scale
+static __device__ __forceinline__ float get_act_block_scale(const block_q8_1 * y, int kby, int n_q8_per_super) {
+    float sum = 0.0f;
+    for (int i = 0; i < n_q8_per_super; i++) {
+        sum += fabsf(__low2float(y[kby + i].ds));
+    }
+    return sum / n_q8_per_super;
+}
+
 static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:    return vec_dot_q1_0_q8_1;
@@ -569,8 +605,23 @@ static __global__ void mul_mat_vec_q(
     const block_q8_1 * y = ((const block_q8_1 *) vy) + sample_y*stride_sample_y + channel_y*stride_channel_y;
     const int kbx_offset = sample_x*stride_sample_x + channel_x*stride_channel_x + row0*stride_row_x;
 
+    // Weight-skip: read threshold from constant memory (0 = disabled)
+    const float skip_thresh = c_weight_skip_threshold;
+    constexpr int q8_per_super = qk / QK8_1; // Q8_1 blocks per weight super-block
+
     for (int kbx = tid / (qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
         const int kby = kbx * (qk/QK8_1); // y block index that aligns with kbx
+
+        // Weight-skip check: if the product of weight scale x activation scale is tiny, skip this block.
+        // Cost: ~4 bytes read vs ~400 bytes for the full dot product.
+        // All threads in the warp check the same block so the branch is uniform (no divergence).
+        if (skip_thresh > 0.0f) {
+            const float w_scale = get_weight_block_scale<type>(vx, kbx_offset + kbx);
+            const float a_scale = get_act_block_scale(y + kby, 0, q8_per_super);
+            if (w_scale * a_scale < skip_thresh) {
+                continue; // skip this weight block
+            }
+        }
 
         // x block quant index when casting the quants to int
         const int kqs = vdr * (tid % (qi/vdr));

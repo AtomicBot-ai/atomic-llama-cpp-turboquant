@@ -365,6 +365,19 @@ static ggml_cuda_device_info ggml_cuda_init() {
 
 const ggml_cuda_device_info & ggml_cuda_info() {
     static ggml_cuda_device_info info = ggml_cuda_init();
+
+    // Weight-skip threshold: read env var once on first access (0 = disabled)
+    static bool weight_skip_init = false;
+    if (!weight_skip_init) {
+        weight_skip_init = true;
+        const char * env = getenv("LLAMA_WEIGHT_SKIP_THRESHOLD");
+        if (env) {
+            float threshold = std::atof(env);
+            ggml_cuda_set_weight_skip_threshold(threshold);
+            GGML_LOG_INFO("%s: weight-skip threshold = %g (LLAMA_WEIGHT_SKIP_THRESHOLD)\n", __func__, threshold);
+        }
+    }
+
     return info;
 }
 
