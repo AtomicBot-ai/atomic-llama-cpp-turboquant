@@ -431,10 +431,31 @@ extern "C" {
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_TURBO2_0 = 42, // TurboQuant 2-bit KV cache: WHT + 2-bit PolarQuant
         GGML_TYPE_TURBO3_0 = 43, // TurboQuant 3-bit KV cache: WHT + 3-bit PolarQuant
-        GGML_TYPE_TURBO4_0 = 44, // TurboQuant 4-bit KV cache: WHT + 4-bit PolarQuant
-        GGML_TYPE_TQ3_1S  = 45, // TurboQuant 3-bit weight: WHT-rotated 8-level Lloyd-Max, block_size=32
-        GGML_TYPE_TQ4_1S  = 46, // TurboQuant 4-bit weight: WHT-rotated 16-level Lloyd-Max, block_size=32
-        GGML_TYPE_COUNT   = 47,
+         GGML_TYPE_TURBO4_0 = 44, // TurboQuant 4-bit KV cache: WHT + 4-bit PolarQuant
+         GGML_TYPE_TQ3_1S  = 45, // TurboQuant 3-bit weight: WHT-rotated 8-level Lloyd-Max, block_size=32
+         GGML_TYPE_TQ4_1S  = 46, // TurboQuant 4-bit weight: WHT-rotated 16-level Lloyd-Max, block_size=32
+         GGML_TYPE_TURBO3_TCQ = 47, // TurboQuant 3-bit KV cache: TCQ (Trellis-Coded Quantization, k=3, L=9)
+         GGML_TYPE_TURBO2_TCQ = 48, // TurboQuant 2-bit KV cache: TCQ (Trellis-Coded Quantization, k=2, L=8, 256 states)
+         GGML_TYPE_Q6_0    = 49,
+         // IQK quant types (ik_llama.cpp extended IQ formats)
+         GGML_TYPE_IQ1_BN  = 134,
+         GGML_TYPE_IQ2_BN  = 135,
+         GGML_TYPE_IQ2_K   = 137,
+         GGML_TYPE_IQ3_K   = 138,
+         GGML_TYPE_IQ4_K   = 139,
+         GGML_TYPE_IQ5_K   = 140,
+         GGML_TYPE_IQ6_K   = 141,
+         GGML_TYPE_IQ4_KS  = 144,
+         GGML_TYPE_IQ2_KS  = 145,
+         GGML_TYPE_IQ4_KSS = 146,
+         GGML_TYPE_IQ5_KS  = 152,
+         GGML_TYPE_IQ2_KT  = 153,
+         GGML_TYPE_IQ3_KT  = 154,
+         GGML_TYPE_IQ4_KT  = 155,
+         GGML_TYPE_IQ3_KS  = 156,
+         GGML_TYPE_IQ2_KL  = 157,
+         GGML_TYPE_IQ1_KT  = 158,
+         GGML_TYPE_COUNT   = 159,
     };
 
     // precision

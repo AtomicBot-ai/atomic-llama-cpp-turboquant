@@ -5585,6 +5585,8 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_TURBO3_0:
         case GGML_TYPE_TURBO4_0:
         case GGML_TYPE_TURBO2_0:
+        case GGML_TYPE_TURBO3_TCQ:
+        case GGML_TYPE_TURBO2_TCQ:
             // WHT-rotated / TurboQuant types: just validate scales are not NaN/Inf
             // TODO: add more thorough validation if needed
             break;

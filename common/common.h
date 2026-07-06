@@ -175,6 +175,10 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V, // self-speculative decoding with n-gram keys and 4 m-gram values
     COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
     COMMON_SPECULATIVE_TYPE_NGRAM_CACHE,   // self-speculative decoding with 3-level n-gram cache
+    COMMON_SPECULATIVE_TYPE_SUFFIX,        // model-free suffix tree speculative decoding
+    COMMON_SPECULATIVE_TYPE_COPYSPEC,      // model-free copy-from-context speculative decoding
+    COMMON_SPECULATIVE_TYPE_RECYCLE,       // model-free token recycling (adjacency matrix)
+    COMMON_SPECULATIVE_TYPE_DFLASH,        // DFlash block-diffusion speculative decoding (alias for DRAFT_DFLASH)
     COMMON_SPECULATIVE_TYPE_COUNT          // number of types, unknown type
 };
 
@@ -379,13 +383,37 @@ struct common_params_speculative {
 
     common_params_speculative_ngram_cache ngram_cache;
 
+    // adaptive draft-max controller
+    enum common_speculative_dm_controller {
+        COMMON_SPECULATIVE_DM_CONTROLLER_FRINGE,
+        COMMON_SPECULATIVE_DM_CONTROLLER_PROFIT,
+    };
+    bool    dm_adaptive         = true;  // enable adaptive draft-max
+    float   dm_fringe_min       = 0.30f; // fringe below this turns DFlash off after off-dwell
+    float   dm_fringe_max       = 0.50f; // fringe above this restores full base n_max
+    int32_t dm_min_reach        = 3;     // fringe: min current-epoch samples before promotion
+    int32_t dm_probe_interval   = 16;    // cycles to wait before probing at n_max=0
+    float   dm_probe_fraction   = 0.25f; // fraction of base n_max to use as probe when disabled
+    int32_t dm_fringe_window    = 3;     // fringe: trailing positions to average over
+    common_speculative_dm_controller dm_controller = COMMON_SPECULATIVE_DM_CONTROLLER_PROFIT;
+    float   dm_profit_min          = 0.05f;
+    float   dm_profit_raise_margin = 0.05f;
+    float   dm_profit_lower_margin = 0.05f;
+    float   dm_profit_ewma_alpha   = 0.15f;
+    int32_t dm_profit_min_samples  = 3;
+    int32_t dm_profit_warmup       = 0;
+    int32_t dm_profit_baseline_interval = 1024;
+
+    // suffix tree speculative decoding
+    int32_t suffix_max_depth    = 64;   // maximum depth of suffix tree
+
     bool has_dft() const {
         return !draft.mparams.empty();
     }
 
     uint32_t need_n_rs_seq() const {
         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_SUFFIX || t == COMMON_SPECULATIVE_TYPE_COPYSPEC || t == COMMON_SPECULATIVE_TYPE_RECYCLE || t == COMMON_SPECULATIVE_TYPE_DFLASH;
         });
 
         return needs_rs_seq ? draft.n_max : 0u;
@@ -424,6 +452,23 @@ enum common_reasoning_format {
     // do not extend this enum unless you absolutely have to
     // in most cases, use COMMON_REASONING_FORMAT_AUTO
     // see: https://github.com/ggml-org/llama.cpp/pull/15408
+};
+
+// reasoning loop guard (detect and break repetitive hidden reasoning output)
+enum common_reasoning_loop_guard_mode {
+    COMMON_REASONING_LOOP_GUARD_OFF,
+    COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE,
+    COMMON_REASONING_LOOP_GUARD_STOP,
+};
+
+struct common_reasoning_loop_guard_params {
+    common_reasoning_loop_guard_mode mode = COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE;
+    int32_t min_reasoning_tokens   = 1024;
+    int32_t window_tokens          = 2048;
+    int32_t max_period             = 512;
+    int32_t min_repeated_coverage  = 768;
+    int32_t check_interval         = 32;
+    int32_t interventions_max      = 1;
 };
 
 
@@ -637,6 +682,7 @@ struct common_params {
     bool force_pure_content_parser = false;
     common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
     int enable_reasoning = -1; // -1 = auto, 0 = disable, 1 = enable
+    common_reasoning_loop_guard_params reasoning_loop_guard;
     bool prefill_assistant = true; // if true, any trailing assistant message will be prefilled into the response
     int sleep_idle_seconds = -1;   // if >0, server will sleep after this many seconds of idle time
 

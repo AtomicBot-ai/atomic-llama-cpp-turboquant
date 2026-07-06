@@ -100,6 +100,8 @@ add_library(${TARGET}
     sampling.h
     speculative.cpp
     speculative.h
+    suffix-tree.cpp
+    suffix-tree.h
     unicode.cpp
     unicode.h
     jinja/lexer.cpp

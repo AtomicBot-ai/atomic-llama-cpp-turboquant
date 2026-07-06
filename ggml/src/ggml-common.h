@@ -115,6 +115,9 @@ typedef sycl::half2 ggml_half2;
 #define QI5_1 (QK5_1 / (4 * QR5_1))
 #define QR5_1 2
 
+#define QI6_0 (QK6_0 / (4 * QR6_0))
+#define QR6_0 2
+
 #define QI8_0 (QK8_0 / (4 * QR8_0))
 #define QR8_0 1
 
@@ -245,6 +248,14 @@ typedef struct {
 } block_q8_0;
 static_assert(sizeof(block_q8_0) == sizeof(ggml_half) + QK8_0, "wrong q8_0 block size/padding");
 
+#define QK6_0 32
+typedef struct {
+    ggml_half d;         // delta
+    uint8_t   qh[QK6_0 / 4];  // upper two bits of quants
+    uint8_t   qs[QK6_0 / 2];  // lower four bits of quants
+} block_q6_0;
+static_assert(sizeof(block_q6_0) == sizeof(ggml_half) + QK6_0 / 2 + QK6_0 / 4, "wrong q6_0 block size/padding");
+
 #define QK8_1 32
 typedef struct {
     GGML_EXTENSION union {
@@ -343,6 +354,30 @@ typedef struct {
     uint8_t    qs[QK_TURBO2 / 4];      //  8 bytes: 2-bit indices (4 per byte)
 } block_turbo2_0;                       // 10 bytes total
 static_assert(sizeof(block_turbo2_0) == sizeof(ggml_half) + QK_TURBO2/4, "wrong turbo2_0 block size/padding");
+
+// TurboQuant 3-bit TCQ: Trellis-Coded Quantization (right-shift bitshift trellis, k=3, L=9)
+// One block = one 128-element rotation group. Bitstream: 6 zero-prefix + 128*3-bit outputs = 390 bits = 49 bytes.
+// Decode: state_t = read_9_bits(qs, t*3), recon_t = codebook[state_t] * norm
+// Stored struct size is 52 bytes per 128 values = 3.25 bits/value -> 4.92x storage compression vs fp16
+#define QK_TURBO3_TCQ 128
+typedef struct {
+    ggml_half  norm;                    //  2 bytes: corrected group L2 norm
+    uint8_t    qs[49];                  // 49 bytes: 390-bit trellis bitstream (2 padding bits)
+    uint8_t    pad;                     //  1 byte:  alignment padding
+} block_turbo3_tcq;                     // 52 bytes total for 128 values (3.25 bpv)
+static_assert(sizeof(block_turbo3_tcq) == sizeof(ggml_half) + 50, "wrong turbo3_tcq block size/padding");
+
+// TurboQuant 2-bit TCQ: Trellis-Coded Quantization (right-shift bitshift trellis, k=2, L=8)
+// One block = one 128-element rotation group. Bitstream: 6 prefix + 128*2-bit outputs = 262 bits = 33 bytes.
+// Decode: state_t = read_8_bits(qs, t*2), recon_t = codebook[state_t] * norm
+// Stored struct size is 36 bytes per 128 values = 2.25 bits/value -> 7.11x storage compression vs fp16
+#define QK_TURBO2_TCQ 128
+typedef struct {
+    ggml_half  norm;                    //  2 bytes: corrected group L2 norm
+    uint8_t    qs[33];                  // 33 bytes: 262-bit trellis bitstream (2 padding bits)
+    uint8_t    pad;                     //  1 byte:  alignment padding
+} block_turbo2_tcq;                     // 36 bytes total for 128 values (2.25 bpv)
+static_assert(sizeof(block_turbo2_tcq) == sizeof(ggml_half) + 34, "wrong turbo2_tcq block size/padding");
 
 // TQ3_1S: WHT-rotated 3-bit weight quantization (8-level Lloyd-Max for N(0,1))
 // Block size 32, dual half-block scales (d0 for [0..15], d1 for [16..31])
@@ -539,6 +574,106 @@ typedef struct {
     uint8_t  qs[QK_K/2];
 } block_iq4_xs;
 static_assert(sizeof(block_iq4_xs) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/64 + QK_K/2, "wrong iq4_xs block size/padding");
+
+// IQK extended quant types (ik_llama.cpp)
+#define QK_IQ1BN 64
+typedef struct {
+    uint8_t ql[12];
+    uint8_t extra;
+} block_iq1_bn;
+static_assert(sizeof(block_iq1_bn) == 13, "wrong iq1_bn block size/padding");
+
+#define QK_IQ2BN 64
+typedef struct {
+    uint8_t qs[QK_IQ2BN/4];
+} block_iq2_bn;
+static_assert(sizeof(block_iq2_bn) == QK_IQ2BN/4, "wrong iq2_bn block size/padding");
+
+typedef struct {
+    uint8_t  scales[QK_K/32];
+    uint8_t  qs[QK_K/2];
+} block_iq4_ks;
+static_assert(sizeof(block_iq4_ks) == QK_K/32 + QK_K/2, "wrong iq4_ks block size/padding");
+
+typedef struct {
+    uint32_t qs[QK_K/8];
+} block_iq4_kss;
+static_assert(sizeof(block_iq4_kss) == QK_K/8*sizeof(uint32_t), "wrong iq4_kss block size/padding");
+
+typedef struct {
+    ggml_half d;
+    uint16_t extra;
+    uint8_t  scales[QK_K/32];
+    uint8_t  qs[QK_K/4];
+} block_iq2_k;
+static_assert(sizeof(block_iq2_k) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/32 + QK_K/4, "wrong iq2_k block size/padding");
+
+typedef struct {
+    uint16_t scales_h;
+    uint8_t  scales_l[QK_K/64];
+    uint8_t  qs[QK_K/4];
+    uint8_t  qh[QK_K/16];
+} block_iq2_kl;
+static_assert(sizeof(block_iq2_kl) == sizeof(uint16_t) + QK_K/64 + QK_K/4 + QK_K/16, "wrong iq2_kl block size/padding");
+
+typedef struct {
+    uint16_t extra;
+    uint8_t  scales[QK_K/64];
+    uint8_t  qs[QK_K/4];
+} block_iq2_ks;
+static_assert(sizeof(block_iq2_ks) == sizeof(uint16_t) + QK_K/64 + QK_K/4, "wrong iq2_ks block size/padding");
+
+typedef struct {
+    uint8_t  sh[QK_K/32];
+    uint8_t  ql[QK_K/8];
+    uint8_t  qh[QK_K/16];
+} block_iq1_kt;
+static_assert(sizeof(block_iq1_kt) == QK_K/8 + QK_K/16 + QK_K/32, "wrong iq1_kt block size/padding");
+
+typedef struct {
+    uint8_t  scales[QK_K/64];
+    uint8_t  ql[QK_K/4];
+} block_iq2_kt;
+static_assert(sizeof(block_iq2_kt) == QK_K/4 + QK_K/64, "wrong iq2_kt block size/padding");
+
+typedef struct {
+    uint8_t  scales[QK_K/64];
+    uint8_t  ql[QK_K/4];
+    uint8_t  qh[QK_K/8];
+} block_iq3_kt;
+static_assert(sizeof(block_iq3_kt) == QK_K/4 + QK_K/8 + QK_K/64, "wrong iq3_kt block size/padding");
+
+typedef struct {
+    uint32_t qs[QK_K/8];
+} block_iq4_kt;
+static_assert(sizeof(block_iq4_kt) == QK_K/2, "wrong iq4_kt block size/padding");
+
+typedef struct {
+    ggml_half d;
+    uint16_t extra;
+    uint16_t scales_h;
+    uint8_t scales_l[QK_K/32];
+    uint8_t qs[QK_K/4];
+    uint8_t qh[QK_K/8];
+} block_iq3_k;
+static_assert(sizeof(block_iq3_k) == sizeof(ggml_half) + 2*sizeof(uint16_t) + QK_K/32 + QK_K/4 + QK_K/8, "wrong iq3_k block size/padding");
+
+typedef struct {
+    uint16_t extra;
+    uint8_t scales[QK_K/64];
+    uint8_t qs[QK_K/4];
+    uint8_t qh[QK_K/8];
+} block_iq3_ks;
+static_assert(sizeof(block_iq3_ks) == sizeof(uint16_t) + QK_K/64 + QK_K/4 + QK_K/8, "wrong iq3_ks block size/padding");
+
+typedef struct {
+    ggml_half d;
+    uint16_t extra;
+    uint8_t  scales_h[QK_K/64];
+    uint8_t  scales_l[QK_K/32];
+    uint8_t  qs[QK_K/2];
+} block_iq4_k;
+static_assert(sizeof(block_iq4_k) == sizeof(ggml_half) + sizeof(uint16_t) + QK_K/2 + 3*QK_K/64, "wrong iq4_k block size/padding");
 
 #endif // GGML_COMMON_DECL
 #endif // GGML_COMMON_DECL

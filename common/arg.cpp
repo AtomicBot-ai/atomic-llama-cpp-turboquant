@@ -310,6 +310,8 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_TURBO2_0,
     GGML_TYPE_TURBO3_0,
     GGML_TYPE_TURBO4_0,
+    GGML_TYPE_TURBO3_TCQ,
+    GGML_TYPE_TURBO2_TCQ,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
@@ -4305,6 +4307,48 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             //params.speculative.ngram_map_k4v.min_hits = 2;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
+    // reasoning loop guard
+    add_opt(common_arg(
+        {"--reasoning-loop-guard"}, "MODE",
+        string_format("reasoning loop guard mode: off, force-close, or stop (default: force-close)"),
+        [](common_params & params, const std::string & value) {
+            if (value == "off")         params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_OFF;
+            else if (value == "force-close") params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_FORCE_CLOSE;
+            else if (value == "stop")   params.reasoning_loop_guard.mode = COMMON_REASONING_LOOP_GUARD_STOP;
+            else throw std::invalid_argument("invalid reasoning-loop-guard, expected one of: off, force-close, stop");
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--reasoning-loop-min-tokens"}, "N",
+        string_format("minimum hidden reasoning tokens before loop checks (default: %d)", params.reasoning_loop_guard.min_reasoning_tokens),
+        [](common_params & params, int value) { params.reasoning_loop_guard.min_reasoning_tokens = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--reasoning-loop-window"}, "N",
+        string_format("token tail window for reasoning loop checks (default: %d)", params.reasoning_loop_guard.window_tokens),
+        [](common_params & params, int value) { params.reasoning_loop_guard.window_tokens = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--reasoning-loop-max-period"}, "N",
+        string_format("maximum periodic loop length to check (default: %d)", params.reasoning_loop_guard.max_period),
+        [](common_params & params, int value) { params.reasoning_loop_guard.max_period = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--reasoning-loop-min-coverage"}, "N",
+        string_format("minimum repeated token coverage before loop trigger (default: %d)", params.reasoning_loop_guard.min_repeated_coverage),
+        [](common_params & params, int value) { params.reasoning_loop_guard.min_repeated_coverage = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--reasoning-loop-check-interval"}, "N",
+        string_format("accepted-token interval between loop checks (default: %d)", params.reasoning_loop_guard.check_interval),
+        [](common_params & params, int value) { params.reasoning_loop_guard.check_interval = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--reasoning-loop-interventions"}, "N",
+        string_format("maximum force-close interventions before stop (default: %d)", params.reasoning_loop_guard.interventions_max),
+        [](common_params & params, int value) { params.reasoning_loop_guard.interventions_max = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
 
     return ctx_arg;
 }
