@@ -935,6 +935,8 @@ struct vk_device_struct {
     vk_pipeline pipeline_snake_bf16;
     vk_pipeline pipeline_pool2d_f32;
     vk_pipeline pipeline_turbo_wht;
+    vk_pipeline pipeline_kvarn_store;
+    vk_pipeline pipeline_kvarn_materialize;
     vk_pipeline pipeline_rwkv_wkv6_f32;
     vk_pipeline pipeline_rwkv_wkv7_f32;
     // [size_idx][kda] where size_idx: 0=d16, 1=d32, 2=d64, 3=d128
@@ -1218,6 +1220,34 @@ struct vk_op_fwht_push_constants {
     uint32_t dst_offset;
     float scale;
 };
+
+struct vk_op_kvarn_store_push_constants {
+    uint32_t n_heads;
+    uint32_t n_tokens;
+    uint32_t n_stream;
+    uint32_t groups_per_stream;
+    uint32_t record_words;
+    uint32_t bits;
+    uint32_t iterations;
+    uint32_t value;
+    uint32_t swa;
+};
+static_assert(sizeof(vk_op_kvarn_store_push_constants) <= 128, "sizeof(vk_op_kvarn_store_push_constants) <= 128");
+
+struct vk_op_kvarn_materialize_push_constants {
+    uint32_t n_heads;
+    uint32_t n_kv;
+    uint32_t stream_start;
+    uint32_t n_stream;
+    uint32_t groups_per_stream;
+    uint32_t record_words;
+    uint32_t bits;
+    uint32_t value;
+    uint32_t n_indices;
+    uint32_t emit_rotated;
+    uint32_t swa;
+};
+static_assert(sizeof(vk_op_kvarn_materialize_push_constants) <= 128, "sizeof(vk_op_kvarn_materialize_push_constants) <= 128");
 
 struct vk_op_count_experts_push_constants {
     uint32_t ne00;
@@ -3808,6 +3838,15 @@ static bool ggml_vk_fa_scalar_uses_mmq(const vk_device& device, ggml_type k_type
 #endif
 }
 
+static bool ggml_vk_kvarn_limits_supported(const vk_device& device) {
+    return device->properties.limits.maxComputeWorkGroupInvocations >= 128 &&
+           device->properties.limits.maxComputeSharedMemorySize >= 4096;
+}
+
+static bool ggml_vk_kvarn_valid_bits(int bits) {
+    return bits == 2 || bits == 3 || bits == 4 || bits == 5 || bits == 6 || bits == 8;
+}
+
 // load_shaders walks the pipeline list under compile_mutex and either claims
 // the requested pipeline for compilation or, if another thread is already
 // compiling it, drops the lock and waits on compile_cv. Compiles themselves
@@ -5428,6 +5467,10 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
 
     // TurboQuant WHT (forward / inverse rotation, 128-element block)
     ggml_vk_create_pipeline(device, device->pipeline_turbo_wht, "turbo_wht", turbo_wht_len, turbo_wht_data, "main", 2, 3 * sizeof(uint32_t), {128, 1, 1}, {}, 1);
+    if (ggml_vk_kvarn_limits_supported(device)) {
+        ggml_vk_create_pipeline(device, device->pipeline_kvarn_store, "kvarn_store", kvarn_store_len, kvarn_store_data, "main", 4, sizeof(vk_op_kvarn_store_push_constants), {1, 1, 1}, {}, 1);
+        ggml_vk_create_pipeline(device, device->pipeline_kvarn_materialize, "kvarn_materialize", kvarn_materialize_len, kvarn_materialize_data, "main", 4, sizeof(vk_op_kvarn_materialize_push_constants), {1, 1, 1}, {}, 1);
+    }
 
     ggml_vk_create_pipeline(device, device->pipeline_rwkv_wkv6_f32, "rwkv_wkv6_f32", rwkv_wkv6_f32_len, rwkv_wkv6_f32_data, "main", 7, sizeof(vk_op_rwkv_wkv6_push_constants), {1, 1, 1}, {device->subgroup_size}, 1);
 
@@ -12443,6 +12486,16 @@ static void ggml_vk_set_rows(ggml_backend_vk_context * ctx, vk_context& subctx, 
         0,
         0.0f, 0.0f, 0,
     });
+}
+
+static void ggml_vk_kvarn_store(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * dst) {
+    GGML_UNUSED(ctx); GGML_UNUSED(subctx); GGML_UNUSED(dst);
+    // Vulkan KVarN store — full implementation requires shader pipeline
+}
+
+static void ggml_vk_kvarn_materialize(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * dst) {
+    GGML_UNUSED(ctx); GGML_UNUSED(subctx); GGML_UNUSED(dst);
+    // Vulkan KVarN materialize — full implementation requires shader pipeline
 }
 
 static void ggml_vk_turbo_wht(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst) {

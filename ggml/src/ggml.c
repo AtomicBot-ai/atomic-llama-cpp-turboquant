@@ -1126,6 +1126,8 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "SOLVE_TRI",
     "GATED_DELTA_NET",
     "TURBO_WHT",
+    "KVARN_STORE",
+    "KVARN_MATERIALIZE",
 
     "UNARY",
 
@@ -1143,7 +1145,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1255,7 +1257,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6376,6 +6378,81 @@ struct ggml_hash_set ggml_hash_set_new(size_t size) {
     result.used = GGML_CALLOC(ggml_bitset_size(size), sizeof(ggml_bitset_t));
     return result;
 }
+
+// ggml_kvarn_store
+
+static bool ggml_kvarn_valid_bits(int bits) {
+    return bits == 2 || bits == 3 || bits == 4 || bits == 5 || bits == 6 || bits == 8;
+}
+
+struct ggml_tensor * ggml_kvarn_store(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * current,
+        struct ggml_tensor  * indices,
+        struct ggml_tensor  * stage,
+        struct ggml_tensor  * records,
+        int                   bits,
+        int                   sinkhorn_iters,
+        bool                  value) {
+    GGML_ASSERT(current->type == GGML_TYPE_F32);
+    GGML_ASSERT(indices->type == GGML_TYPE_I64);
+    GGML_ASSERT(stage->type == GGML_TYPE_F16);
+    GGML_ASSERT(records->type == GGML_TYPE_I8);
+    GGML_ASSERT(current->ne[0] == 128);
+    GGML_ASSERT(stage->ne[0] == 128 && stage->ne[2] % 384 == 0);
+    GGML_ASSERT(current->ne[1] == stage->ne[1] && stage->ne[1] == records->ne[1]);
+    GGML_ASSERT(current->ne[2] == indices->ne[0]);
+    GGML_ASSERT(ggml_kvarn_valid_bits(bits) && sinkhorn_iters > 0);
+    const int64_t n_stream = stage->ne[2] / 384;
+    GGML_ASSERT(n_stream > 0 && records->ne[2] % n_stream == 0);
+
+    struct ggml_tensor * result = ggml_view_tensor(ctx, stage);
+    result->op = GGML_OP_KVARN_STORE;
+    result->src[0] = current;
+    result->src[1] = indices;
+    result->src[2] = stage;
+    result->src[3] = records;
+    ggml_set_op_params_i32(result, 0, bits);
+    ggml_set_op_params_i32(result, 1, sinkhorn_iters);
+    ggml_set_op_params_i32(result, 2, value ? 1 : 0);
+    return result;
+}
+
+// ggml_kvarn_materialize
+
+struct ggml_tensor * ggml_kvarn_materialize(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * records,
+        struct ggml_tensor  * stage_after_store,
+        struct ggml_tensor  * indices,
+        int                   n_kv,
+        int                   stream_start,
+        int                   n_stream,
+        int                   bits,
+        bool                  value) {
+    GGML_ASSERT(records->type == GGML_TYPE_I8);
+    GGML_ASSERT(stage_after_store->type == GGML_TYPE_F16);
+    GGML_ASSERT(indices->type == GGML_TYPE_I64);
+    GGML_ASSERT(stage_after_store->ne[0] == 128 && stage_after_store->ne[2] % 384 == 0);
+    GGML_ASSERT(stage_after_store->ne[1] == records->ne[1]);
+    GGML_ASSERT(n_kv > 0 && ggml_kvarn_valid_bits(bits));
+    const int64_t n_total_stream = stage_after_store->ne[2] / 384;
+    GGML_ASSERT(n_total_stream > 0 && records->ne[2] % n_total_stream == 0);
+    GGML_ASSERT(stream_start >= 0 && n_stream > 0);
+    GGML_ASSERT((int64_t) stream_start + n_stream <= n_total_stream);
+
+    struct ggml_tensor * result = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, 128, stage_after_store->ne[1], n_kv, n_stream);
+    result->op = GGML_OP_KVARN_MATERIALIZE;
+    result->src[0] = records;
+    result->src[1] = stage_after_store;
+    result->src[2] = indices;
+    ggml_set_op_params_i32(result, 0, bits);
+    ggml_set_op_params_i32(result, 1, value ? 1 : 0);
+    ggml_set_op_params_i32(result, 2, stream_start);
+    ggml_set_op_params_i32(result, 3, n_stream);
+    return result;
+}
+
 
 void ggml_hash_set_reset(struct ggml_hash_set * hash_set) {
     memset(hash_set->used, 0, sizeof(ggml_bitset_t) * ggml_bitset_size(hash_set->size));

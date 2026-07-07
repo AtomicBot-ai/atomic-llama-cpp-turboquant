@@ -3027,6 +3027,22 @@ void llama_kv_cache_context::set_input_v_rot(ggml_tensor * dst) const {
     kv->set_input_v_rot(dst);
 }
 
+void llama_kv_cache_context::set_input_k_idxs_backend(ggml_tensor * dst, const llama_ubatch * ubatch) const {
+    set_input_k_idxs(dst, ubatch);
+}
+
+void llama_kv_cache_context::set_input_v_idxs_backend(ggml_tensor * dst, const llama_ubatch * ubatch) const {
+    set_input_v_idxs(dst, ubatch);
+}
+
+void llama_kv_cache_context::set_input_k_rot_backend(ggml_tensor * dst) const {
+    set_input_k_rot(dst);
+}
+
+void llama_kv_cache_context::set_input_v_rot_backend(ggml_tensor * dst) const {
+    set_input_v_rot(dst);
+}
+
 // ============================================================================
 // Delta KV cache post-processing
 // ============================================================================
@@ -3065,4 +3081,40 @@ void llama_kv_cache::delta_kv_process(const slot_info & sinfo, int n_tokens) {
             delta_kv.process(layer.v, indices.data(), n_tokens, (int)li, false);
         }
     }
+}
+
+bool llama_kv_cache::seq_rm_cell(llama_seq_id seq_id, uint32_t cell_idx) {
+    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+
+    auto & cells = v_cells[seq_to_stream[seq_id]];
+    auto & head  = v_heads[seq_to_stream[seq_id]];
+
+    if (cells.seq_rm_cell(cell_idx, seq_id)) {
+        if (cell_idx < head) {
+            head = cell_idx;
+        }
+    }
+
+    return true;
+}
+
+int llama_kv_cache::cells_at_pos(llama_seq_id seq_id, llama_pos pos, uint32_t * cell_indices, int n_max) {
+    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+
+    const auto & cells = v_cells[seq_to_stream[seq_id]];
+    auto result = cells.cells_at(seq_id, pos);
+
+    if (cell_indices && n_max > 0) {
+        int n_copied = std::min((int)result.size(), n_max);
+        for (int i = 0; i < n_copied; ++i) {
+            cell_indices[i] = result[i];
+        }
+    }
+
+    return (int)result.size();
+}
+
+uint32_t llama_kv_cache::get_stream_for_seq(llama_seq_id seq_id) const {
+    GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+    return seq_to_stream[seq_id];
 }

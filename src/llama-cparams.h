@@ -47,6 +47,16 @@ struct llama_cparams {
     bool kv_unified;
     bool pipeline_parallel;
 
+    llama_kvarn_params kvarn = {
+        /*.type                =*/ LLAMA_KVARN_TYPE_DISABLED,
+        /*.key_bits            =*/ 0,
+        /*.value_bits          =*/ 0,
+        /*.group               =*/ 128,
+        /*.sinkhorn_iters      =*/ 16,
+        /*.sink_tokens         =*/ 128,
+        /*.fail_if_unsupported =*/ true,
+    };
+
     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
 
     enum llama_context_type ctx_type;

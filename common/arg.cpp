@@ -323,12 +323,78 @@ static ggml_type kv_cache_type_from_str(const std::string & s) {
     throw std::runtime_error("Unsupported cache type: " + s);
 }
 
-static std::string get_all_kv_cache_types() {
+static std::string get_all_kv_cache_types(bool include_kvarn_pseudo_types = false) {
     std::ostringstream msg;
     for (const auto & type : kv_cache_types) {
         msg << ggml_type_name(type) << (&type == &kv_cache_types.back() ? "" : ", ");
     }
+    if (include_kvarn_pseudo_types) {
+        msg << ", kvarn2, kvarn3, kvarn4, kvarn5, kvarn6, kvarn8";
+    }
     return msg.str();
+}
+
+static int32_t kvarn_bits_from_cache_type(const std::string & value) {
+    if (value == "kvarn2") {
+        return 2;
+    }
+    if (value == "kvarn3") {
+        return 3;
+    }
+    if (value == "kvarn4") {
+        return 4;
+    }
+    if (value == "kvarn5") {
+        return 5;
+    }
+    if (value == "kvarn6") {
+        return 6;
+    }
+    if (value == "kvarn8") {
+        return 8;
+    }
+    return 0;
+}
+
+static llama_kvarn_type kvarn_type_from_bits(int32_t key_bits, int32_t value_bits) {
+    return llama_kvarn_type_from_name(string_format("kvarn_k%dv%d_g128", key_bits, value_bits).c_str());
+}
+
+// layers that cannot use structured KVarN records (e.g. iSWA SWA layers) fall back to a
+// normal KV cache with cache_type_k/v; match the requested KVarN bit width instead of
+// f16 so the fallback layers do not dominate memory use
+static ggml_type kvarn_fallback_cache_type(int32_t bits) {
+    switch (bits) {
+        case 2:  return GGML_TYPE_Q2_0;
+        case 3:  return GGML_TYPE_Q3_0;
+        case 4:  return GGML_TYPE_Q4_0;
+        case 5:  return GGML_TYPE_Q5_0;
+        case 6:  return GGML_TYPE_Q6_0;
+        case 8:  return GGML_TYPE_Q8_0;
+        default: return GGML_TYPE_F16;
+    }
+}
+
+static void parse_target_cache_type(common_params & params, bool key, const std::string & value) {
+    const int32_t kvarn_bits = kvarn_bits_from_cache_type(value);
+    if (kvarn_bits != 0) {
+        if (key) {
+            params.cache_kvarn_bits_k = kvarn_bits;
+            params.cache_type_k       = kvarn_fallback_cache_type(kvarn_bits);
+        } else {
+            params.cache_kvarn_bits_v = kvarn_bits;
+            params.cache_type_v       = kvarn_fallback_cache_type(kvarn_bits);
+        }
+        return;
+    }
+
+    if (key) {
+        params.cache_kvarn_bits_k = 0;
+        params.cache_type_k       = kv_cache_type_from_str(value);
+    } else {
+        params.cache_kvarn_bits_v = 0;
+        params.cache_type_v       = kv_cache_type_from_str(value);
+    }
 }
 
 static bool parse_bool_value(const std::string & value) {
@@ -583,6 +649,44 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
 // CLI argument parsing functions
 //
 
+static void common_params_kvarn_normalize(common_params & params) {
+    int32_t key_bits   = params.cache_kvarn_bits_k;
+    int32_t value_bits = params.cache_kvarn_bits_v;
+
+    if (key_bits == 0 && value_bits == 0) {
+        return;
+    }
+
+    if (key_bits == 0) {
+        LOG_WRN("warning: --cache-type-v uses KVarN but --cache-type-k is %s; forcing K to kvarn%d
+",
+                ggml_type_name(params.cache_type_k), value_bits);
+        key_bits = value_bits;
+    } else if (value_bits == 0) {
+        LOG_WRN("warning: --cache-type-k uses KVarN but --cache-type-v is %s; forcing V to kvarn%d
+",
+                ggml_type_name(params.cache_type_v), key_bits);
+        value_bits = key_bits;
+    }
+
+    const llama_kvarn_type type = kvarn_type_from_bits(key_bits, value_bits);
+    if (type == LLAMA_KVARN_TYPE_INVALID) {
+        throw std::invalid_argument(string_format(
+            "invalid KVarN cache type combination: kvarn%d/kvarn%d", key_bits, value_bits));
+    }
+
+    params.kvarn = llama_kvarn_params_for_type(type);
+
+    params.cache_kvarn_bits_k = key_bits;
+    params.cache_kvarn_bits_v = value_bits;
+    params.cache_type_k       = kvarn_fallback_cache_type(key_bits);
+    params.cache_type_v       = kvarn_fallback_cache_type(value_bits);
+
+    if (params.grp_attn_n != 1) {
+        throw std::invalid_argument("KVarN does not support Self-Extend/group attention; use --grp-attn-n 1");
+    }
+}
+
 static bool common_params_parse_ex(int argc, char ** argv, common_params_context & ctx_arg) {
     common_params & params = ctx_arg.params;
 
@@ -703,6 +807,7 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
 
     postprocess_cpu_params(params.speculative.draft.cpuparams,       &params.cpuparams);
     postprocess_cpu_params(params.speculative.draft.cpuparams_batch, &params.cpuparams_batch);
+    common_params_kvarn_normalize(params);
 
     if (params.prompt_cache_all && (params.interactive || params.interactive_first)) {
         throw std::invalid_argument("error: --prompt-cache-all not supported in interactive mode yet\n");

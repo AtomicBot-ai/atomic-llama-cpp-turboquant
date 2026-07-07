@@ -5742,6 +5742,24 @@ void ggml_compute_forward_clamp(
             {
                 GGML_ABORT("fatal error");
             }
+        case GGML_TYPE_Q6_0:
+        case GGML_TYPE_IQ1_BN:
+        case GGML_TYPE_IQ2_BN:
+        case GGML_TYPE_IQ2_K:
+        case GGML_TYPE_IQ3_K:
+        case GGML_TYPE_IQ4_K:
+        case GGML_TYPE_IQ5_K:
+        case GGML_TYPE_IQ6_K:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ4_KSS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ2_KT:
+        case GGML_TYPE_IQ3_KT:
+        case GGML_TYPE_IQ4_KT:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ2_KL:
+        case GGML_TYPE_IQ1_KT:
         case GGML_TYPE_TURBO3_TCQ:
         case GGML_TYPE_TURBO2_TCQ:
             {
@@ -11655,3 +11673,355 @@ void ggml_compute_forward_fwht(const ggml_compute_params * params, ggml_tensor *
             }
     }
 }
+
+
+// ggml_compute_forward_kvarn_store / ggml_compute_forward_kvarn_materialize
+
+static void kvarn_cpu_hadamard(float * values) {
+    for (int stride = 1; stride < 128; stride *= 2) {
+        for (int base = 0; base < 128; base += 2 * stride) {
+            for (int i = 0; i < stride; ++i) {
+                const float a = values[base + i];
+                const float b = values[base + stride + i];
+                values[base + i] = a + b;
+                values[base + stride + i] = a - b;
+            }
+        }
+    }
+    constexpr float inv_sqrt_128 = 0.08838834764831845f;
+    for (int i = 0; i < 128; ++i) {
+        values[i] *= inv_sqrt_128;
+    }
+}
+
+static float kvarn_cpu_sample_std(const float * values, int stride) {
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    for (int i = 0; i < 128; ++i) {
+        const double value = values[i * stride];
+        sum += value;
+        sum_sq += value * value;
+    }
+    const double mean = sum / 128.0;
+    return float(std::sqrt(std::max(0.0, (sum_sq - 128.0 * mean * mean) / 127.0)));
+}
+
+static float kvarn_cpu_imbalance(const std::vector<float> & tile) {
+    float col_min = std::numeric_limits<float>::infinity();
+    float col_max = 0.0f;
+    float row_min = std::numeric_limits<float>::infinity();
+    float row_max = 0.0f;
+    for (int c = 0; c < 128; ++c) {
+        const float value = kvarn_cpu_sample_std(tile.data() + c, 128);
+        col_min = std::min(col_min, value);
+        col_max = std::max(col_max, value);
+    }
+    for (int r = 0; r < 128; ++r) {
+        const float value = kvarn_cpu_sample_std(tile.data() + r * 128, 1);
+        row_min = std::min(row_min, value);
+        row_max = std::max(row_max, value);
+    }
+    return col_max / std::max(col_min, 1e-8f) + row_max / std::max(row_min, 1e-8f);
+}
+
+static void kvarn_cpu_variance_normalize(
+        const std::vector<float> & tile,
+        int iterations,
+        std::vector<float> & balanced,
+        std::array<float, 128> & s_col_best,
+        std::array<float, 128> & s_row_best) {
+    std::array<float, 128> log_s_col = {};
+    std::array<float, 128> log_s_row = {};
+    std::vector<float> cur = tile;
+    s_col_best.fill(1.0f);
+    s_row_best.fill(1.0f);
+    float imbalance_best = kvarn_cpu_imbalance(cur);
+
+    auto rebuild = [&]() {
+        for (int r = 0; r < 128; ++r) {
+            const float sr = std::exp(log_s_row[r]);
+            for (int c = 0; c < 128; ++c) {
+                cur[r * 128 + c] = tile[r * 128 + c] / (std::exp(log_s_col[c]) * sr);
+            }
+        }
+    };
+
+    for (int iter = 0; iter < iterations; ++iter) {
+        for (int c = 0; c < 128; ++c) {
+            const float std = std::clamp(kvarn_cpu_sample_std(cur.data() + c, 128), 1e-3f, 1e3f);
+            log_s_col[c] = std::clamp(log_s_col[c] + std::log(std), -0.3f, 10.0f);
+        }
+        rebuild();
+        for (int r = 0; r < 128; ++r) {
+            const float std = std::clamp(kvarn_cpu_sample_std(cur.data() + r * 128, 1), 1e-3f, 1e3f);
+            log_s_row[r] = std::clamp(log_s_row[r] + std::log(std), -0.3f, 10.0f);
+        }
+        rebuild();
+
+        const float imbalance = kvarn_cpu_imbalance(cur);
+        if (imbalance <= imbalance_best) {
+            imbalance_best = imbalance;
+            for (int i = 0; i < 128; ++i) {
+                s_col_best[i] = std::exp(log_s_col[i]);
+                s_row_best[i] = std::exp(log_s_row[i]);
+            }
+        }
+    }
+
+    balanced.resize(128 * 128);
+    for (int r = 0; r < 128; ++r) {
+        for (int c = 0; c < 128; ++c) {
+            balanced[r * 128 + c] = tile[r * 128 + c] / (s_col_best[c] * s_row_best[r]);
+        }
+    }
+}
+
+static void kvarn_cpu_pack(const std::vector<uint8_t> & values, int bits, uint8_t * payload) {
+    const size_t payload_bytes = (values.size() * size_t(bits) + 7) / 8;
+    memset(payload, 0, payload_bytes);
+    for (size_t i = 0; i < values.size(); ++i) {
+        const size_t bit_offset = i * size_t(bits);
+        for (int bit = 0; bit < bits; ++bit) {
+            const size_t dst_bit = bit_offset + size_t(bit);
+            payload[dst_bit / 8] |= uint8_t(((values[i] >> bit) & 1u) << (dst_bit % 8));
+        }
+    }
+}
+
+static uint8_t kvarn_cpu_unpack(const uint8_t * payload, int index, int bits) {
+    uint8_t value = 0;
+    const size_t bit_offset = size_t(index) * size_t(bits);
+    for (int bit = 0; bit < bits; ++bit) {
+        const size_t src_bit = bit_offset + size_t(bit);
+        value |= uint8_t(((payload[src_bit / 8] >> (src_bit % 8)) & 1u) << bit);
+    }
+    return value;
+}
+
+static void kvarn_cpu_quantize_stage(
+        const ggml_tensor * stage,
+        int64_t head,
+        int64_t stage_base,
+        int64_t stage_slot,
+        int bits,
+        int iterations,
+        bool value,
+        uint8_t * record) {
+    std::vector<float> tile(128 * 128);
+    for (int t = 0; t < 128; ++t) {
+        for (int d = 0; d < 128; ++d) {
+            const int64_t stage_pos = stage_base + stage_slot * 128 + t;
+            const char * ptr = (const char *) stage->data + d * stage->nb[0] + head * stage->nb[1] + stage_pos * stage->nb[2];
+            const float x = ggml_fp16_to_fp32(*(const ggml_fp16_t *) ptr);
+            tile[value ? t * 128 + d : d * 128 + t] = x;
+        }
+    }
+
+    std::vector<float> balanced;
+    std::array<float, 128> s_col;
+    std::array<float, 128> s_row;
+    kvarn_cpu_variance_normalize(tile, iterations, balanced, s_col, s_row);
+
+    const size_t payload_bytes = (size_t(128) * 128 * bits + 7) / 8;
+    const size_t scale_axis_off = payload_bytes;
+    const size_t zp_axis_off = scale_axis_off + 128 * sizeof(ggml_fp16_t);
+    const size_t other_axis_off = zp_axis_off + 128 * sizeof(ggml_fp16_t);
+    std::vector<uint8_t> q(128 * 128);
+    const int qmax = (1 << bits) - 1;
+    for (int r = 0; r < 128; ++r) {
+        const auto begin = balanced.begin() + r * 128;
+        const auto end = begin + 128;
+        const float lo = *std::min_element(begin, end);
+        const float hi = *std::max_element(begin, end);
+        const float scale = std::max((hi - lo) / qmax, 1e-10f);
+        for (int c = 0; c < 128; ++c) {
+            q[r * 128 + c] = uint8_t(std::clamp(std::round((balanced[r * 128 + c] - lo) / scale), 0.0f, float(qmax)));
+        }
+        const ggml_fp16_t scale_fp16 = ggml_fp32_to_fp16(s_row[r] * scale);
+        const ggml_fp16_t zp_fp16 = ggml_fp32_to_fp16(s_row[r] * lo);
+        memcpy(record + scale_axis_off + r * sizeof(scale_fp16), &scale_fp16, sizeof(scale_fp16));
+        memcpy(record + zp_axis_off + r * sizeof(zp_fp16), &zp_fp16, sizeof(zp_fp16));
+    }
+    for (int i = 0; i < 128; ++i) {
+        const ggml_fp16_t other_fp16 = ggml_fp32_to_fp16(s_col[i]);
+        memcpy(record + other_axis_off + i * sizeof(other_fp16), &other_fp16, sizeof(other_fp16));
+    }
+    kvarn_cpu_pack(q, bits, record);
+}
+
+static float kvarn_cpu_record_value(const uint8_t * record, int bits, bool value, int token, int dim) {
+    const size_t payload_bytes = (size_t(128) * 128 * bits + 7) / 8;
+    const size_t scale_axis_off = payload_bytes;
+    const size_t zp_axis_off = scale_axis_off + 128 * sizeof(ggml_fp16_t);
+    const size_t other_axis_off = zp_axis_off + 128 * sizeof(ggml_fp16_t);
+    const int row = value ? token : dim;
+    const int col = value ? dim : token;
+    ggml_fp16_t scale_fp16;
+    ggml_fp16_t zp_fp16;
+    ggml_fp16_t other_fp16;
+    memcpy(&scale_fp16, record + scale_axis_off + row * sizeof(scale_fp16), sizeof(scale_fp16));
+    memcpy(&zp_fp16, record + zp_axis_off + row * sizeof(zp_fp16), sizeof(zp_fp16));
+    memcpy(&other_fp16, record + other_axis_off + col * sizeof(other_fp16), sizeof(other_fp16));
+    const float scale = ggml_fp16_to_fp32(scale_fp16);
+    const float zp = ggml_fp16_to_fp32(zp_fp16);
+    const float other = ggml_fp16_to_fp32(other_fp16);
+    const uint8_t q = kvarn_cpu_unpack(record, row * 128 + col, bits);
+    return (float(q) * scale + zp) * other;
+}
+
+void ggml_compute_forward_kvarn_store(const ggml_compute_params * params, ggml_tensor * dst) {
+    if (params->ith != 0) {
+        return;
+    }
+
+    const ggml_tensor * current = dst->src[0];
+    const ggml_tensor * indices = dst->src[1];
+    ggml_tensor * stage = dst->src[2];
+    ggml_tensor * records = dst->src[3];
+    const int bits = ggml_get_op_params_i32(dst, 0);
+    const int iterations = ggml_get_op_params_i32(dst, 1);
+    const bool value = ggml_get_op_params_i32(dst, 2) != 0;
+    // SWA sliding-window ring mode: records form a circular buffer of
+    // groups_per_stream tiles (single stream); the index carries the absolute
+    // token position, there is no permanent group-0 sink, and the fp16 staging
+    // is a 3-deep ping-pong over the most recent tiles.
+    const bool swa = ggml_get_op_params_i32(dst, 4) != 0;
+    const int64_t n_heads = current->ne[1];
+    const int64_t n_tokens = current->ne[2];
+    const int64_t * idx_data = (const int64_t *) indices->data;
+    const int64_t n_stream = stage->ne[2] / 384;
+    const int64_t groups_per_stream = records->ne[2] / n_stream;
+
+    for (int64_t t = 0; t < n_tokens; ++t) {
+        const int64_t idx = idx_data[t];
+        GGML_ASSERT(idx >= 0);
+        const int64_t group_global = idx / 128;
+        const int64_t pos = idx % 128;
+        const int64_t stream = swa ? 0 : group_global / groups_per_stream;
+        const int64_t group = swa ? group_global : group_global - stream * groups_per_stream;
+        GGML_ASSERT(stream >= 0 && stream < n_stream);
+        if (!swa) {
+            GGML_ASSERT(group >= 0 && group < groups_per_stream);
+        }
+
+        const int64_t stage_base = stream * 384;
+
+        if (pos == 0 && (swa ? group >= 2 : group > 2)) {
+            const int64_t flush_group = group - 2;
+            const int64_t flush_ring = swa ? flush_group % groups_per_stream : flush_group;
+            const int64_t flush_slot = swa ? flush_group % 3 : 1 + ((flush_group - 1) & 1);
+            const int64_t flush_record_group = stream * groups_per_stream + flush_ring;
+            for (int64_t h = 0; h < n_heads; ++h) {
+                uint8_t * record = (uint8_t *) records->data + h * records->nb[1] + flush_record_group * records->nb[2];
+                kvarn_cpu_quantize_stage(stage, h, stage_base, flush_slot, bits, iterations, value, record);
+            }
+        }
+
+        const int64_t stage_slot = swa ? group % 3 : (group == 0 ? 0 : 1 + ((group - 1) & 1));
+        const int64_t stage_pos = stage_base + stage_slot * 128 + pos;
+        for (int64_t h = 0; h < n_heads; ++h) {
+            float rotated[128];
+            for (int d = 0; d < 128; ++d) {
+                const char * src = (const char *) current->data + d * current->nb[0] + h * current->nb[1] + t * current->nb[2];
+                rotated[d] = *(const float *) src;
+            }
+            kvarn_cpu_hadamard(rotated);
+            for (int d = 0; d < 128; ++d) {
+                char * out = (char *) stage->data + d * stage->nb[0] + h * stage->nb[1] + stage_pos * stage->nb[2];
+                *(ggml_fp16_t *) out = ggml_fp32_to_fp16(rotated[d]);
+            }
+        }
+    }
+}
+
+void ggml_compute_forward_kvarn_materialize(const ggml_compute_params * params, ggml_tensor * dst) {
+    const ggml_tensor * records = dst->src[0];
+    const ggml_tensor * stage = dst->src[1];
+    const ggml_tensor * indices = dst->src[2];
+    const int bits = ggml_get_op_params_i32(dst, 0);
+    const bool value = ggml_get_op_params_i32(dst, 1) != 0;
+    const int64_t stream_start = ggml_get_op_params_i32(dst, 2);
+    const int64_t n_stream = ggml_get_op_params_i32(dst, 3);
+    const bool emit_rotated = ggml_get_op_params_i32(dst, 5) != 0;
+    // SWA sliding-window ring mode (single stream): the indices tensor carries
+    // one absolute token position per output cell (idx < 0 marks an empty window
+    // cell). Records are a circular buffer (slot = group % groups_per_stream);
+    // the two newest tiles live in the 3-deep fp16 staging ping-pong; there is
+    // no permanent group-0 sink.
+    const bool swa = ggml_get_op_params_i32(dst, 6) != 0;
+    const int64_t n_heads = dst->ne[1];
+    const int64_t n_kv = dst->ne[2];
+    const int64_t * idx_data = (const int64_t *) indices->data;
+    const int64_t n_total_stream = stage->ne[2] / 384;
+    const int64_t groups_per_stream = records->ne[2] / n_total_stream;
+    std::vector<int64_t> live_groups(n_stream, 0);
+    for (int64_t i = 0; i < indices->ne[0]; ++i) {
+        const int64_t idx = idx_data[i];
+        if (idx < 0) {
+            GGML_ASSERT(swa); // only SWA window cells may be empty
+            continue;
+        }
+        const int64_t group_global = idx / 128;
+        if (swa) {
+            live_groups[0] = std::max(live_groups[0], group_global);
+        } else {
+            const int64_t stream = group_global / groups_per_stream;
+            if (stream >= stream_start && stream < stream_start + n_stream) {
+                const int64_t group = group_global - stream * groups_per_stream;
+                live_groups[stream - stream_start] = std::max(live_groups[stream - stream_start], group);
+            }
+        }
+    }
+
+    const int64_t n_work = n_kv * n_stream;
+    const int64_t t0 = n_work * params->ith / params->nth;
+    const int64_t t1 = n_work * (params->ith + 1) / params->nth;
+    for (int64_t w = t0; w < t1; ++w) {
+        const int64_t out_stream = w / n_kv;
+        const int64_t stream = stream_start + out_stream;
+        const int64_t live_group = live_groups[out_stream];
+        const int64_t cell = w - out_stream * n_kv;
+        const int64_t abs_pos = swa ? idx_data[cell] : cell;
+        const int64_t group = abs_pos / 128;
+        const int64_t pos = abs_pos % 128;
+        const int64_t stage_base = stream * 384;
+        for (int64_t h = 0; h < n_heads; ++h) {
+            float rotated[128] = {};
+            bool from_stage;
+            bool from_record;
+            int64_t stage_pos = 0;
+            int64_t record_group = 0;
+            if (swa) {
+                from_stage  = group >= live_group - 1 && group <= live_group;
+                from_record = !from_stage && group >= 0 && group < live_group - 1 &&
+                              (live_group - group) < groups_per_stream;
+                stage_pos    = stage_base + (group % 3) * 128 + pos;
+                record_group = stream * groups_per_stream + (group % groups_per_stream);
+            } else {
+                from_stage  = group == 0 || (group > 0 && group <= live_group && group + 1 >= live_group);
+                from_record = !from_stage && group < live_group;
+                stage_pos    = stage_base + (group == 0 ? pos : 128 + ((group - 1) & 1) * 128 + pos);
+                record_group = stream * groups_per_stream + group;
+            }
+            if (from_stage) {
+                for (int d = 0; d < 128; ++d) {
+                    const char * src = (const char *) stage->data + d * stage->nb[0] + h * stage->nb[1] + stage_pos * stage->nb[2];
+                    rotated[d] = ggml_fp16_to_fp32(*(const ggml_fp16_t *) src);
+                }
+            } else if (from_record) {
+                const uint8_t * record = (const uint8_t *) records->data + h * records->nb[1] + record_group * records->nb[2];
+                for (int d = 0; d < 128; ++d) {
+                    rotated[d] = kvarn_cpu_record_value(record, bits, value, pos, d);
+                }
+            }
+            if (!emit_rotated) {
+                kvarn_cpu_hadamard(rotated);
+            }
+            for (int d = 0; d < 128; ++d) {
+                char * out = (char *) dst->data + d * dst->nb[0] + h * dst->nb[1] + cell * dst->nb[2] + out_stream * dst->nb[3];
+                *(ggml_fp16_t *) out = ggml_fp32_to_fp16(rotated[d]);
+            }
+        }
+    }
+}
+

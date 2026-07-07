@@ -632,9 +632,22 @@ struct common_params {
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
+    int32_t cache_kvarn_bits_k = 0; // KVarN pseudo cache type bits from --cache-type-k (0 = disabled)
+    int32_t cache_kvarn_bits_v = 0; // KVarN pseudo cache type bits from --cache-type-v (0 = disabled)
+
     // Delta KV cache: video-compression-style delta quantization (EXPERIMENTAL)
     bool   delta_kv           = false; // enable delta-quantized KV cache compression
     int32_t delta_kv_interval = 32;    // keyframe interval for delta KV (0 = every token is keyframe)
+
+    llama_kvarn_params kvarn = {
+        /*.type                =*/ LLAMA_KVARN_TYPE_DISABLED,
+        /*.key_bits            =*/ 0,
+        /*.value_bits          =*/ 0,
+        /*.group               =*/ 128,
+        /*.sinkhorn_iters      =*/ 16,
+        /*.sink_tokens         =*/ 128,
+        /*.fail_if_unsupported =*/ true,
+    };
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 

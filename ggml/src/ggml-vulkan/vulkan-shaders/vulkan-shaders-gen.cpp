@@ -825,6 +825,8 @@ void process_shaders() {
 
     // TurboQuant Walsh-Hadamard Transform op (Q forward + kqv inverse rotation)
     string_to_spv("turbo_wht", "turbo_wht.comp", {});
+    string_to_spv("kvarn_store", "kvarn_store.comp", {});
+    string_to_spv("kvarn_materialize", "kvarn_materialize.comp", {});
 
     auto get_type_str = [](bool f16) {
         return f16 ? "float16_t" : "float";
