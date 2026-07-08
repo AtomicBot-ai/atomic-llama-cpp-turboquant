@@ -355,6 +355,12 @@ extern "C" {
     // Enable/disable offloading only active experts for MoE models
     GGML_API void                 ggml_backend_sched_set_only_active_experts(ggml_backend_sched_t sched, bool on_or_off);
 
+    // Set the maximum extra allocation for graph splits (0 = unlimited, in bytes)
+    GGML_API void                 ggml_backend_sched_set_max_extra_alloc(ggml_backend_sched_t sched, size_t max_extra_alloc);
+
+    // Enable graph-level split mode with optional async scheduling
+    GGML_API void                 ggml_backend_sched_set_split_mode_graph(ggml_backend_sched_t sched, bool on_or_off, bool async);
+
     // Set a callback to be called for each resulting node during graph compute
     GGML_API void                 ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data);
 

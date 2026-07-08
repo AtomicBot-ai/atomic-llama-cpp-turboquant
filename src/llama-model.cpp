@@ -2345,6 +2345,7 @@ llama_model_params llama_model_default_params() {
         /*.no_alloc                    =*/ false,
         /*.merge_up_gate_exps          =*/ false,
         /*.defer_experts               =*/ false,
+        /*.max_extra_alloc             =*/ 256,
     };
 
     return result;

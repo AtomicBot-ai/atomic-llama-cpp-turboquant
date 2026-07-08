@@ -54,6 +54,7 @@ struct llama_context {
     //   - changing attention type
     //   - etc.
     void sched_reserve();
+    void llama_repack_up_gate_exps();
 
     void synchronize();
 

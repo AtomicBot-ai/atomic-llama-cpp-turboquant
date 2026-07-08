@@ -10,6 +10,70 @@
 
 LLM inference in C/C++
 
+## Major Changes (this fork)
+
+> **`llama-cpp-ultimate`** is an advanced fork of [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) (based on the [Atomic llama.cpp](https://github.com/AtomicBot-ai/llama.cpp) lineage) that adds significant performance, compression, and model-support features beyond upstream. Below is a summary of the fork's major additions.
+
+| Feature | Description | Status |
+|---|---|---|
+| **TurboQuant KV Cache** | WHT-rotated low-bit KV cache (`turbo2`/`turbo3`/`turbo4`) with Metal `TurboFlash`, CUDA, Vulkan, HIP native kernels. Up to ~6.4× compression vs F16. | ✅ Stable |
+| **TurboQuant Weight Compression** | `TQ3_1S` / `TQ4_1S` WHT-rotated Lloyd-Max weight quantization (block_size=32) with fused backend kernels. | ✅ Stable |
+| **Gemma 4 MTP Speculative Decoding** | Multi-Token Prediction with async depth-2 pipeline, in-graph argmax, centroid LM head support. +30-50 % short-prompt throughput. | ✅ Stable |
+| **Qwen 3.6 NextN Speculative Decoding** | Shared-model auxiliary-head drafting — no second mmap, no second tokenizer. +24-36 % tps on MoE targets. | ✅ Stable |
+| **Delta-KV Cache Compression** | Delta-compressed KV cache for additional memory savings on long contexts. | ✅ Beta |
+| **Weight-Skip Prediction** | CUDA MMVQ kernel optimization (`cenconq25`) for selective weight computation skipping. | ✅ Beta |
+| **DFlash Draft** | New draft model architecture for speculative decoding (alternative to MTP / NextN). | ✅ New |
+| **Laguna Model Architecture** | Full model support (`LagunaForCausalLM`) including Hugging Face converter, chat parser with tool-call & reasoning. | ✅ Stable |
+| **Multimodal + Spec Decode** | `--mmproj` can be loaded **alongside** `mtp` / `nextn` / `eagle3` speculative decoding on a single slot. | ✅ Stable |
+| **Vulkan TurboQuant FA** | Fused TurboQuant K/V dequant into Vulkan flash attention (coopmat path). | ✅ Stable |
+| **Server Loop Guard** | Production-grade server watchdog for fault-tolerant long-running deployments. | ✅ Stable |
+| **Slot Cache-Key Binding** | Server slot binding by cache key for deterministic prompt-cache reuse. | ✅ Stable |
+| **Windows x64 Release CI** | Automated builds with CUDA 12.4 / 13.3 and Vulkan backends, bundled runtime DLLs. | ✅ Stable |
+| **Pre-built Binary Archives** | Self-contained `llama-server` releases for macOS (Metal), Linux (Vulkan), Windows (CPU/Vulkan/CUDA). | ✅ Stable |
+| **Hugging Face Cache Migration** | `-hf` downloads stored in standard HF cache directory, shareable with other HF tools. | ✅ Stable |
+| **KVarN Structured KV Cache** | BeeLlama-style structured KV quantization (K×V×G128 tiles) with Sinkhorn optimization. Up to 8-bit K+V joint storage. | ✅ Beta |
+| **Smart Expert Reduction** | `--smart-expert-reduction` dynamically reduces active MoE experts based on routing confidence threshold. | ✅ Beta |
+| **Per-Op Offload Policy** | `--offload-policy` fine-grained control over which ggml ops stay on GPU vs CPU. | ✅ Beta |
+| **Reasoning Loop Guard** | Production-grade server watchdog that detects and breaks repetitive hidden reasoning output loops. | ✅ Stable |
+| **Adaptive Draft-Max Controller** | Profit-margin or fringe-based dynamic control of speculative draft length (C API / `common_params`; no CLI flags yet). | ✅ Beta |
+| **New Speculative Types** | Suffix-tree, CopySpec, Token-Recycle, and DFlash block-diffusion speculative decoding modes. | ✅ New |
+| **New Model Architectures** | Minimax-M3, BitNet2, DeepSeek4 (DSv4), Gemma4 MTP assistant, DFlash Draft model support. | ✅ New |
+| **Defer Experts / Active-Only MoE** | `--defer-experts` speeds up model loading; `--no-offload-only-active-experts` reduces VRAM transfers for MoE. | ✅ Beta |
+
+### Quick feature overview
+
+```bash
+# TurboQuant KV compression (3-bit, ~4.3× vs F16)
+llama-server -m model.gguf -c 32768 -ngl 99 -ctk turbo3 -ctv turbo3 -fa on
+
+# Gemma 4 MTP speculative decoding
+llama-server -m gemma-4-target.gguf --mtp-head gemma-4-assistant.gguf --spec-type mtp
+
+# Qwen 3.6 NextN speculative decoding (shared-model)
+llama-server -m qwen36-mtp.gguf -md qwen36-mtp.gguf --spec-type nextn --draft-max 2
+
+# Delta-KV cache compression (long contexts)
+llama-server -m model.gguf -c 128000 --delta-kv on
+
+# KVarN structured KV cache (K8V8 G128 tiles, Sinkhorn-optimized)
+llama-server -m model.gguf -c 32768 -ctk kvarn8 -ctv kvarn8
+
+# Smart expert reduction for MoE models
+llama-server -m moe-model.gguf -ser 4,0.1 -no-ooae
+
+# Reasoning loop guard (prevents infinite thinking loops)
+llama-server -m model.gguf --reasoning-loop-guard force-close
+
+# Per-op offload policy (fine-grained GPU offload control)
+llama-server -m model.gguf -op 26,0
+
+# Defer experts for faster MoE model loading (Linux only)
+llama-server -m moe-model.gguf --defer-experts
+```
+
+For detailed documentation see the dedicated feature files:
+**[MTP.md](MTP.md)** · **[NEXTN.md](NEXTN.md)** · **[TURBOQUANT_UPSTREAM_MERGE.md](TURBOQUANT_UPSTREAM_MERGE.md)** · **[docs/speculative.md](docs/speculative.md)**
+
 ## Recent API changes
 
 - [Changelog for `libllama` API](https://github.com/ggml-org/llama.cpp/issues/9289)
@@ -589,6 +653,252 @@ Instructions for adding support for new models: [HOWTO-add-model.md](docs/develo
 </details>
 
 
+## KVarN — Structured KV Cache (BeeLlama-style)
+
+> **Credits.** KVarN is ported from the [BeeLlama](https://github.com/lee-beeai/llama-cpp-beeai) fork.
+> It stores K/V pairs as structured 128-token tiles with a fixed bit-width per dimension,
+> using Sinkhorn iterative optimization for joint K+V quantization.
+
+KVarN is a structured KV cache format that compresses K and V **jointly** in groups of 128 tokens.
+Unlike per-channel quantized KV caches (`q8_0`, `turbo3`, etc.), KVarN stores a single
+**packed K×V tile** for every 128 tokens — "block-compressed" KV that still allows
+random-access reads during flash attention. Supports CUDA and CPU backends.
+
+### Supported presets (`--cache-type-k` / `--cache-type-v`)
+
+Both `-ctk` and `-ctv` accept KVarN pseudo-types: `kvarn2`, `kvarn3`, `kvarn4`, `kvarn5`, `kvarn6`, `kvarn8`.
+
+```bash
+# K8V8 — highest quality, ~2× compression vs F16
+llama-server -m model.gguf -c 32768 -ctk kvarn8 -ctv kvarn8
+
+# K6V6 — balanced quality/speed
+llama-server -m model.gguf -c 32768 -ctk kvarn6 -ctv kvarn6
+
+# K4V4 — aggressive compression
+llama-server -m model.gguf -c 32768 -ctk kvarn4 -ctv kvarn4
+
+# K2V2 — maximum compression
+llama-server -m model.gguf -c 65536 -ctk kvarn2 -ctv kvarn2
+```
+
+### Limitations
+
+- Self-Extend / group attention (`--grp-attn-n`) is not supported — requires `--grp-attn-n 1`.
+- Layers that cannot use KVarN tiles (e.g. SWA layers) fall back to a normal KV cache with matching bit-width.
+- Validated on `qwen35` / `qwen35moe` and `deepseek4` architectures.
+
+### Knobs
+
+- `LLAMA_ARG_CACHE_TYPE_K` / `LLAMA_ARG_CACHE_TYPE_V` — env-var overrides for K/V cache pseudo-types.
+- Sinkhorn iterations and sink tokens are auto-tuned; override via C API `llama_kvarn_params`.
+
+---
+
+## Delta-KV Cache Compression
+
+> **Credits.** Delta-KV is ported from [cenconq25/delta-compress-llm](https://github.com/cenconq25/delta-compress-llm).
+> It applies video-compression-style delta encoding to the KV cache — storing only the
+> **residual** (delta) between a token and its keyframe instead of the absolute value.
+
+Delta-KV reduces KV cache quantization error on long contexts by periodically storing
+a full-precision **keyframe** and encoding subsequent tokens as the difference (delta)
+from that keyframe. Enabled with `--delta-kv`; the keyframe interval is tunable:
+
+```bash
+# Enable delta-KV (default: keyframe every 32 tokens)
+llama-server -m model.gguf -c 128000 --delta-kv
+
+# Custom keyframe interval (every 64 tokens)
+llama-server -m model.gguf -c 128000 --delta-kv --delta-kv-interval 64
+
+# Every token is a keyframe (disables delta compression)
+llama-server -m model.gguf -c 128000 --delta-kv --delta-kv-interval 0
+```
+
+### Knobs
+
+| Flag | Description | Default |
+|---|---|---|
+| `--delta-kv` | Enable delta-quantized KV cache compression | `off` |
+| `--delta-kv-interval N` | Keyframe interval (0 = every token is keyframe) | `32` |
+
+Environment variables: `LLAMA_ARG_DELTA_KV` (set to any value to enable), `LLAMA_ARG_DELTA_KV_INTERVAL`.
+
+---
+
+## Server Loop Guard — Reasoning Loop Detection
+
+> **Credits.** Originally contributed via the Atomic llama.cpp server hardening branch.
+> The server loop guard is a production-grade watchdog that detects and breaks
+> repetitive hidden reasoning outputs (e.g. DeepSeek-R1 style `<think>` loops).
+
+When a reasoning model enters an infinite `<think>` loop, the loop guard detects
+repeating token patterns and either inserts a `<｜end▁of▁thinking｜>` force-close tag or
+stops generation entirely. Configurable via CLI and server API:
+
+```bash
+# Enable loop guard with force-close strategy (default)
+llama-server -m model.gguf --reasoning-loop-guard force-close
+
+# Stop generation on loop detection
+llama-server -m model.gguf --reasoning-loop-guard stop
+
+# Disable loop guard
+llama-server -m model.gguf --reasoning-loop-guard off
+```
+
+### Knobs
+
+| Flag | Description | Default |
+|---|---|---|
+| `--reasoning-loop-guard MODE` | `off`, `force-close`, or `stop` | `force-close` |
+| `--reasoning-loop-min-tokens N` | Min hidden reasoning tokens before checks | `1024` |
+| `--reasoning-loop-window N` | Tail-window size for loop checks | `2048` |
+| `--reasoning-loop-max-period N` | Max periodic loop length to detect | `512` |
+| `--reasoning-loop-min-coverage N` | Min repeated-token coverage to trigger | `768` |
+| `--reasoning-loop-check-interval N` | Accepted-token interval between checks | `32` |
+| `--reasoning-loop-interventions N` | Max force-close attempts before stop | `1` |
+
+---
+
+## MoE Optimization Tools
+
+### Smart Expert Reduction (`-ser` / `--smart-expert-reduction`)
+
+Dynamically reduces the number of active Mixture-of-Experts based on routing
+confidence. When the router's top-1 probability exceeds `THRESH`, only `MIN`
+experts are activated instead of all.
+
+```bash
+# Activate at least 4 experts, threshold 0.1 (10%)
+llama-server -m moe-model.gguf -ser 4,0.1
+```
+
+### Defer Expert Mmap (`--defer-experts`)
+
+Speeds up model loading for MoE models by deferring expert tensor mmap residency
+until first access (Linux only). Automatically disables `--warmup`.
+
+```bash
+llama-server -m large-moe-model.gguf --defer-experts
+```
+
+### Offload Only Active Experts (`-no-ooae`)
+
+When enabled (default: on), only the currently-active expert tensors are
+offloaded to GPU, reducing VRAM transfers. Disable with `-no-ooae` to
+pre-offload all experts.
+
+```bash
+# Disable active-only expert offload (offload all experts)
+llama-server -m moe-model.gguf -no-ooae
+```
+
+### Merge Up-Gate Experts (`-muge` / `--merge-up-gate-experts`)
+
+Merges `ffn_up_exps` and `ffn_gate_exps` into a single contiguous tensor for
+better memory locality.
+
+```bash
+llama-server -m moe-model.gguf -muge
+```
+
+### Per-Op Offload Policy (`-op` / `--offload-policy`)
+
+Fine-grained control over which ggml operations stay on GPU vs CPU.
+Pass comma-separated `OP,ON_OFF` pairs; use `-1,0` to disable all offload.
+
+```bash
+# Disable MUL_MAT (op 26) offload, keep everything else
+llama-server -m model.gguf -op 26,0
+
+# Disable all op offload
+llama-server -m model.gguf -op -1,0
+```
+
+---
+
+## Adaptive Draft-Max Controller
+
+Dynamically adjusts speculative draft length (`--draft-max`) based on acceptance
+rate. Two controller strategies are implemented via the `common_params_speculative`
+struct fields (C API / programmatic use; **no CLI flags yet**):
+
+- **`profit`** — profit-margin controller: raises `draft_max` when
+  acceptance is high, lowers when low.
+- **`fringe`** — DFlash-specific fringe controller: disables drafting when
+  acceptance drops below threshold, probes periodically.
+
+### Configuration (C API / `common_params`)
+
+```cpp
+// common_params_speculative fields (from common/common.h)
+params.speculative.dm_adaptive         = true;
+params.speculative.dm_controller       = COMMON_SPECULATIVE_DM_CONTROLLER_PROFIT;
+// profit-specific knobs (defaults shown):
+params.speculative.dm_profit_min          = 0.05f;
+params.speculative.dm_profit_raise_margin = 0.05f;
+params.speculative.dm_profit_lower_margin = 0.05f;
+params.speculative.dm_profit_ewma_alpha   = 0.15f;
+params.speculative.dm_profit_min_samples  = 3;
+// fringe-specific knobs (defaults shown):
+params.speculative.dm_fringe_min       = 0.30f;
+params.speculative.dm_fringe_max       = 0.50f;
+params.speculative.dm_fringe_window    = 3;
+```
+
+> **Note:** CLI flags (`--dm-adaptive`, `--dm-controller`, `--dm-profit-*`,
+> `--dm-fringe-*`) are **not yet implemented**. Set these fields
+> programmatically via the `common_params` struct for now.
+
+---
+
+## New Speculative Decoding Types
+
+This fork adds four new model-free speculative decoding strategies beyond
+classical draft-model and MTP/NextN:
+
+| Type | `--spec-type` | Description |
+|---|---|---|
+| **Suffix Tree** | `suffix` | Model-free suffix-tree speculative decoding. Configure max depth with `--suffix-max-depth` (default: 64). |
+| **CopySpec** | `copyspec` | Copy-from-context speculative decoding — reuses token sequences already present in the prompt. |
+| **Token Recycle** | `recycle` | Adjacency-matrix token recycling — predicts next tokens from token-pair statistics. |
+| **DFlash** | `dflash` | Block-diffusion speculative decoding (DFlash Draft model). Alias for `--spec-type draft-dflash`. |
+
+All four types automatically enable `--spec-type` + `--draft-max` / `--draft-min`
+with reasonable defaults. They require no draft model.
+
+```bash
+# Suffix-tree speculative decoding
+llama-server -m model.gguf --spec-type suffix --suffix-max-depth 64
+
+# CopySpec — reuse context tokens
+llama-server -m model.gguf --spec-type copyspec
+
+# DFlash block-diffusion
+llama-server -m model.gguf --spec-type dflash
+```
+
+---
+
+## New Model Architectures
+
+This fork adds support for several new model architectures beyond upstream:
+
+| Architecture | File | Description |
+|---|---|---|
+| **Minimax-M3** | `src/models/minimax-m3.cpp` | MiniMax-M3 model architecture with SwiGLU + hybrid attention. |
+| **BitNet2** | `src/models/bitnet2.cpp` | BitNet b1.58-style 1.58-bit ternary weight model with BitLinear layers. |
+| **DeepSeek4 (DSv4)** | `src/models/deepseek4.cpp` | DeepSeek-V4 architecture with MLA attention + MoE. |
+| **Gemma4 MTP Assistant** | `src/models/gemma4-mtp.cpp` | Gemma 4 Multi-Token Prediction assistant head for speculative decoding. |
+| **DFlash Draft** | `src/models/dflash-draft.cpp` | DFlash block-diffusion draft model for speculative decoding. |
+
+All architectures are auto-detected from the GGUF metadata (`general.architecture`).
+No extra flags needed — just load the model file.
+
+---
+
 ## Supported backends
 
 | Backend | Target devices |
@@ -872,6 +1182,79 @@ To learn more about model quantization, [read this documentation](tools/quantize
     See the longer write-up [above](#turboquant--kv-cache--weight-compression)
     for weight quantization (`TQ4_1S` / `TQ3_1S`) and the per-backend support
     matrix.
+
+    </details>
+
+- <details>
+    <summary>Enable KVarN structured KV cache (this fork)</summary>
+
+    Joint K×V quantization in 128-token tiles. Supports `kvarn2`–`kvarn8`.
+
+    ```bash
+    llama-server -m model.gguf -c 32768 -ctk kvarn8 -ctv kvarn8
+    ```
+
+    See [KVarN — Structured KV Cache](#kvarn--structured-kv-cache-beellama-style).
+
+    </details>
+
+- <details>
+    <summary>Enable Delta-KV cache compression (this fork)</summary>
+
+    ```bash
+    llama-server -m model.gguf -c 128000 --delta-kv
+    llama-server -m model.gguf -c 128000 --delta-kv --delta-kv-interval 64
+    ```
+
+    See [Delta-KV Cache Compression](#delta-kv-cache-compression).
+
+    </details>
+
+- <details>
+    <summary>Enable reasoning loop guard (this fork)</summary>
+
+    ```bash
+    llama-server -m model.gguf --reasoning-loop-guard force-close
+    llama-server -m model.gguf --reasoning-loop-guard stop
+    ```
+
+    See [Server Loop Guard](#server-loop-guard--reasoning-loop-detection).
+
+    </details>
+
+- <details>
+    <summary>Enable MoE optimizations (this fork)</summary>
+
+    ```bash
+    llama-server -m moe-model.gguf -ser 4,0.1          # smart expert reduction
+    llama-server -m large-moe.gguf --defer-experts     # faster loading (Linux)
+    llama-server -m model.gguf -op 26,0                 # per-op offload policy
+    ```
+
+    See [MoE Optimization Tools](#moe-optimization-tools).
+
+    </details>
+
+- <details>
+    <summary>Enable adaptive draft-max (this fork, C API)</summary>
+
+    Adaptive draft-length control for speculative decoding. Currently
+    accessible via the C API (`common_params` struct fields), **no CLI flags
+    yet**. See the [Adaptive Draft-Max Controller](#adaptive-draft-max-controller)
+    section for configuration details.
+
+    </details>
+
+- <details>
+    <summary>Enable new speculative types (this fork)</summary>
+
+    ```bash
+    llama-server -m model.gguf --spec-type suffix     # suffix-tree
+    llama-server -m model.gguf --spec-type copyspec   # copy-from-context
+    llama-server -m model.gguf --spec-type dflash     # block-diffusion
+    ```
+
+    See [New Speculative Decoding Types](#new-speculative-decoding-types).
 
     </details>
 
