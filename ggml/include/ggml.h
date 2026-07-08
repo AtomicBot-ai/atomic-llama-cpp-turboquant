@@ -616,6 +616,7 @@ extern "C" {
         GGML_OP_OPT_STEP_SGD,
 
         GGML_OP_GLU,
+        GGML_OP_REDUCE,
 
         GGML_OP_COUNT,
     };
@@ -918,6 +919,12 @@ extern "C" {
     GGML_API struct ggml_tensor * ggml_dup_inplace(
             struct ggml_context * ctx,
             struct ggml_tensor  * a);
+
+    GGML_API struct ggml_tensor * ggml_reduce(
+            struct ggml_context * ctx,
+            struct ggml_tensor ** a,
+            int                   n,
+            enum ggml_op          op);
 
     GGML_API struct ggml_tensor * ggml_add(
             struct ggml_context * ctx,

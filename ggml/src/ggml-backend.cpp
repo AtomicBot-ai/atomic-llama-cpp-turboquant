@@ -1033,6 +1033,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     sched->n_splits = 0;
     sched->n_graph_inputs = 0;
     sched->is_reset = false;
+    sched->has_reduce = false;
 
     struct ggml_init_params params = {
         /* .mem_size =   */ sched->context_buffer_size,
@@ -1315,6 +1316,11 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                         }
                     }
                 }
+            }
+
+            if (node->op == GGML_OP_REDUCE) {
+                sched->has_reduce = true;
+                need_new_split = true;
             }
 
             if (node_backend_id != cur_backend_id || need_new_split) {

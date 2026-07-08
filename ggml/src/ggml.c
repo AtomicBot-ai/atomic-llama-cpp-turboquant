@@ -1147,9 +1147,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "OPT_STEP_SGD",
 
     "GLU",
+    "REDUCE",
 };
 
-static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1262,9 +1263,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sgd(x)",
 
     "glu(x)",
+    "reduce(x)",
 };
 
-static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
+static_assert(GGML_OP_COUNT == 105, "GGML_OP_COUNT != 105");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -2086,6 +2088,38 @@ struct ggml_tensor * ggml_dup_inplace(
         struct ggml_context * ctx,
         struct ggml_tensor  * a) {
     return ggml_dup_impl(ctx, a, true);
+}
+
+// ggml_reduce
+
+struct ggml_tensor * ggml_reduce(
+        struct ggml_context * ctx,
+        struct ggml_tensor ** a,
+        int                   n,
+        enum ggml_op          op) {
+    GGML_ASSERT(n > 1 && n <= GGML_MAX_SRC);
+    GGML_ASSERT(op == GGML_OP_ADD); // currently only reduce-add is supported
+
+    struct ggml_tensor * last = NULL;
+    int n_have = 0;
+    for (int j = 0; j < n; ++j) {
+        if (a[j]) {
+            ++n_have;
+            last = a[j];
+        }
+    }
+    GGML_ASSERT(last);
+    GGML_ASSERT(n_have > 1);
+
+    struct ggml_tensor * result = ggml_view_tensor(ctx, last);
+    for (int j = 0; j < n; ++j) {
+        result->src[j] = a[j];
+    }
+    result->op = GGML_OP_REDUCE;
+    result->op_params[0] = (int)op;
+    result->op_params[1] = n;
+    result->op_params[2] = n_have;
+    return result;
 }
 
 // ggml_add
@@ -7205,6 +7239,9 @@ static void ggml_compute_backward(
                     GGML_ABORT("unsupported glu op for backward pass: %s", ggml_glu_op_name(ggml_get_glu_op(tensor)));
                 } //break;
             }
+        } break;
+        case GGML_OP_REDUCE: {
+            GGML_ABORT("%s: backward pass for REDUCE not implemented\n", __func__);
         } break;
         case GGML_OP_NONE: {
             // noop
