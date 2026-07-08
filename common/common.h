@@ -536,6 +536,8 @@ struct common_params {
     bool only_active_exps   = true;  // offload only active experts for MoE models
     bool merge_up_gate_exps = false; // merge ffn_up_exps and ffn_gate_exps into contiguous tensor
     bool defer_experts      = false; // defer expert mmap residency (Linux only)
+    int  max_extra_alloc    = 256;   // max extra allocation for graph splits in MiB (0 = unlimited)
+    bool scheduler_async    = false; // enable async scheduling for graph split mode
 
     common_cpu_params cpuparams;
     common_cpu_params cpuparams_batch;

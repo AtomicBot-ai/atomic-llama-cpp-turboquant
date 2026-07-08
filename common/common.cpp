@@ -1307,6 +1307,17 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
 
     llama_set_only_active_experts(lctx, params.only_active_exps);
 
+    // Graph split mode scheduling
+    if (params.split_mode == LLAMA_SPLIT_MODE_GRAPH) {
+        ggml_backend_sched_t sched = llama_get_sched(lctx);
+        if (sched) {
+            ggml_backend_sched_set_split_mode_graph(sched, true, params.scheduler_async);
+            if (params.max_extra_alloc > 0) {
+                ggml_backend_sched_set_max_extra_alloc(sched, (size_t)params.max_extra_alloc * 1024 * 1024);
+            }
+        }
+    }
+
     pimpl->context.reset(lctx);
 }
 
@@ -1558,6 +1569,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.no_host         = params.no_host;
     mparams.merge_up_gate_exps = params.merge_up_gate_exps;
     mparams.defer_experts      = params.defer_experts;
+    mparams.max_extra_alloc    = params.max_extra_alloc;
 
     if (params.kv_overrides.empty()) {
         mparams.kv_overrides = NULL;

@@ -2620,12 +2620,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_N_GPU_LAYERS"));
     add_opt(common_arg(
-        {"-sm", "--split-mode"}, "{none,layer,row,tensor}",
+        {"-sm", "--split-mode"}, "{none,layer,row,tensor,graph}",
         "how to split the model across multiple GPUs, one of:\n"
         "- none: use one GPU only\n"
         "- layer (default): split layers and KV across GPUs (pipelined)\n"
         "- row: split weight across GPUs by rows (parallelized)\n"
-        "- tensor: split weights and KV across GPUs (parallelized, EXPERIMENTAL)",
+        "- tensor: split weights and KV across GPUs (parallelized, EXPERIMENTAL)\n"
+        "- graph: split the compute graph across GPUs (EXPERIMENTAL)",
         [](common_params & params, const std::string & value) {
             if (value == "none") {
                 params.split_mode = LLAMA_SPLIT_MODE_NONE;
@@ -2635,6 +2636,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.split_mode = LLAMA_SPLIT_MODE_ROW;
             } else if (value == "tensor") {
                 params.split_mode = LLAMA_SPLIT_MODE_TENSOR;
+            } else if (value == "graph") {
+                params.split_mode = LLAMA_SPLIT_MODE_GRAPH;
             } else {
                 throw std::invalid_argument("invalid value");
             }
@@ -2797,6 +2800,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params) {
             params.defer_experts = true;
             params.warmup = false;
+        }
+    ));
+    add_opt(common_arg(
+        {"--max-extra-alloc"}, "N",
+        string_format("maximum extra allocation for graph splits in MiB (default: %d, 0 = unlimited)", 256),
+        [](common_params & params, int value) {
+            params.max_extra_alloc = value;
+        }
+    ));
+    add_opt(common_arg(
+        {"--scheduler-async"},
+        "enable async scheduling for graph split mode (experimental)",
+        [](common_params & params) {
+            params.scheduler_async = true;
         }
     ));
     add_opt(common_arg(
