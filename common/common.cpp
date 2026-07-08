@@ -1301,6 +1301,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         return;
     }
 
+    for (auto [op, on_off] : params.offload_policy) {
+        llama_set_offload_policy(lctx, op, on_off);
+    }
+
+    llama_set_only_active_experts(lctx, params.only_active_exps);
+
     pimpl->context.reset(lctx);
 }
 
@@ -1550,6 +1556,8 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.check_tensors   = params.check_tensors;
     mparams.use_extra_bufts = !params.no_extra_bufts;
     mparams.no_host         = params.no_host;
+    mparams.merge_up_gate_exps = params.merge_up_gate_exps;
+    mparams.defer_experts      = params.defer_experts;
 
     if (params.kv_overrides.empty()) {
         mparams.kv_overrides = NULL;

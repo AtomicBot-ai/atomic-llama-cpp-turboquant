@@ -1068,6 +1068,9 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "MUL_MAT",
     "MUL_MAT_ID",
     "OUT_PROD",
+    "FUSED_UP_GATE",
+    "MOE_FUSED_UP_GATE",
+    "MUL_MULTI_ADD",
 
     "SCALE",
     "SET",
@@ -1107,6 +1110,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "ARANGE",
     "TIMESTEP_EMBEDDING",
     "ARGSORT",
+    "ARGSORT_THRESH",
     "TOP_K",
     "LEAKY_RELU",
     "TRI",
@@ -1145,7 +1149,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1182,6 +1186,9 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "X*Y",
     "X[i]*Y",
     "X*Y",
+    "fused_up_gate(x)",
+    "moe_fused_up_gate(x)",
+    "mul_multi_add(x)",
 
     "x*v",
     "y-\\>view(x)",
@@ -1257,7 +1264,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 104, "GGML_OP_COUNT != 104");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3381,6 +3388,102 @@ struct ggml_tensor * ggml_mul_mat_id(
     return result;
 }
 
+// ggml_moe_up_gate
+
+struct ggml_tensor * ggml_moe_up_gate(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * up_exps,
+        struct ggml_tensor  * gate_exps,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * ids,
+        enum ggml_unary_op    op) {
+    GGML_ASSERT(ids->type == GGML_TYPE_I32);
+    GGML_ASSERT(b->ne[3] == 1);
+
+    const int64_t n_out = gate_exps ? up_exps->ne[1] : up_exps->ne[1] / 2;
+    const int64_t ne[4] = { n_out, ids->ne[0], b->ne[2], 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    ggml_set_op_params_i32(result, 0, (int32_t) op);
+
+    result->op     = GGML_OP_MOE_FUSED_UP_GATE;
+    result->src[0] = up_exps;
+    result->src[1] = gate_exps;
+    result->src[2] = b;
+    result->src[3] = ids;
+
+    return result;
+}
+
+struct ggml_tensor * ggml_moe_up_gate_ext(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * up_exps,
+        struct ggml_tensor  * gate_exps,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * ids,
+        struct ggml_tensor  * up_b,
+        struct ggml_tensor  * gate_b,
+        enum ggml_unary_op    op) {
+    if (!up_b && !gate_b) {
+        return ggml_moe_up_gate(ctx, up_exps, gate_exps, b, ids, op);
+    }
+
+    GGML_ASSERT(ids->type == GGML_TYPE_I32);
+    GGML_ASSERT(b->ne[3] == 1);
+
+    const int64_t n_out = gate_exps ? up_exps->ne[1] : up_exps->ne[1] / 2;
+    const int64_t ne[4] = { n_out, ids->ne[0], b->ne[2], 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    ggml_set_op_params_i32(result, 0, (int32_t) op);
+
+    result->op     = GGML_OP_MOE_FUSED_UP_GATE;
+    result->src[0] = up_exps;
+    result->src[1] = gate_exps;
+    result->src[2] = b;
+    result->src[3] = ids;
+    result->src[4] = up_b;
+    result->src[5] = gate_b;
+
+    return result;
+}
+
+struct ggml_tensor * ggml_fused_up_gate(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * up,
+        struct ggml_tensor  * gate,
+        struct ggml_tensor  * b,
+        enum ggml_unary_op    op) {
+    const int64_t ne[4] = { up->ne[1], b->ne[1], 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    ggml_set_op_params_i32(result, 0, (int32_t) op);
+
+    result->op     = GGML_OP_FUSED_UP_GATE;
+    result->src[0] = up;
+    result->src[1] = gate;
+    result->src[2] = b;
+
+    return result;
+}
+
+struct ggml_tensor * ggml_mul_multi_add(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b) {
+    GGML_ASSERT(a->ne[1] == b->ne[1]);
+    GGML_ASSERT(b->ne[0] == 1);
+
+    const int64_t ne[4] = { a->ne[0], a->ne[2], 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_MUL_MULTI_ADD;
+    result->src[0] = a;
+    result->src[1] = b;
+
+    return result;
+}
+
 // ggml_out_prod
 
 static inline bool ggml_can_out_prod(const struct ggml_tensor * t0, const struct ggml_tensor * t1) {
@@ -5400,6 +5503,55 @@ struct ggml_tensor * ggml_top_k(
 
     result->op     = GGML_OP_TOP_K;
     result->src[0] = a;
+
+    return result;
+}
+
+// ggml_argsort_thresh
+
+struct ggml_tensor * ggml_argsort_thresh(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        int                   min_entries,
+        float                 thresh) {
+    int64_t ne[GGML_MAX_DIMS];
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) ne[i] = a->ne[i];
+
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_I32, GGML_MAX_DIMS, ne);
+
+    ggml_set_op_params_i32(result, 0, (int32_t) min_entries);
+    ggml_set_op_params_f32(result, 1, thresh);
+
+    result->op     = GGML_OP_ARGSORT_THRESH;
+    result->src[0] = a;
+
+    return result;
+}
+
+// ggml_top_k_thresh
+
+struct ggml_tensor * ggml_top_k_thresh(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        int                   k,
+        int                   min_entries,
+        float                 thresh) {
+    GGML_ASSERT(a->ne[0] >= k);
+
+    struct ggml_tensor * result;
+    if (min_entries <= 0 || thresh <= 0) {
+        struct ggml_tensor * argsort = ggml_new_tensor_4d(ctx, GGML_TYPE_I32, a->ne[0], a->ne[1], a->ne[2], a->ne[3]);
+        argsort->op     = GGML_OP_ARGSORT;
+        argsort->src[0] = a;
+        result = ggml_view_4d(ctx, argsort,
+                    k, a->ne[1], a->ne[2], a->ne[3],
+                    argsort->nb[1], argsort->nb[2], argsort->nb[3], 0);
+    } else {
+        struct ggml_tensor * argsort = ggml_argsort_thresh(ctx, a, min_entries, thresh);
+        result = ggml_view_4d(ctx, argsort,
+                    k, a->ne[1], a->ne[2], a->ne[3],
+                    argsort->nb[1], argsort->nb[2], argsort->nb[3], 0);
+    }
 
     return result;
 }

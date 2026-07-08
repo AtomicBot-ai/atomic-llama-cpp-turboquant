@@ -5261,6 +5261,7 @@ struct ggml_backend_cuda_device_context {
     std::string description;
     std::string pci_bus_id;
     int op_offload_min_batch_size;
+    int offload_batch_size_per_byte = -1;
 };
 
 static const char * ggml_backend_cuda_device_get_name(ggml_backend_dev_t dev) {
@@ -5887,7 +5888,23 @@ static int64_t get_op_batch_size(const ggml_tensor * op) {
 static bool ggml_backend_cuda_device_offload_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     ggml_backend_cuda_device_context * dev_ctx = (ggml_backend_cuda_device_context *) dev->context;
 
-    return get_op_batch_size(op) >= dev_ctx->op_offload_min_batch_size;
+    int min_batch_size = dev_ctx->op_offload_min_batch_size;
+
+    if (op->op == GGML_OP_MUL_MAT_ID || op->op == GGML_OP_MOE_FUSED_UP_GATE) {
+        if (dev_ctx->offload_batch_size_per_byte >= 0) {
+            auto src0 = op->src[0];
+            auto row_size = ggml_row_size(src0->type, src0->ne[0]);
+            min_batch_size = int(1.0 * dev_ctx->offload_batch_size_per_byte * row_size / src0->ne[0]);
+        }
+        auto ids = op->op == GGML_OP_MUL_MAT_ID ? op->src[2] : op->src[3];
+        int64_t batch_size = op->ne[2];
+        if (batch_size < min_batch_size) return false;
+        int64_t n_experts_tot    = op->src[0]->ne[2];
+        int64_t n_experts_active = ids->ne[0];
+        return batch_size * n_experts_active >= min_batch_size * n_experts_tot;
+    }
+
+    return get_op_batch_size(op) >= min_batch_size && op->op != GGML_OP_GET_ROWS;
 }
 
 static ggml_backend_event_t ggml_backend_cuda_device_event_new(ggml_backend_dev_t dev) {
@@ -6082,6 +6099,8 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
                     c = std::tolower(c);
                 }
                 dev_ctx->op_offload_min_batch_size = min_batch_size;
+                dev_ctx->offload_batch_size_per_byte = getenv("GGML_CUDA_OFFLOAD_BATCH_PER_BYTE") ?
+                    atoi(getenv("GGML_CUDA_OFFLOAD_BATCH_PER_BYTE")) : -1;
 
                 ggml_backend_dev_t dev = new ggml_backend_device {
                     /* .iface   = */ ggml_backend_cuda_device_interface,

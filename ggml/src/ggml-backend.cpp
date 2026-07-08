@@ -817,6 +817,8 @@ struct ggml_backend_sched {
     size_t context_buffer_size;
 
     bool op_offload;
+    bool only_active_experts;
+    uint32_t op_offload_mask[(GGML_OP_COUNT + 31) / 32];
 
     int debug;
 
@@ -916,7 +918,9 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
         if (tensor->op != GGML_OP_ROPE && src->buffer != NULL && src->buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
             int src_backend_id = ggml_backend_sched_backend_from_buffer(sched, src, tensor);
             // check if a backend with higher prio wants to offload the op
-            if (sched->op_offload && src_backend_id == sched->n_backends - 1 && ggml_backend_buffer_is_host(src->buffer)) {
+            const bool op_offload_ok = sched->op_offload &&
+                (sched->op_offload_mask[tensor->op >> 5] & (1u << (tensor->op & 31)));
+            if (op_offload_ok && src_backend_id == sched->n_backends - 1 && ggml_backend_buffer_is_host(src->buffer)) {
                 for (int b = 0; b < src_backend_id; b++) {
                     if (ggml_backend_supports_op(sched->backends[b], tensor) && ggml_backend_offload_op(sched->backends[b], tensor)) {
                         SET_CAUSE(tensor, "1.off");
@@ -1787,6 +1791,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
 
     sched->galloc = ggml_gallocr_new_n(sched->bufts, n_backends);
     sched->op_offload = op_offload;
+    memset(sched->op_offload_mask, 0xff, sizeof(sched->op_offload_mask));
 
     ggml_backend_sched_reset(sched);
 
@@ -1828,6 +1833,32 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
         sched->is_reset = true;
     }
     sched->is_alloc = false;
+}
+
+void ggml_backend_sched_set_op_offload(ggml_backend_sched_t sched, enum ggml_op op, bool on_or_off) {
+    if (!sched) {
+        return;
+    }
+    const int int_op = (int) op;
+    if (int_op < 0 || int_op >= (int) GGML_OP_COUNT) {
+        // toggle all ops
+        memset(sched->op_offload_mask, on_or_off ? 0xff : 0, sizeof(sched->op_offload_mask));
+        return;
+    }
+    const int i = int_op >> 5;
+    const int j = int_op & 31;
+    if (on_or_off) {
+        sched->op_offload_mask[i] |= (1u << j);
+    } else {
+        sched->op_offload_mask[i] &= ~(1u << j);
+    }
+}
+
+void ggml_backend_sched_set_only_active_experts(ggml_backend_sched_t sched, bool on_or_off) {
+    if (!sched) {
+        return;
+    }
+    sched->only_active_experts = on_or_off;
 }
 
 void ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph, size_t * sizes) {

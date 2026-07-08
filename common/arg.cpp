@@ -365,8 +365,8 @@ static llama_kvarn_type kvarn_type_from_bits(int32_t key_bits, int32_t value_bit
 // f16 so the fallback layers do not dominate memory use
 static ggml_type kvarn_fallback_cache_type(int32_t bits) {
     switch (bits) {
-        case 2:  return GGML_TYPE_Q2_0;
-        case 3:  return GGML_TYPE_Q3_0;
+        case 2:  return GGML_TYPE_TQ2_0;
+        case 3:  return GGML_TYPE_Q4_0;
         case 4:  return GGML_TYPE_Q4_0;
         case 5:  return GGML_TYPE_Q5_0;
         case 6:  return GGML_TYPE_Q6_0;
@@ -658,13 +658,11 @@ static void common_params_kvarn_normalize(common_params & params) {
     }
 
     if (key_bits == 0) {
-        LOG_WRN("warning: --cache-type-v uses KVarN but --cache-type-k is %s; forcing K to kvarn%d
-",
+        LOG_WRN("warning: --cache-type-v uses KVarN but --cache-type-k is %s; forcing K to kvarn%d\n",
                 ggml_type_name(params.cache_type_k), value_bits);
         key_bits = value_bits;
     } else if (value_bits == 0) {
-        LOG_WRN("warning: --cache-type-k uses KVarN but --cache-type-v is %s; forcing V to kvarn%d
-",
+        LOG_WRN("warning: --cache-type-k uses KVarN but --cache-type-v is %s; forcing V to kvarn%d\n",
                 ggml_type_name(params.cache_type_v), key_bits);
         value_bits = key_bits;
     }
@@ -2286,11 +2284,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             "KV cache data type for K\n"
             "allowed values: %s\n"
             "(default: %s)",
-            get_all_kv_cache_types().c_str(),
+            get_all_kv_cache_types(/*include_kvarn_pseudo_types =*/ true).c_str(),
             ggml_type_name(params.cache_type_k)
         ),
         [](common_params & params, const std::string & value) {
-            params.cache_type_k = kv_cache_type_from_str(value);
+            parse_target_cache_type(params, /*key =*/ true, value);
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_K"));
     add_opt(common_arg(
@@ -2299,11 +2297,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             "KV cache data type for V\n"
             "allowed values: %s\n"
             "(default: %s)",
-            get_all_kv_cache_types().c_str(),
+            get_all_kv_cache_types(/*include_kvarn_pseudo_types =*/ true).c_str(),
             ggml_type_name(params.cache_type_v)
         ),
         [](common_params & params, const std::string & value) {
-            params.cache_type_v = kv_cache_type_from_str(value);
+            parse_target_cache_type(params, /*key =*/ false, value);
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
     add_opt(common_arg(
@@ -2767,6 +2765,47 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("whether to offload host tensor operations to device (default: %s)", params.no_op_offload ? "false" : "true"),
         [](common_params & params, bool value) {
             params.no_op_offload = !value;
+        }
+    ));
+    add_opt(common_arg(
+        {"-op", "--offload-policy"}, "OP,ON_OFF,...",
+        "per-operation offload control (-op 26,0 to disable MUL_MAT offload, -1,0 to disable all)",
+        [](common_params & params, const std::string & value) {
+            auto parts = string_split<int>(value, ',');
+            for (size_t i = 0; i + 1 < parts.size(); i += 2) {
+                params.offload_policy.emplace_back(parts[i], parts[i + 1]);
+            }
+        }
+    ));
+    add_opt(common_arg(
+        {"-no-ooae", "--no-offload-only-active-experts"},
+        string_format("disable offloading only active experts (default: %s)", params.only_active_exps ? "on" : "off"),
+        [](common_params & params) {
+            params.only_active_exps = false;
+        }
+    ));
+    add_opt(common_arg(
+        {"-muge", "--merge-up-gate-experts"},
+        string_format("merge ffn_up_exps and ffn_gate_exps into contiguous tensor (default: %s)", params.merge_up_gate_exps ? "on" : "off"),
+        [](common_params & params) {
+            params.merge_up_gate_exps = true;
+        }
+    ));
+    add_opt(common_arg(
+        {"--defer-experts"},
+        string_format("defer expert mmap residency to speed up model loading (Linux only, default: %s)", params.defer_experts ? "on" : "off"),
+        [](common_params & params) {
+            params.defer_experts = true;
+            params.warmup = false;
+        }
+    ));
+    add_opt(common_arg(
+        {"-ser", "--smart-expert-reduction"}, "MIN,THRESH",
+        string_format("smart expert reduction: min experts, threshold ratio (default: %d,%g)", params.min_experts, params.thresh_experts),
+        [](common_params & params, const std::string & value) {
+            auto parts = string_split<std::string>(value, ',');
+            if (parts.size() >= 1) params.min_experts    = std::stoi(parts[0]);
+            if (parts.size() >= 2) params.thresh_experts = std::stof(parts[1]);
         }
     ));
     add_opt(common_arg(
@@ -3784,7 +3823,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             "KV cache data type for K for the draft model\n"
             "allowed values: %s\n"
             "(default: %s)",
-            get_all_kv_cache_types().c_str(),
+            get_all_kv_cache_types(/*include_kvarn_pseudo_types =*/ true).c_str(),
             ggml_type_name(params.speculative.draft.cache_type_k)
         ),
         [](common_params & params, const std::string & value) {
@@ -3797,7 +3836,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             "KV cache data type for V for the draft model\n"
             "allowed values: %s\n"
             "(default: %s)",
-            get_all_kv_cache_types().c_str(),
+            get_all_kv_cache_types(/*include_kvarn_pseudo_types =*/ true).c_str(),
             ggml_type_name(params.speculative.draft.cache_type_v)
         ),
         [](common_params & params, const std::string & value) {

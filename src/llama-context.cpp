@@ -3768,6 +3768,28 @@ void llama_set_abort_callback(llama_context * ctx, bool (*abort_callback)(void *
     ctx->set_abort_callback(abort_callback, abort_callback_data);
 }
 
+void llama_set_offload_policy(struct llama_context * lctx, int op, bool on_or_off) {
+    if (!lctx) {
+        return;
+    }
+    ggml_backend_sched_t sched = lctx->get_sched();
+    if (!sched) {
+        return;
+    }
+    ggml_backend_sched_set_op_offload(sched, (ggml_op) op, on_or_off);
+}
+
+void llama_set_only_active_experts(struct llama_context * lctx, bool on_or_off) {
+    if (!lctx) {
+        return;
+    }
+    ggml_backend_sched_t sched = lctx->get_sched();
+    if (!sched) {
+        return;
+    }
+    ggml_backend_sched_set_only_active_experts(sched, on_or_off);
+}
+
 void llama_set_embeddings(llama_context * ctx, bool embeddings) {
     ctx->set_embeddings(embeddings);
 }

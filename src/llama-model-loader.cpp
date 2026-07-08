@@ -512,6 +512,7 @@ namespace GGUFMeta {
 
     // TODO: this is not very clever - figure out something better
     template bool llama_model_loader::get_key_or_arr<std::array<int,      4>>  (enum llm_kv kid, std::array<int,      4>   & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<uint32_t,   8>>(enum llm_kv kid, std::array<uint32_t,   8> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<float,    512>>(enum llm_kv kid, std::array<float,    512> & result, uint32_t n, bool required);
 
@@ -528,7 +529,9 @@ llama_model_loader::llama_model_loader(
         bool check_tensors,
         bool no_alloc,
         const llama_model_kv_override * param_overrides_p,
-        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p)
+        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p,
+        bool merge_up_gate_exps,
+        bool defer_experts)
         : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud) {
     int trace = 0;
     if (getenv("LLAMA_TRACE")) {
@@ -827,6 +830,8 @@ llama_model_loader::llama_model_loader(
     this->use_direct_io = use_direct_io;
     this->check_tensors = check_tensors;
     this->no_alloc = no_alloc;
+    this->merge_up_gate_exps = merge_up_gate_exps;
+    this->defer_experts = defer_experts;
 }
 
 std::string llama_model_loader::get_arch_name() const {
@@ -1709,5 +1714,79 @@ void llama_model_loader::print_info() const {
         LLAMA_LOG_INFO("%s: file size   = %.2f MiB (%.2f BPW) \n", __func__, n_bytes/1024.0/1024.0,        n_bytes*8.0/n_elements);
     } else {
         LLAMA_LOG_INFO("%s: file size   = %.2f GiB (%.2f BPW) \n", __func__, n_bytes/1024.0/1024.0/1024.0, n_bytes*8.0/n_elements);
+    }
+}
+
+void llama_model_loader::build_expert_tensor_index(const llama_hparams & hparams) {
+    expert_tensor_index = {};
+
+    const int32_t n_expert = hparams.n_expert;
+    const int32_t n_layer  = hparams.n_layer();
+    if (n_expert == 0 || n_layer == 0) return;
+
+    expert_tensor_index.file_ranges.resize(files.size());
+
+    auto is_expert_tensor = [](const char * name) -> bool {
+        std::string sname(name ? name : "");
+        return sname.find("ffn_") != std::string::npos &&
+               (sname.find("_exps") != std::string::npos ||
+                sname.find("_exp.") != std::string::npos ||
+                sname.find("gate_up_exps") != std::string::npos);
+    };
+
+    for (const auto & w : weights_map) {
+        if (!is_expert_tensor(w.second.tensor->name)) continue;
+
+        auto & ranges = expert_tensor_index.file_ranges[w.second.idx];
+        size_t first = w.second.offs;
+        size_t last  = w.second.offs + ggml_nbytes(w.second.tensor);
+        ranges.push_back({first, last});
+        expert_tensor_index.deferred_bytes += ggml_nbytes(w.second.tensor);
+    }
+
+    auto coalesce_ranges = [](std::vector<llama_file_range> & ranges) {
+        if (ranges.empty()) return;
+        std::sort(ranges.begin(), ranges.end(),
+                  [](const llama_file_range & a, const llama_file_range & b) { return a.first < b.first; });
+        std::vector<llama_file_range> merged;
+        merged.push_back(ranges[0]);
+        for (size_t i = 1; i < ranges.size(); ++i) {
+            if (ranges[i].first <= merged.back().last) {
+                merged.back().last = std::max(merged.back().last, ranges[i].last);
+            } else {
+                merged.push_back(ranges[i]);
+            }
+        }
+        ranges = std::move(merged);
+    };
+
+    size_t total_expert = 0;
+    for (auto & frs : expert_tensor_index.file_ranges) {
+        coalesce_ranges(frs);
+        for (const auto & r : frs) total_expert += r.last - r.first;
+    }
+    expert_tensor_index.deferred_bytes = total_expert;
+    expert_tensor_index.dense_bytes   = n_bytes - total_expert;
+}
+
+bool llama_model_loader::should_defer_expert_mmaps() const {
+    return defer_experts && use_mmap && !expert_tensor_index.empty();
+}
+
+void llama_model_loader::drop_mmap_expert_pages() const {
+    if (!use_mmap || mappings.empty()) return;
+
+    for (size_t idx = 0; idx < mappings.size() && idx < expert_tensor_index.file_ranges.size(); ++idx) {
+        const auto & ranges = expert_tensor_index.file_ranges[idx];
+        if (ranges.empty()) continue;
+
+        for (const auto & range : ranges) {
+            if (range.empty()) continue;
+#ifdef __linux__
+            if (idx < mappings.size()) {
+                mappings[idx]->dontneed_fragment(range.first, range.last);
+            }
+#endif
+        }
     }
 }

@@ -1887,6 +1887,18 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_out_prod(params, tensor);
             } break;
+        case GGML_OP_FUSED_UP_GATE:
+            {
+                // fallback: handled by decomposing graph
+            } break;
+        case GGML_OP_MOE_FUSED_UP_GATE:
+            {
+                // fallback: handled by decomposing graph
+            } break;
+        case GGML_OP_MUL_MULTI_ADD:
+            {
+                ggml_compute_forward_mul_multi_add(params, tensor);
+            } break;
         case GGML_OP_SCALE:
             {
                 ggml_compute_forward_scale(params, tensor);
@@ -2020,6 +2032,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 ggml_compute_forward_timestep_embedding(params, tensor);
             } break;
         case GGML_OP_ARGSORT:
+            {
+                ggml_compute_forward_argsort(params, tensor);
+            } break;
+        case GGML_OP_ARGSORT_THRESH:
             {
                 ggml_compute_forward_argsort(params, tensor);
             } break;
@@ -2369,11 +2385,14 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_GROUP_NORM:
         case GGML_OP_CONCAT:
         case GGML_OP_MUL_MAT:
-        case GGML_OP_MUL_MAT_ID:
-        case GGML_OP_OUT_PROD:
-            {
-                n_tasks = n_threads;
-            } break;
+         case GGML_OP_MUL_MAT_ID:
+         case GGML_OP_OUT_PROD:
+         case GGML_OP_FUSED_UP_GATE:
+         case GGML_OP_MOE_FUSED_UP_GATE:
+         case GGML_OP_MUL_MULTI_ADD:
+             {
+                 n_tasks = n_threads;
+             } break;
         case GGML_OP_GET_ROWS:
         case GGML_OP_SET_ROWS:
             {
@@ -2435,6 +2454,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_ARANGE:
         case GGML_OP_TIMESTEP_EMBEDDING:
         case GGML_OP_ARGSORT:
+        case GGML_OP_ARGSORT_THRESH:
         case GGML_OP_TOP_K:
         case GGML_OP_FLASH_ATTN_EXT:
         case GGML_OP_FLASH_ATTN_BACK:
@@ -2912,13 +2932,32 @@ struct ggml_cplan ggml_graph_plan(
                         // atomic_current_chunk
                         cur += CACHE_LINE_SIZE*n_as + CACHE_LINE_SIZE;
                     } break;
-                case GGML_OP_OUT_PROD:
-                    {
-                        if (ggml_is_quantized(node->src[0]->type)) {
-                            cur = ggml_type_size(GGML_TYPE_F32) * node->src[0]->ne[0] * n_tasks;
-                        }
-                    } break;
-                case GGML_OP_SOFT_MAX:
+                 case GGML_OP_OUT_PROD:
+                     {
+                         if (ggml_is_quantized(node->src[0]->type)) {
+                             cur = ggml_type_size(GGML_TYPE_F32) * node->src[0]->ne[0] * n_tasks;
+                         }
+                     } break;
+                 case GGML_OP_MOE_FUSED_UP_GATE:
+                     {
+                         cur = 0;
+                         const struct ggml_tensor * src0 = node->src[0];
+                         const struct ggml_tensor * src1 = node->src[2];
+                         const struct ggml_tensor * ids  = node->src[3];
+                         const enum ggml_type vec_dot_type = type_traits_cpu[src0->type].vec_dot_type;
+                         const int n_as = src0->ne[2];
+                         if (src1->type != vec_dot_type) {
+                             cur += ggml_row_size(vec_dot_type, ggml_nelements(src1)) + sizeof(int64_t);
+                         }
+                         cur += n_as * sizeof(int64_t) + sizeof(int64_t);
+                         cur += n_as * ids->ne[0] * ids->ne[1] * sizeof(struct mmid_row_mapping) + sizeof(int64_t);
+                         cur += CACHE_LINE_SIZE * n_as + CACHE_LINE_SIZE;
+                     } break;
+                 case GGML_OP_MUL_MULTI_ADD:
+                     {
+                         cur = 0;
+                     } break;
+                 case GGML_OP_SOFT_MAX:
                 case GGML_OP_ROPE:
                 case GGML_OP_ROPE_BACK:
                     {

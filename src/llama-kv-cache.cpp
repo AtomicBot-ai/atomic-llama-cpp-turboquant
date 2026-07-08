@@ -2922,6 +2922,14 @@ uint32_t llama_kv_cache_context::get_n_kv() const {
     return n_kv;
 }
 
+llama_kv_cache * llama_kv_cache_context::get_kv() const {
+    return kv;
+}
+
+const llama_kv_cache::slot_info & llama_kv_cache_context::current_sinfo() const {
+    return sinfos[i_cur];
+}
+
 ggml_type llama_kv_cache_context::type_k() const {
     return kv->type_k();
 }

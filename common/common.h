@@ -343,6 +343,8 @@ struct common_params_speculative_draft {
 
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+    int32_t cache_kvarn_bits_k = 0; // KVarN pseudo cache type bits from --cache-type-k-draft (0 = disabled)
+    int32_t cache_kvarn_bits_v = 0; // KVarN pseudo cache type bits from --cache-type-v-draft (0 = disabled)
 
     common_cpu_params cpuparams;
     common_cpu_params cpuparams_batch;
@@ -525,6 +527,15 @@ struct common_params {
     std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);
 
     enum llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER; // how to split the model across GPUs
+
+    std::vector<std::pair<int, int>> offload_policy; // per-op offload control (op, on/off)
+
+    int   min_experts     = -1;  // smart expert reduction: minimum active experts
+    float thresh_experts  = 0.0f; // smart expert reduction: threshold ratio
+
+    bool only_active_exps   = true;  // offload only active experts for MoE models
+    bool merge_up_gate_exps = false; // merge ffn_up_exps and ffn_gate_exps into contiguous tensor
+    bool defer_experts      = false; // defer expert mmap residency (Linux only)
 
     common_cpu_params cpuparams;
     common_cpu_params cpuparams_batch;

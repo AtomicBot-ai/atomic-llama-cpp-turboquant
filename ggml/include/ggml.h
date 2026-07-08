@@ -537,6 +537,9 @@ extern "C" {
         GGML_OP_MUL_MAT,
         GGML_OP_MUL_MAT_ID,
         GGML_OP_OUT_PROD,
+        GGML_OP_FUSED_UP_GATE,
+        GGML_OP_MOE_FUSED_UP_GATE,
+        GGML_OP_MUL_MULTI_ADD,
 
         GGML_OP_SCALE,
         GGML_OP_SET,
@@ -576,6 +579,7 @@ extern "C" {
         GGML_OP_ARANGE,
         GGML_OP_TIMESTEP_EMBEDDING,
         GGML_OP_ARGSORT,
+        GGML_OP_ARGSORT_THRESH,
         GGML_OP_TOP_K,
         GGML_OP_LEAKY_RELU,
         GGML_OP_TRI,
@@ -1466,6 +1470,39 @@ extern "C" {
             struct ggml_tensor  * as,
             struct ggml_tensor  * b,
             struct ggml_tensor  * ids);
+
+    // fused MoE up + gate
+    GGML_API struct ggml_tensor * ggml_moe_up_gate(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * up_exps,
+            struct ggml_tensor  * gate_exps,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * ids,
+            enum ggml_unary_op    op);
+
+    GGML_API struct ggml_tensor * ggml_moe_up_gate_ext(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * up_exps,
+            struct ggml_tensor  * gate_exps,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * ids,
+            struct ggml_tensor  * up_b,
+            struct ggml_tensor  * gate_b,
+            enum ggml_unary_op    op);
+
+    // fused dense up + gate (non-MoE)
+    GGML_API struct ggml_tensor * ggml_fused_up_gate(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * up,
+            struct ggml_tensor  * gate,
+            struct ggml_tensor  * b,
+            enum ggml_unary_op    op);
+
+    // Fused multiply + multi-add for MoE expert aggregation
+    GGML_API struct ggml_tensor * ggml_mul_multi_add(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b);
 
     // A: m columns, n rows,
     // B: p columns, n rows,
@@ -2417,6 +2454,21 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             int                   k);
+
+    // argsort with threshold for smart expert reduction
+    GGML_API struct ggml_tensor * ggml_argsort_thresh(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   min_entries,
+            float                 thresh);
+
+    // top k with threshold
+    GGML_API struct ggml_tensor * ggml_top_k_thresh(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   k,
+            int                   min_entries,
+            float                 thresh);
 
     GGML_API struct ggml_tensor * ggml_arange(
             struct ggml_context * ctx,

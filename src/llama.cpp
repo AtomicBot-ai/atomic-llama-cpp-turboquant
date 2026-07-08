@@ -280,7 +280,8 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
     try {
         llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.use_mmap, params.use_direct_io,
-            params.check_tensors, params.no_alloc, params.kv_overrides, params.tensor_buft_overrides);
+            params.check_tensors, params.no_alloc, params.kv_overrides, params.tensor_buft_overrides,
+            params.merge_up_gate_exps, params.defer_experts);
 
         ml.print_info();
         std::unique_ptr<llama_model> model_ptr(llama_model_create(ml, params));
@@ -329,6 +330,18 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
 
         if (!model->load_tensors(ml)) {
             return {-2, nullptr};
+        }
+
+        if (params.defer_experts && params.use_mmap) {
+#ifdef __linux__
+            ml.build_expert_tensor_index(model->hparams);
+            if (ml.should_defer_expert_mmaps()) {
+                LLAMA_LOG_INFO("%s: deferring expert mmap residency (%.2f MiB)\n", __func__,
+                    ml.expert_tensor_index.deferred_bytes / 1024.0 / 1024.0);
+            }
+#else
+            LLAMA_LOG_WARN("%s: deferred expert loading is only supported on Linux; ignoring defer_experts\n", __func__);
+#endif
         }
 
         return {0, model_ptr.release()};

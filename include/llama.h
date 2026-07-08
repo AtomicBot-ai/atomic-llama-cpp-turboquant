@@ -398,6 +398,8 @@ extern "C" {
         bool use_extra_bufts; // use extra buffer types (used for weight repacking)
         bool no_host;         // bypass host buffer allowing extra buffers to be used
         bool no_alloc;        // only load metadata and simulate memory allocations
+        bool merge_up_gate_exps; // merge ffn_up_exps and ffn_gate_exps into contiguous tensor
+        bool defer_experts;      // defer expert mmap residency (Linux only)
     };
 
     struct llama_sampler_seq_config {
@@ -1074,6 +1076,13 @@ extern "C" {
 
     // Set abort callback
     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
+
+    // Enable/disable offloading for a specific operation.
+    // If op < 0 or op >= GGML_OP_COUNT, toggles all operations.
+    LLAMA_API void llama_set_offload_policy(struct llama_context * lctx, int op, bool on_or_off);
+
+    // Only offload active experts for MoE models (reduces VRAM transfers)
+    LLAMA_API void llama_set_only_active_experts(struct llama_context * lctx, bool on_or_off);
 
     // Wait until all computations are finished
     // This is automatically done when using one of the functions below to obtain the computation results

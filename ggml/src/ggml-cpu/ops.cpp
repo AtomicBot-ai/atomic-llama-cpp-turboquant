@@ -4508,6 +4508,52 @@ void ggml_compute_forward_out_prod(
     }
 }
 
+// ggml_compute_forward_mul_multi_add
+
+static void ggml_compute_forward_mul_multi_add_f32(
+        const ggml_compute_params * params,
+        const struct ggml_tensor * dst) {
+    const struct ggml_tensor * src0 = dst->src[0];
+    const struct ggml_tensor * src1 = dst->src[1];
+
+    const int64_t ne00 = src0->ne[0];
+    const int64_t ne01 = src0->ne[1];
+    const int64_t ne02 = src0->ne[2];
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    float * dst_data = (float *) dst->data;
+
+    for (int64_t i2 = ith; i2 < ne02; i2 += nth) {
+        for (int64_t i0 = 0; i0 < ne00; i0++) {
+            dst_data[i2 * ne00 + i0] = 0;
+        }
+        for (int64_t i1 = 0; i1 < ne01; i1++) {
+            const float * src0_data = (const float *) ((const char *) src0->data + i1 * src0->nb[1]);
+            const float * src1_data = (const float *) ((const char *) src1->data + i1 * src1->nb[1]);
+            for (int64_t i0 = 0; i0 < ne00; i0++) {
+                dst_data[i2 * ne00 + i0] += src0_data[i0 + i2 * ne00] * src1_data[i2 * ne01 + i1];
+            }
+        }
+    }
+}
+
+void ggml_compute_forward_mul_multi_add(
+        const ggml_compute_params * params,
+        struct ggml_tensor * dst) {
+    switch (dst->op) {
+        case GGML_OP_MUL_MULTI_ADD:
+            {
+                ggml_compute_forward_mul_multi_add_f32(params, dst);
+            } break;
+        default:
+            {
+                GGML_ABORT("fatal error");
+            }
+    }
+}
+
 // ggml_compute_forward_scale
 
 static void ggml_compute_forward_scale_f32(

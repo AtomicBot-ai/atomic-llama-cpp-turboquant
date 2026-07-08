@@ -6,6 +6,7 @@
 #include "llama-arch.h"
 #include "llama-hparams.h"
 #include "llama-mmap.h"
+#include "llama-expert-io.h"
 
 #include "ggml-cpp.h"
 
@@ -79,6 +80,9 @@ struct llama_model_loader {
     bool use_direct_io = false;
     bool check_tensors;
     bool no_alloc;
+    bool merge_up_gate_exps = false;
+    bool defer_experts      = false;
+    llama_expert_tensor_index expert_tensor_index;
 
     // when true, done_getting_tensors() tolerates GGUF files that contain
     // more tensors than the loader actually requested (e.g. loading a
@@ -136,7 +140,9 @@ struct llama_model_loader {
         bool check_tensors,
         bool no_alloc,
         const llama_model_kv_override * param_overrides_p,
-        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p);
+        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p,
+        bool merge_up_gate_exps = false,
+        bool defer_experts = false);
 
     template<typename T>
     typename std::enable_if<std::is_integral<T>::value, bool>::type
@@ -205,6 +211,15 @@ struct llama_model_loader {
             llama_mlocks * lmlocks,
             llama_progress_callback progress_callback,
             void * progress_callback_user_data);
+
+    // defer-experts: build index of expert tensor file ranges
+    void build_expert_tensor_index(const llama_hparams & hparams);
+
+    // defer-experts: check if we should defer expert mmaps
+    bool should_defer_expert_mmaps() const;
+
+    // defer-experts: drop expert pages from page cache (MADV_DONTNEED)
+    void drop_mmap_expert_pages() const;
 
     std::string ftype_name() const;
 

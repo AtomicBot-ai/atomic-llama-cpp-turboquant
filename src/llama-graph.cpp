@@ -1952,6 +1952,30 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * up = nullptr;
     ggml_tensor * experts = nullptr;
 
+    // fused MoE up+gate path (supported activations only)
+    const bool can_fuse_moe = (type_op == LLM_FFN_SILU || type_op == LLM_FFN_GELU || type_op == LLM_FFN_SWIGLU_OAI_MOE)
+                           && !up_exps_s && !gate_exps_s && !up_exps_b && !gate_exps_b
+                           && (gate_up_exps || (up_exps && gate_exps));
+
+    if (can_fuse_moe) {
+        ggml_unary_op unary_op;
+        switch (type_op) {
+            case LLM_FFN_SILU:         unary_op = GGML_UNARY_OP_SILU; break;
+            case LLM_FFN_GELU:         unary_op = GGML_UNARY_OP_GELU; break;
+            case LLM_FFN_SWIGLU_OAI_MOE: unary_op = GGML_UNARY_OP_SILU; break;
+            default:                   unary_op = GGML_UNARY_OP_SILU; break;
+        }
+
+        if (gate_up_exps) {
+            cur = ggml_moe_up_gate(ctx0, gate_up_exps, nullptr, cur, selected_experts, unary_op);
+            cb(cur, "ffn_moe_gate_up_fused", il);
+        } else {
+            cur = ggml_moe_up_gate(ctx0, up_exps, gate_exps, cur, selected_experts, unary_op);
+            cb(cur, "ffn_moe_gate_up_fused", il);
+        }
+    }
+
+    if (!can_fuse_moe) {
     if (gate_up_exps) {
         // merged gate_up path: one mul_mat_id, then split into gate and up views
         ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, selected_experts, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
@@ -2074,6 +2098,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         default:
             GGML_ABORT("fatal error");
     }
+    } // !can_fuse_moe
 
     experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s); // [n_embd, n_expert_used, n_tokens]
     cb(experts, "ffn_moe_down", il);

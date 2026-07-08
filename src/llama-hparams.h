@@ -100,6 +100,20 @@ struct llama_hparams {
     bool     expert_weights_norm  = false;
     uint32_t expert_gating_func   = LLAMA_EXPERT_GATING_FUNC_TYPE_NONE;
     uint32_t moe_every_n_layers   = 0;
+
+    // MTP (Multi-Token Prediction) / Gemma4 MTP
+    uint32_t mtp_backbone_n_embd      = 0;
+    bool     mtp_use_ordered_embeddings = false;
+    uint32_t mtp_num_centroids         = 0;
+    uint32_t mtp_centroid_top_k        = 0;
+
+    // DFlash Draft
+    uint32_t dflash_block_size           = 16;
+    uint32_t dflash_mask_token_id        = 0;
+    uint32_t dflash_n_target_features    = 0;
+    uint32_t dflash_n_target_layers      = 0;
+    std::array<uint32_t, 8> dflash_target_layer_ids = {};
+    float    dflash_backbone_rotary_base = 0.0f;
     uint32_t moe_latent_size      = 0;
 
     // When true, only NextN/MTP tail layers allocate KV (see has_kv()).

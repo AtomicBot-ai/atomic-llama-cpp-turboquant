@@ -285,6 +285,7 @@ struct llama_layer {
     struct ggml_tensor * ffn_pre_norm_2   = nullptr; // gemma4
     struct ggml_tensor * layer_out_norm   = nullptr;
     struct ggml_tensor * layer_out_norm_b = nullptr;
+    struct ggml_tensor * layer_out_scale  = nullptr;
     struct ggml_tensor * ffn_norm_exps    = nullptr;
     struct ggml_tensor * ffn_norm_enc     = nullptr;
 
@@ -598,6 +599,16 @@ struct llama_model {
     // eagle3
     struct ggml_tensor * fc  = nullptr;  // feature fusion layer
     struct ggml_tensor * d2t = nullptr;  // draft to target vocabulary mapping
+
+    // Gemma4 MTP
+    struct ggml_tensor * mtp_pre_proj      = nullptr;
+    struct ggml_tensor * mtp_post_proj     = nullptr;
+    struct ggml_tensor * mtp_token_ordering = nullptr;
+    struct ggml_tensor * mtp_centroids     = nullptr;
+
+    // DFlash Draft
+    struct ggml_tensor * dflash_fc         = nullptr;
+    struct ggml_tensor * dflash_hidden_norm = nullptr;
 
     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
     std::vector<int32_t> target_layer_ids;
