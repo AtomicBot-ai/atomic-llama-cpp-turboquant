@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <array>
 #include <vector>
 
 #ifdef __APPLE__
@@ -820,6 +821,18 @@ struct ggml_backend_sched {
     bool only_active_experts;
     uint32_t op_offload_mask[(GGML_OP_COUNT + 31) / 32];
 
+    size_t max_extra_alloc; // max extra allocation for graph splits (0 = unlimited)
+    bool split_mode_graph;   // enable graph-level split mode
+    bool scheduler_async;    // enable async scheduling
+
+    // graph split mode support: per-backend input buffers and split bookkeeping
+    std::array<ggml_backend_buffer_t, GGML_SCHED_MAX_BACKENDS> input_memory_bufs;
+    std::vector<std::vector<ggml_backend_sched_split *>> backend_splits;
+    std::array<bool, GGML_SCHED_MAX_BACKENDS> needs_sync;
+    std::array<bool, GGML_SCHED_MAX_BACKENDS> own_cpy;
+
+    bool has_reduce;
+
     int debug;
 
     // used for debugging graph reallocations [GGML_SCHED_DEBUG_REALLOC]
@@ -1579,20 +1592,22 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
                 // when offloading MoE weights, we can reduce the amount of data copied by copying only the experts that are used
                 ggml_tensor * node = split->graph.nodes[0];
-                if (split->graph.n_nodes > 0 &&
+                if (sched->only_active_experts &&
+                    split->graph.n_nodes > 0 &&
                     ggml_backend_buffer_get_usage(input->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
                     ggml_backend_buffer_is_host(input->buffer) && (
                     (node->src[0] == input_cpy && node->op == GGML_OP_MUL_MAT_ID)
+                    || (node->src[1] == input_cpy && node->op == GGML_OP_MOE_FUSED_UP_GATE)
                     //|| (node->src[1] == input_cpy && node->op == GGML_OP_ADD_ID) /* GGML_OP_ADD_ID weights are small and not worth splitting */
                     )) {
 
-                    const int64_t n_expert   = node->op == GGML_OP_MUL_MAT_ID ? input->ne[2] : input->ne[1];
-                    const size_t expert_size = node->op == GGML_OP_MUL_MAT_ID ? input->nb[2] : input->nb[1];
+                    const int64_t n_expert   = (node->op == GGML_OP_MUL_MAT_ID || node->op == GGML_OP_MOE_FUSED_UP_GATE) ? input->ne[2] : input->ne[1];
+                    const size_t expert_size = (node->op == GGML_OP_MUL_MAT_ID || node->op == GGML_OP_MOE_FUSED_UP_GATE) ? input->nb[2] : input->nb[1];
 
                     ggml_backend_synchronize(input_backend);
 
                     // get the ids
-                    ggml_tensor * ids_tensor = node->src[2];
+                    ggml_tensor * ids_tensor = (node->op == GGML_OP_MUL_MAT_ID) ? node->src[2] : node->src[3];
                     ggml_backend_t ids_backend = split_backend;
 
                     // if the ids tensor is also an input of the split, it may not have been copied yet to the split backend
@@ -1793,6 +1808,12 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->op_offload = op_offload;
     memset(sched->op_offload_mask, 0xff, sizeof(sched->op_offload_mask));
 
+    sched->input_memory_bufs.fill(nullptr);
+    sched->backend_splits.resize(n_backends);
+    sched->needs_sync.fill(true);
+    sched->own_cpy.fill(false);
+    sched->has_reduce = false;
+
     ggml_backend_sched_reset(sched);
 
     return sched;
@@ -1805,6 +1826,9 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     for (int b = 0; b < sched->n_backends; b++) {
         for (int c = 0; c < sched->n_copies; c++) {
             ggml_backend_event_free(sched->events[b][c]);
+        }
+        if (sched->input_memory_bufs[b]) {
+            ggml_backend_buffer_free(sched->input_memory_bufs[b]);
         }
     }
     ggml_gallocr_free(sched->galloc);
@@ -1833,6 +1857,10 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
         sched->is_reset = true;
     }
     sched->is_alloc = false;
+
+    sched->needs_sync.fill(true);
+    sched->own_cpy.fill(false);
+    sched->has_reduce = false;
 }
 
 void ggml_backend_sched_set_op_offload(ggml_backend_sched_t sched, enum ggml_op op, bool on_or_off) {
@@ -1859,6 +1887,21 @@ void ggml_backend_sched_set_only_active_experts(ggml_backend_sched_t sched, bool
         return;
     }
     sched->only_active_experts = on_or_off;
+}
+
+void ggml_backend_sched_set_max_extra_alloc(ggml_backend_sched_t sched, size_t max_extra_alloc) {
+    if (!sched) {
+        return;
+    }
+    sched->max_extra_alloc = max_extra_alloc;
+}
+
+void ggml_backend_sched_set_split_mode_graph(ggml_backend_sched_t sched, bool on_or_off, bool async) {
+    if (!sched) {
+        return;
+    }
+    sched->split_mode_graph = on_or_off;
+    sched->scheduler_async  = async;
 }
 
 void ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph, size_t * sizes) {
