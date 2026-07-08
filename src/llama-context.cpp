@@ -418,6 +418,9 @@ llama_context::llama_context(
             LLAMA_LOG_INFO("%s: pipeline parallelism enabled\n", __func__);
         }
 
+        // repack up/gate expert tensors if merge_up_gate_exps was requested
+        llama_repack_up_gate_exps();
+
         sched_reserve();
 
         if (!cparams.flash_attn) {
@@ -456,6 +459,32 @@ llama_context::~llama_context() {
         }
     }
     ggml_opt_free(opt_ctx);
+}
+
+void llama_context::llama_repack_up_gate_exps() {
+    // Check if any layer has pre-merged gate_up_exps from GGUF
+    // If not, runtime interleaving is deferred (requires pre-merged GGUF)
+    bool needs_repack = false;
+    for (auto & l : model.layers) {
+        if (l.ffn_gate_up_exps && l.ffn_up_exps && l.ffn_gate_exps &&
+            !l.ffn_gate_up_exps->extra) {
+            needs_repack = true;
+            break;
+        }
+    }
+
+    if (!needs_repack) {
+        return;
+    }
+
+    LLAMA_LOG_WARN("%s: runtime up/gate expert repacking requested via --merge-up-gate-experts\n"
+                   "%s: but pre-merged ffn_gate_up_exps tensors are not in the GGUF file.\n"
+                   "%s: the model will use separate gate/up tensors (no runtime merge yet).\n"
+                   "%s: for merged performance, re-quantize the model with a merge-aware tool.\n",
+                   __func__, __func__, __func__, __func__);
+
+    // The graph already handles separate gate/up tensors correctly
+    // (ffn_gate_up_exps == nullptr uses ffn_up_exps + ffn_gate_exps path)
 }
 
 void llama_context::sched_reserve() {
@@ -747,6 +776,10 @@ const llama_cparams & llama_context::get_cparams() const {
 
 ggml_backend_sched_t llama_context::get_sched() const {
     return sched.get();
+}
+
+ggml_backend_sched_t llama_get_sched(const struct llama_context * ctx) {
+    return ctx->get_sched();
 }
 
 uint32_t llama_context::n_ctx() const {
@@ -3787,6 +3820,7 @@ void llama_set_only_active_experts(struct llama_context * lctx, bool on_or_off) 
     if (!sched) {
         return;
     }
+    LLAMA_LOG_INFO("%s: only_active_experts = %s\n", __func__, on_or_off ? "true" : "false");
     ggml_backend_sched_set_only_active_experts(sched, on_or_off);
 }
 

@@ -270,6 +270,7 @@ extern "C" {
         LLAMA_SPLIT_MODE_LAYER  = 1, // split layers and KV across GPUs
         LLAMA_SPLIT_MODE_ROW    = 2, // split layers and KV across GPUs, use tensor parallelism if supported
         LLAMA_SPLIT_MODE_TENSOR = 3,
+        LLAMA_SPLIT_MODE_GRAPH  = 4,  // split model as a compute graph (experimental)
     };
 
     enum llama_context_type {
@@ -400,6 +401,9 @@ extern "C" {
         bool no_alloc;        // only load metadata and simulate memory allocations
         bool merge_up_gate_exps; // merge ffn_up_exps and ffn_gate_exps into contiguous tensor
         bool defer_experts;      // defer expert mmap residency (Linux only)
+
+        // Maximum extra allocation (in MiB) for graph splits (0 = unlimited, default 256)
+        int32_t max_extra_alloc;
     };
 
     struct llama_sampler_seq_config {
@@ -638,6 +642,7 @@ extern "C" {
     LLAMA_API const struct llama_model * llama_get_model   (const struct llama_context * ctx);
     LLAMA_API           llama_memory_t   llama_get_memory  (const struct llama_context * ctx);
     LLAMA_API  enum llama_pooling_type   llama_pooling_type(const struct llama_context * ctx); // TODO: rename to llama_get_pooling_type
+    LLAMA_API        ggml_backend_sched_t llama_get_sched   (const struct llama_context * ctx);
 
     LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
     LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);
