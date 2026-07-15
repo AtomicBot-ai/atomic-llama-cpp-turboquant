@@ -1,6 +1,7 @@
 #include "server-context.h"
 #include "server-common.h"
 #include "server-http.h"
+#include "server-metrics.h"
 #include "server-task.h"
 #include "server-queue.h"
 
@@ -21,6 +22,7 @@
 #include <exception>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <filesystem>
 
 // fix problem with std::min and std::max
@@ -3638,10 +3640,18 @@ void server_routes::init_routes() {
                 const std::string name = metric_def.at("name");
                 const std::string help = metric_def.at("help");
 
-                auto value = json_value(metric_def, "value", 0.);
-                prometheus << "# HELP llamacpp:" << name << " " << help  << "\n"
-                            << "# TYPE llamacpp:" << name << " " << type  << "\n"
-                            << "llamacpp:"        << name << " " << value << "\n";
+                try {
+                    prometheus << server_prometheus_format_metric(
+                        name, type, help, metric_def.at("value"));
+                } catch (const std::invalid_argument &) {
+                    res->error(format_error_response(
+                        "Metric value is not a valid finite number", ERROR_TYPE_SERVER));
+                    return res;
+                } catch (const std::runtime_error &) {
+                    res->error(format_error_response(
+                        "Metric value could not be serialized", ERROR_TYPE_SERVER));
+                    return res;
+                }
             }
         }
 

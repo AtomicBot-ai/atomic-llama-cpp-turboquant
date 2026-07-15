@@ -5,6 +5,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 set(TARGET server-context)
 
 add_library(${TARGET} STATIC
+    server-metrics.cpp
+    server-metrics.h
     server-task.cpp
     server-task.h
     server-queue.cpp
@@ -71,3 +73,14 @@ target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(${TARGET} PRIVATE server-context PUBLIC common cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
 
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
+
+if (LLAMA_BUILD_TESTS)
+    add_executable(test-server-metrics
+        tests/test-server-metrics.cpp
+        server-metrics.cpp
+    )
+    target_include_directories(test-server-metrics PRIVATE ../mtmd ${CMAKE_SOURCE_DIR})
+    target_link_libraries(test-server-metrics PRIVATE common)
+    target_compile_features(test-server-metrics PRIVATE cxx_std_17)
+    add_test(NAME test-server-metrics COMMAND test-server-metrics)
+endif()
