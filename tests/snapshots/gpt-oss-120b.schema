@@ -1,5 +1,5 @@
 # Model: gpt-oss-120b
-# n_embd=2880, n_ff=2880, n_vocab=0, n_layer=36, n_head=64, n_head_kv=8, n_expert=128
+# n_embd=2880, n_ff=2880, n_vocab=201088, n_layer=36, n_head=64, n_head_kv=8, n_expert=128
 
 [F32] f32
 

@@ -57,21 +57,9 @@ static void ggml_gen_hadamard(ggml_tensor * tensor) {
     }
 }
 
-static ggml_tensor * ggml_mul_mat_aux(
-        ggml_context * ctx,
-        ggml_tensor * cur,
-        ggml_tensor * rot) {
-    const auto n = rot->ne[0];
-
-    ggml_tensor * res;
-
-    res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);
-    res = ggml_mul_mat   (ctx, rot, res);
-    ggml_mul_mat_set_hint(res, GGML_HINT_SRC0_IS_HADAMARD);
-    res = ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
-
-    return res;
-}
+// NOTE: the Hadamard rotation helper (ggml_mul_mat_aux) moved to llama-impl.h
+// upstream; the copy that used to live here is gone. The fork's
+// GGML_HINT_SRC0_IS_HADAMARD hint is applied in the llama-impl.h version.
 
 // InnerQ: cross-TU shared state for CUDA per-channel equalization.
 // These are defined in ggml-cuda/turbo-innerq.cu (when CUDA is enabled).
@@ -266,10 +254,12 @@ llama_kv_cache::llama_kv_cache(
             n_embd_head_k_all = -1;
         }
 
-        if (n_embd_head_v_all == 0) {
-            n_embd_head_v_all = (int32_t) hparams.n_embd_head_v(il);
-        } else if (n_embd_head_v_all > 0 && n_embd_head_v_all != (int32_t) hparams.n_embd_head_v(il)) {
-            n_embd_head_v_all = -1;
+        if (!is_mla) {
+            if (n_embd_head_v_all == 0) {
+                n_embd_head_v_all = (int32_t) hparams.n_embd_head_v(il);
+            } else if (n_embd_head_v_all > 0 && n_embd_head_v_all != (int32_t) hparams.n_embd_head_v(il)) {
+                n_embd_head_v_all = -1;
+            }
         }
 
         // [TAG_V_CACHE_VARIABLE]
@@ -565,11 +555,11 @@ llama_kv_cache::llama_kv_cache(
                 hparams.n_embd_head_v() % 64 == 0;
         }
 
-        // always create Hadamard rotation tensors for DeepSeek V3.2 DSA lightning
-        // indexer: this is a functional requirement for the model, not optional
-        // tuning, so it overrides the default-off policy (still respects the hard
-        // LLAMA_ATTN_ROT_DISABLE lock-out).
-        if (!attn_rot_disable && model.arch == LLM_ARCH_DEEPSEEK32 &&
+        // always create Hadamard rotation tensors for DeepSeek DSA lightning
+        // indexers: this is a functional requirement for these models, not
+        // optional tuning, so it overrides the fork's default-off policy (still
+        // respects the hard LLAMA_ATTN_ROT_DISABLE lock-out).
+        if (!attn_rot_disable && (model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4) &&
             hparams.n_embd_head_k_full == hparams.indexer_head_size) {
             attn_rot_k = true;
         }
@@ -960,7 +950,7 @@ llama_memory_context_ptr llama_kv_cache::init_batch(
 
         std::vector<llama_ubatch> ubatches;
         while (true) {
-            auto ubatch = n_stream == 1 ? balloc.split_simple(n_ubatch) : balloc.split_equal(n_ubatch, true);
+            auto ubatch = n_stream == 1 ? balloc.split_simple(n_ubatch) : balloc.split_equal(n_ubatch, true, 0);
 
             if (ubatch.n_tokens == 0) {
                 break;
@@ -1495,6 +1485,23 @@ ggml_type llama_kv_cache::type_v() const {
     return layers[0].v->type;
 }
 
+std::vector<uint32_t> llama_kv_cache::get_layer_ids() const {
+    std::vector<uint32_t> res;
+    res.reserve(layers.size());
+
+    for (const auto & layer : layers) {
+        res.push_back(layer.il);
+    }
+
+    return res;
+}
+
+ggml_tensor * llama_kv_cache::get_k_storage(int32_t il) const {
+    const int32_t ikv = map_layer_ids.at(il);
+
+    return layers[ikv].k;
+}
+
 uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
     uint32_t result = 0;
 
@@ -1509,6 +1516,51 @@ uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
     }
 
     return result;
+}
+
+uint32_t llama_kv_cache::get_n_kv_pos_contiguous(const slot_info & sinfo, const llama_ubatch & ubatch) const {
+    if (sinfo.n_stream() != 1 || ubatch.n_seqs_unq != 1 || ubatch.n_tokens == 0 ||
+        ubatch.pos == nullptr || ubatch.n_seq_id == nullptr ||
+        ubatch.seq_id == nullptr || ubatch.seq_id[0] == nullptr) {
+        return 0;
+    }
+
+    const llama_seq_id seq_id = ubatch.seq_id[0][0];
+    if (seq_id < 0 || (size_t) seq_id >= seq_to_stream.size()) {
+        return 0;
+    }
+
+    const uint32_t stream = seq_to_stream[seq_id];
+    if (sinfo.strm[0] < 0 || (uint32_t) sinfo.strm[0] != stream || stream >= v_cells.size()) {
+        return 0;
+    }
+
+    const auto & cells = v_cells[stream];
+    const llama_pos pos_max = cells.seq_pos_max(seq_id);
+
+    if (pos_max < 0 || pos_max >= (llama_pos) cells.size()) {
+        return 0;
+    }
+
+    // the banded op aligns Q to the tail of K: the ubatch must be that monotonic tail, else dense bias
+    if ((uint32_t) pos_max + 1 < ubatch.n_tokens) {
+        return 0;
+    }
+    const llama_pos pos_start = pos_max + 1 - ubatch.n_tokens;
+    for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+        if (ubatch.pos[i] != pos_start + (llama_pos) i ||
+            ubatch.n_seq_id[i] < 1 || ubatch.seq_id[i] == nullptr || ubatch.seq_id[i][0] != seq_id) {
+            return 0;
+        }
+    }
+
+    for (llama_pos pos = 0; pos <= pos_max; ++pos) {
+        if (cells.is_empty(pos) || cells.pos_get(pos) != pos || !cells.seq_has(pos, seq_id)) {
+            return 0;
+        }
+    }
+
+    return pos_max + 1;
 }
 
 ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
@@ -2111,6 +2163,39 @@ void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch 
     }
 }
 
+void llama_kv_cache::set_input_pos_rel_flat(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const {
+    const int64_t n_tokens = ubatch->n_tokens;
+
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+
+    int32_t * data = (int32_t *) dst->data;
+
+    const int64_t n_kv = dst->ne[0];
+    GGML_ASSERT(dst->ne[1] == n_tokens);
+
+    // [n_kv, n_tokens] in GLOBAL token order (stream-major, same as the KQ mask)
+    for (int64_t i = 0; i < n_tokens; ++i) {
+        const llama_seq_id seq_id = ubatch->seq_id[i][0];
+
+        const auto & cells = v_cells[seq_to_stream[seq_id]];
+
+        const llama_pos p1 = ubatch->pos[i];
+
+        for (int64_t j = 0; j < n_kv; ++j) {
+            // use the ACTUAL absolute position in the KV cell; physical slot order is not monotonic
+            int32_t rel = (int32_t) extent; // zero-bias column
+            if (!cells.is_empty(j)) {
+                const llama_pos d = p1 - cells.pos_get(j);
+                if (d >= 0 && d < (llama_pos) extent) {
+                    rel = (int32_t) d;
+                }
+            }
+
+            data[i*n_kv + j] = (int32_t) (i*(extent + 1)) + rel;
+        }
+    }
+}
+
 void llama_kv_cache::set_input_k_rot(ggml_tensor * dst) const {
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
 
@@ -2191,14 +2276,14 @@ ggml_tensor * llama_kv_cache::build_rope_shift(
         tmp = ggml_cast(ctx, cur, GGML_TYPE_F32);
 
         // rotate back
-        tmp = ggml_mul_mat_aux(ctx, tmp, rot);
+        tmp = llama_mul_mat_hadamard(ctx, tmp, rot);
 
         tmp = ggml_rope_ext(ctx, tmp,
                 shift, factors, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
                 yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow);
 
         // rotate fwd
-        tmp = ggml_mul_mat_aux(ctx, tmp, rot);
+        tmp = llama_mul_mat_hadamard(ctx, tmp, rot);
 
         tmp = ggml_cpy(ctx, tmp, cur);
     } else {
@@ -2919,6 +3004,21 @@ uint32_t llama_kv_cache_context::get_n_kv() const {
     return n_kv;
 }
 
+uint32_t llama_kv_cache_context::get_n_kv_pos_contiguous() const {
+    // Full-cache and update contexts do not carry a concrete ubatch/slot pair.
+    if (ubatches.empty() || sinfos.empty() || i_cur >= ubatches.size() || i_cur >= sinfos.size()) {
+        // reserve context: report the whole cache as position-contiguous so the worst-case graph
+        // is the banded path; reserving the dense fallback is unallocatable at large n_ctx
+        if (kv != nullptr && lctx == nullptr && kv->get_n_stream() == 1) {
+            return n_kv;
+        }
+        return 0;
+    }
+
+    const uint32_t result = kv->get_n_kv_pos_contiguous(sinfos[i_cur], ubatches[i_cur]);
+    return result <= (uint32_t) n_kv ? result : 0;
+}
+
 ggml_type llama_kv_cache_context::type_k() const {
     return kv->type_k();
 }
@@ -2997,6 +3097,10 @@ void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ub
 
 void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
     kv->set_input_pos_bucket(dst, ubatch);
+}
+
+void llama_kv_cache_context::set_input_pos_rel_flat(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const {
+    kv->set_input_pos_rel_flat(dst, ubatch, extent);
 }
 
 void llama_kv_cache_context::set_input_k_rot(ggml_tensor * dst) const {

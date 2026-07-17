@@ -109,7 +109,9 @@ class ModelBase:
     sentence_transformers_dense_modules: bool = False
 
     # MTP (multi-token prediction) export modes; set by main() before instantiation.
-    # Architectures opt in by overriding the handling (see _Qwen35MtpMixin).
+    # Architectures that implement the filtering/export behavior opt in by
+    # setting supports_mtp_export = True on their model class or a mixin.
+    supports_mtp_export: bool = False
     mtp_only: bool = False
     no_mtp: bool = False
 
@@ -266,8 +268,17 @@ class ModelBase:
                             data_gen = lambda data=data_torch: LazyTorchTensor.from_eager(data)  # noqa: E731
                         else:
                             data_gen = lambda data=data_torch: data  # noqa: E731
+                    # the index maps each tensor to one shard; a duplicate would silently overwrite it
+                    if weight_map and name in weight_map and weight_map[name] != part_name:
+                        raise ValueError(
+                            f"tensor '{name}' found in '{part_name}' but the index assigns "
+                            f"it to '{weight_map[name]}'; refusing to load a wrong-shard copy")
                     if titem := self.filter_tensors((name, data_gen)):
                         tname, tgen = titem
+                        if tname in tensors:
+                            raise ValueError(
+                                f"duplicate tensor '{tname}' found in multiple model parts; "
+                                f"refusing to silently overwrite")
                         tensors[tname] = tgen
 
         # verify tensor name presence and identify potentially missing files
@@ -535,6 +546,20 @@ class ModelBase:
                 else:
                     raise NotImplementedError(f"Quant format {quant_format!r} for method {quant_method!r} is not yet supported")
             elif quant_method == "modelopt":
+                # Stacked-expert NVFP4 checkpoints (e.g. Inkling-NVFP4) store experts as
+                # w13_weight/w2_weight with .scale/.scale2/.input_amax/.original_shape
+                # auxiliaries; the main tensors do not end in .weight, so the NVFP4 path
+                # below would silently skip them. Reject them with a clear error.
+                stacked_expert_aux = [
+                    n for n in self.model_tensors
+                    if n.endswith((".scale2", ".input_amax", ".original_shape"))
+                ]
+                if stacked_expert_aux:
+                    raise NotImplementedError(
+                        "This checkpoint stores quantized experts in the stacked ModelOpt NVFP4 layout "
+                        f"({len(stacked_expert_aux)} auxiliary tensors like {stacked_expert_aux[0]!r}), "
+                        "which is not supported yet. Convert from the unquantized (BF16) checkpoint instead."
+                    )
                 # Mixed-precision ModelOpt models: NVFP4 tensors are handled by
                 # _generate_nvfp4_tensors; FP8 tensors have 1D weight_scale and
                 # are dequantized here. k/v scale tensors are unused.
@@ -1021,6 +1046,14 @@ class ModelBase:
 
     def write(self):
         self.prepare_tensors()
+        # zero tensors means the shards were never discovered, yet a metadata-only GGUF logs success
+        n_written = sum(len(shard) for shard in self.gguf_writer.tensors)
+        if n_written == 0:
+            raise ValueError(
+                "no tensors were written: the model shards could not be found. "
+                "Check that the safetensors filenames are discoverable (they must "
+                "start with 'model') or that model.safetensors exists."
+            )
         self.prepare_metadata(vocab_only=False)
         self.gguf_writer.write_header_to_file(path=self.fname_out)
         self.gguf_writer.write_kv_data_to_file()
@@ -1119,8 +1152,10 @@ class TextModel(ModelBase):
 
         rope_theta = self.find_hparam(["global_rope_theta", "rope_global_theta", "rope_theta_global", "rope_theta", "rotary_emb_base"], optional=True)
         local_rope_theta = self.find_hparam(["local_rope_theta", "rope_local_theta", "rope_theta_local", "swa_rope_theta", "rope_local_base_freq"], optional=True)
+        partial_rotary_factor = self.find_hparam(["partial_rotary_factor", "rope_pct", "rope_percent"], optional=True)
+        original_max_position_embeddings = self.find_hparam(["original_max_position_embeddings"], optional=True)
 
-        # Ensure "rope_theta" and "rope_type" is mirrored in rope_parameters
+        # Ensure global params are mirrored in rope_parameters
         if "full_attention" not in self.rope_parameters and "sliding_attention" not in self.rope_parameters:
             if local_rope_theta is not None:
                 self.rope_parameters["sliding_attention"] = {"rope_theta": local_rope_theta}
@@ -1128,6 +1163,10 @@ class TextModel(ModelBase):
                 self.rope_parameters["rope_theta"] = rope_theta
             if "rope_type" not in self.rope_parameters and (rope_type := self.rope_parameters.get("type")) is not None:
                 self.rope_parameters["rope_type"] = rope_type
+            if "partial_rotary_factor" not in self.rope_parameters and partial_rotary_factor is not None:
+                self.rope_parameters["partial_rotary_factor"] = partial_rotary_factor
+            if "original_max_position_embeddings" not in self.rope_parameters and original_max_position_embeddings is not None:
+                self.rope_parameters["original_max_position_embeddings"] = original_max_position_embeddings
 
     @classmethod
     def __init_subclass__(cls):
@@ -1267,7 +1306,7 @@ class TextModel(ModelBase):
         if (f_norm_eps := self.find_hparam(["layer_norm_eps", "layer_norm_epsilon", "norm_epsilon"], optional=True)) is not None:
             self.gguf_writer.add_layer_norm_eps(f_norm_eps)
             logger.info(f"gguf: layer norm epsilon = {f_norm_eps}")
-        if (n_experts := self.find_hparam(["num_local_experts", "num_experts"], optional=True)) is not None:
+        if (n_experts := self.find_hparam(["num_local_experts", "num_experts", "n_routed_experts"], optional=True)) is not None:
             self.gguf_writer.add_expert_count(n_experts)
             logger.info(f"gguf: expert count = {n_experts}")
         if (n_experts_used := self.find_hparam(["num_experts_per_tok", "num_experts_per_token", "top_k_experts"], optional=True)) is not None:
@@ -1285,6 +1324,8 @@ class TextModel(ModelBase):
                 self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
             elif score_func == "softmax":
                 self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SOFTMAX)
+            elif score_func == "sqrtsoftplus":
+                self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SQRTSOFTPLUS)
             else:
                 raise ValueError(f"Unsupported expert score gating function value: {score_func}")
             logger.info(f"gguf: expert score gating function = {score_func}")
@@ -2595,6 +2636,17 @@ class LazyTorchTensor(gguf.LazyBase):
             return args[0].numpy()
 
         return cls._wrap_fn(func)(*args, **kwargs)
+
+
+if hasattr(torch, "float8_e8m0fnu"):
+    _torch_float8_e8m0 = torch.float8_e8m0fnu
+    LazyTorchTensor._dtype_map[_torch_float8_e8m0] = np.uint8
+    LazyTorchTensor._dtype_byteswap_map[_torch_float8_e8m0] = np.uint8
+    LazyTorchTensor._dtype_str_map["F8_E8M0"] = _torch_float8_e8m0
+else:
+    # Older torch builds do not expose F8_E8M0. Keep the raw bytes so callers
+    # that know the format can decode them explicitly.
+    LazyTorchTensor._dtype_str_map["F8_E8M0"] = torch.uint8
 
 
 def get_model_architecture(hparams: dict[str, Any], model_type: ModelType) -> str:

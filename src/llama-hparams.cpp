@@ -104,6 +104,10 @@ uint32_t llama_hparams::n_embd_inp() const {
     return n_embd_inp;
 }
 
+uint32_t llama_hparams::n_embd_inp_enc() const {
+    return n_embd_inp_enc_impl > 0 ? n_embd_inp_enc_impl : n_embd_inp();
+}
+
 uint32_t llama_hparams::n_embd_out() const {
     return n_embd_out_impl > 0 ? n_embd_out_impl : n_embd;
 }
@@ -177,6 +181,11 @@ uint32_t llama_hparams::n_embd_v_gqa_max() const {
 }
 
 uint32_t llama_hparams::n_embd_r() const {
+    if (n_embd_r_impl != 0) {
+        // explicit override (e.g. inkling: 4 packed shortconv streams per layer)
+        return n_embd_r_impl;
+    }
+
     if (wkv_head_size != 0) {
         // for RWKV models
         return token_shift_count * n_embd;

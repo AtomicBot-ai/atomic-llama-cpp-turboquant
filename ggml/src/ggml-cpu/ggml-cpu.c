@@ -83,6 +83,9 @@ float ggml_table_f32_f16[1 << 16];
 // precomputed f32 table for e8m0 half (1 KB) (simd-mappings.h)
 float ggml_table_f32_e8m0_half[1 << 8];
 
+// precomputed f32 table for ue4m3 (1 KB) (simd-mappings.h)
+float ggml_table_f32_ue4m3[1 << 8];
+
 #if defined(__ARM_ARCH)
 struct ggml_arm_arch_features_type {
     int sve_cnt;
@@ -242,6 +245,12 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_Q1_0] = {
         .from_float               = quantize_row_q1_0,
         .vec_dot                  = ggml_vec_dot_q1_0_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_Q2_0] = {
+        .from_float               = quantize_row_q2_0,
+        .vec_dot                  = ggml_vec_dot_q2_0_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
     },
@@ -2037,6 +2046,7 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 ggml_compute_forward_fill(params, tensor);
             } break;
         case GGML_OP_FLASH_ATTN_EXT:
+        case GGML_OP_FLASH_ATTN_EXT_BANDED:
             {
                 ggml_compute_forward_flash_attn_ext(params, tensor);
             } break;
@@ -2102,6 +2112,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_TURBO_WHT:
             {
                 ggml_compute_forward_turbo_wht(params, tensor);
+            } break;
+        case GGML_OP_LIGHTNING_INDEXER:
+            {
+                ggml_compute_forward_lightning_indexer(params, tensor);
             } break;
         case GGML_OP_MAP_CUSTOM1:
             {
@@ -2421,9 +2435,11 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_ARGSORT:
         case GGML_OP_TOP_K:
         case GGML_OP_FLASH_ATTN_EXT:
+        case GGML_OP_FLASH_ATTN_EXT_BANDED:
         case GGML_OP_FLASH_ATTN_BACK:
         case GGML_OP_SSM_CONV:
         case GGML_OP_SSM_SCAN:
+        case GGML_OP_LIGHTNING_INDEXER:
             {
                 n_tasks = n_threads;
             } break;
@@ -2902,6 +2918,12 @@ struct ggml_cplan ggml_graph_plan(
                             cur = ggml_type_size(GGML_TYPE_F32) * node->src[0]->ne[0] * n_tasks;
                         }
                     } break;
+                case GGML_OP_SET_ROWS:
+                    {
+                        if (node->src[0]->type == GGML_TYPE_F16 && node->type != GGML_TYPE_F16) {
+                            cur = ggml_type_size(GGML_TYPE_F32) * node->src[0]->ne[0] * n_tasks;
+                        }
+                    } break;
                 case GGML_OP_SOFT_MAX:
                 case GGML_OP_ROPE:
                 case GGML_OP_ROPE_BACK:
@@ -2961,6 +2983,7 @@ struct ggml_cplan ggml_graph_plan(
                         cur += sizeof(int32_t)*node->src[0]->ne[0]*n_tasks;
                     } break;
                 case GGML_OP_FLASH_ATTN_EXT:
+                case GGML_OP_FLASH_ATTN_EXT_BANDED:
                     {
                         const int64_t neq2 = node->src[0]->ne[2]; // number of query heads
                         const int64_t DK = node->src[1]->ne[0];
@@ -3013,6 +3036,12 @@ struct ggml_cplan ggml_graph_plan(
                     {
                         GGML_ABORT("fatal error");
                     }
+                case GGML_OP_LIGHTNING_INDEXER:
+                    {
+                        // temp buffer for dequantizing lightning indexer keys
+                        const int64_t ne10 = node->src[1]->ne[0];
+                        cur += sizeof(float)*ne10*n_tasks;
+                    } break;
                 default:
                     break;
             }
@@ -3966,6 +3995,11 @@ void ggml_cpu_init(void) {
             // initialize E8M0 half table (256 entries)
             for (int i = 0; i < (1 << 8); ++i) {
                 ggml_table_f32_e8m0_half[i] = GGML_E8M0_TO_FP32_HALF(i);
+            }
+
+            // initialize UE4M3 table (256 entries)
+            for (int i = 0; i < (1 << 8); ++i) {
+                ggml_table_f32_ue4m3[i] = ggml_ue4m3_to_fp32(i);
             }
 
             const uint64_t t_end = ggml_time_us(); UNUSED(t_end);

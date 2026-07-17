@@ -53,7 +53,7 @@ struct ggml_cuda_flash_attn_ext_f16_extra_data {
 
 static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_get_f16_extra_data(
         const ggml_tensor * dst, const bool need_f16_K, const bool need_f16_V) {
-    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT || dst->op == GGML_OP_FLASH_ATTN_EXT_BANDED);
 
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
@@ -1015,7 +1015,10 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
 template <int ncols1>
 __launch_bounds__(FATTN_KQ_STRIDE/2, 1)
 static __global__ void flash_attn_mask_to_KV_max(
-        const half2 * __restrict__ mask, int * __restrict__ KV_max, const int ne30, const int s31, const int s33) {
+        const half2 * mask_ptr, int * KV_max_ptr, const int ne30, const int64_t s31, const int64_t s33) {
+    const half2 * GGML_CUDA_RESTRICT mask   = mask_ptr;
+    int         * GGML_CUDA_RESTRICT KV_max = KV_max_ptr;
+
     const int ne31     = gridDim.x;
     const int tid      = threadIdx.x;
     const int sequence = blockIdx.y;
@@ -1331,7 +1334,8 @@ void launch_fattn(
     const bool V_is_K_view = V->view_src && (V->view_src == K || (V->view_src == K->view_src && V->view_offs == K->view_offs));
 
     const ggml_tensor * mask  = dst->src[3];
-    const ggml_tensor * sinks = dst->src[4];
+    const ggml_tensor * rel   = dst->op == GGML_OP_FLASH_ATTN_EXT_BANDED ? dst->src[5] : nullptr;
+    const ggml_tensor * sinks = rel ? rel : dst->src[4];
 
     ggml_tensor * KQV = dst;
 
@@ -1440,8 +1444,8 @@ void launch_fattn(
     // Only worth the overhead if there is at lease one FATTN_KQ_STRIDE x FATTN_KQ_STRIDE square to be skipped or
     //     multiple sequences of possibly different lengths.
     if (mask && K->ne[1] % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1)) {
-        const int s31 = mask->nb[1] / sizeof(half2);
-        const int s33 = mask->nb[3] / sizeof(half2);
+        const int64_t s31 = mask->nb[1] / sizeof(half2);
+        const int64_t s33 = mask->nb[3] / sizeof(half2);
 
         const dim3 blocks_num_KV_max(ntiles_x, Q->ne[3], 1);
         const dim3 block_dim_KV_max(FATTN_KQ_STRIDE/2, 1, 1);
@@ -1450,8 +1454,9 @@ void launch_fattn(
         const int iter_k = K->ne[1] / FATTN_KQ_STRIDE;
 
         KV_max.alloc(ne_KV_max);
-        flash_attn_mask_to_KV_max<ncols1><<<blocks_num_KV_max, block_dim_KV_max, 0, main_stream>>>
-            ((const half2 *) mask->data, KV_max.ptr, iter_k, s31, s33);
+        ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num_KV_max, block_dim_KV_max, 0, main_stream);
+        ggml_cuda_kernel_launch(flash_attn_mask_to_KV_max<ncols1>, launch_params,
+            (const half2 *) mask->data, KV_max.ptr, iter_k, s31, s33);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -1539,6 +1544,13 @@ void launch_fattn(
     memcpy(&max_bias,      (const float *) KQV->op_params + 1, sizeof(float));
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
 
+    // banded op reuses the MMA ABI: negative max_bias tags the branch, sinks_ptr carries rel_logits, -max_bias is E
+    if (rel) {
+        GGML_ASSERT(rel->type == GGML_TYPE_F32 && ggml_is_contiguous(rel));
+        GGML_ASSERT(rel->ne[0] <= (1 << 20)); // exactly representable in float
+        max_bias = -float(rel->ne[0]);
+    }
+
     if (logit_softcap != 0.0f) {
         scale /= logit_softcap;
     }
@@ -1546,8 +1558,9 @@ void launch_fattn(
     const uint32_t n_head      = Q->ne[2];
     const uint32_t n_head_log2 = 1u << uint32_t(floorf(log2f(float(n_head))));
 
-    const float m0 = powf(2.0f, -(max_bias       ) / n_head_log2);
-    const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
+    // m0/m1 are unused for banded bias; the negative tag would otherwise blow up the exponent
+    const float m0 = rel ? 1.0f : powf(2.0f, -(max_bias       ) / n_head_log2);
+    const float m1 = rel ? 1.0f : powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
 
     // TODO other tensor dimensions after removal of WMMA kernel:
     const uint3 ne01 = init_fastdiv_values(Q->ne[1]);
