@@ -107,18 +107,71 @@ void ggml_cuda_error(const char * stmt, const char * func, const char * file, in
     GGML_ABORT(GGML_CUDA_NAME " error");
 }
 
-// this is faster on Windows
-// probably because the Windows CUDA libraries forget to make this check before invoking the drivers
-// Forward declarations for host-staged cross-GPU copy helpers
-// (used by buffer ops before their definition site).
+// Pinned host staging buffer for cross-GPU copies without peer access.
+// Reuses a single buffer across calls, growing as needed, to avoid the
+// overhead of per-call cudaMallocHost/cudaFreeHost.
+struct ggml_cuda_host_staging_pool {
+    void * buf = nullptr;
+    size_t size = 0;
+
+    cudaError_t ensure(size_t needed) {
+        if (needed <= size) {
+            return cudaSuccess;
+        }
+        if (buf) {
+            CUDA_CHECK(cudaFreeHost(buf));
+        }
+        cudaError_t err = cudaMallocHost(&buf, needed);
+        if (err != cudaSuccess) {
+            buf = nullptr;
+            size = 0;
+            return err;
+        }
+        size = needed;
+        return cudaSuccess;
+    }
+};
+
+static ggml_cuda_host_staging_pool & ggml_cuda_get_staging() {
+    static thread_local ggml_cuda_host_staging_pool pool;
+    return pool;
+}
+
+// Host-staged cross-device copy for GPUs without peer access.
+// Copies data from src_device to dst_device via a pinned host buffer.
+// Returns cudaSuccess on success, error code on failure.
 static cudaError_t ggml_cuda_copy_across_devices(
     void * dst, int dst_device, const void * src, int src_device,
-    size_t size, cudaStream_t dst_stream, cudaStream_t src_stream);
-static cudaError_t ggml_cuda_copy2d_across_devices(
-    void * dst, int dst_device, size_t dpitch,
-    const void * src, int src_device, size_t spitch,
-    size_t width, size_t height, cudaStream_t dst_stream, cudaStream_t src_stream);
+    size_t size, cudaStream_t dst_stream, cudaStream_t src_stream) {
 
+    const auto & info = ggml_cuda_info();
+    if (info.peer_access[src_device][dst_device]) {
+        return cudaMemcpyPeerAsync(dst, dst_device, src, src_device, size, dst_stream);
+    }
+
+    // Fallback: stage through pinned host memory via reusable pool
+    int prev_device = ggml_cuda_get_device();
+    auto & pool = ggml_cuda_get_staging();
+    cudaError_t err = pool.ensure(size);
+    if (err != cudaSuccess) { return err; }
+
+    ggml_cuda_set_device(src_device);
+    err = cudaMemcpyAsync(pool.buf, src, size, cudaMemcpyDeviceToHost, src_stream);
+    if (err != cudaSuccess) { goto cleanup; }
+
+    err = cudaStreamSynchronize(src_stream);
+    if (err != cudaSuccess) { goto cleanup; }
+
+    ggml_cuda_set_device(dst_device);
+    err = cudaMemcpyAsync(dst, pool.buf, size, cudaMemcpyHostToDevice, dst_stream);
+
+cleanup:
+    ggml_cuda_set_device(prev_device);
+    return err;
+}
+
+// this is faster on Windows
+// probably because the Windows CUDA libraries forget to make this check before invoking the drivers
 void ggml_cuda_set_device(int device) {
     int current_device;
     CUDA_CHECK(cudaGetDevice(&current_device));
