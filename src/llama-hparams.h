@@ -14,6 +14,7 @@ enum llama_expert_gating_func_type {
     LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX        = 1,
     LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID        = 2,
     LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT = 3, // applied to the router weights instead of the logits
+    LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS  = 4,
 };
 
 enum llama_swa_type {
@@ -77,6 +78,17 @@ struct llama_hparams {
     struct llama_hparams_convnext convnext;
 
     uint32_t n_shortconv_l_cache  = 0;
+
+    // explicit override for the rolling state size per layer (see n_embd_r())
+    uint32_t n_embd_r_impl = 0;
+
+    // inkling (private arch)
+    uint32_t inkling_d_rel          = 0;
+    uint32_t inkling_rel_extent     = 0; // global (non-SWA) layers
+    uint32_t inkling_rel_extent_swa = 0; // local (SWA) layers
+    uint32_t inkling_log_n_floor    = 0; // 0 = log-N scaling disabled
+    float    inkling_log_alpha      = 0.0f;
+    uint32_t inkling_unpadded_n_vocab = 0; // 0 = no padded-vocab masking
 
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_head_arr;
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_head_kv_arr;
@@ -192,6 +204,10 @@ struct llama_hparams {
     // input embedding dimension (0 = use n_embd)
     uint32_t n_embd_inp_impl = 0;
 
+    // encoder input embedding dimension (0 = use n_embd_inp())
+    // e.g. the eagle3 encoder fuses target_layers * target_hidden features
+    uint32_t n_embd_inp_enc_impl = 0;
+
     // output embedding dimension (0 = use n_embd)
     uint32_t n_embd_out_impl = 0;
 
@@ -224,6 +240,16 @@ struct llama_hparams {
     uint32_t indexer_n_head    = 0;
     uint32_t indexer_head_size = 0;
     uint32_t indexer_top_k     = 0;
+
+    // DeepSeek-V4
+    uint32_t dsv4_o_group_count        = 0;
+    uint32_t dsv4_o_lora_rank          = 0;
+    uint32_t dsv4_hc_mult              = 0;
+    uint32_t dsv4_hc_sinkhorn_iters    = 0;
+    uint32_t dsv4_hash_layer_count     = 0;
+    float    dsv4_compress_rope_base   = 0.0f;
+    float    dsv4_hc_eps               = 0.0f;
+    std::array<uint32_t, LLAMA_MAX_LAYERS> dsv4_compress_ratios;
 
     // qwen3vl deepstack
     // When parsed from GGUF, this implies the first N layers consume the first
@@ -312,6 +338,9 @@ struct llama_hparams {
 
     // dimension of main + auxiliary input embeddings
     uint32_t n_embd_inp() const;
+
+    // dimension of the encoder input embeddings
+    uint32_t n_embd_inp_enc() const;
 
     // dimension of output embeddings
     uint32_t n_embd_out() const;
