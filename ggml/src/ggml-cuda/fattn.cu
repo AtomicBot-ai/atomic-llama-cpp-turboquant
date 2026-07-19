@@ -589,6 +589,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 return BEST_FATTN_KERNEL_VEC;
             }
         }
+        // MMA template instances for (DKQ=512, DV=512) only exist with ncols2 in {4, 8}
+        // (see template-instances/generate_cu_files.py). When gqa_ratio < 3 the MMA
+        // dispatcher in switch_ncols2<512,512> falls through to GGML_ABORT (fattn.cu:109).
+        // fattn-tile has DKQ=DV=512 with ncols2 fallback to {2,1} (commit 425db5b),
+        // so route DKQ=512 + low gqa_ratio to TILE (e.g. Gemma 4 E4B with gqa_ratio=2).
+        if (Q->ne[0] == 512 && gqa_ratio < 3) {
+            return BEST_FATTN_KERNEL_TILE;
+        }
         return BEST_FATTN_KERNEL_MMA_F16;
     }
 
