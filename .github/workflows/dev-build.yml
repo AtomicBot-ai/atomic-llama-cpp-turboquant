@@ -1,0 +1,397 @@
+name: Dev Build (all platforms)
+
+# Staging pipeline for the `dev` branch.
+#
+# Every push to `dev` builds every supported backend and republishes the
+# rolling `dev-latest` prerelease with all archives, so a build can be
+# grabbed and smoke-tested on real hardware without a local checkout.
+# Pull requests into `dev` build everything but publish nothing.
+#
+# Stable releases are cut separately from `master` (see release-turboquant.yml).
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - '.github/workflows/dev-build.yml'
+      - '.github/actions/windows-setup-cuda/**'
+      - '**/CMakeLists.txt'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/*.c'
+      - '**/*.cpp'
+      - '**/*.cu'
+      - '**/*.cuh'
+      - '**/*.comp'
+      - '**/*.glsl'
+      - '**/*.metal'
+  pull_request:
+    branches:
+      - dev
+    paths:
+      - '.github/workflows/dev-build.yml'
+      - '.github/actions/windows-setup-cuda/**'
+      - '**/CMakeLists.txt'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/*.c'
+      - '**/*.cpp'
+      - '**/*.cu'
+      - '**/*.cuh'
+      - '**/*.comp'
+      - '**/*.glsl'
+      - '**/*.metal'
+
+# Group by ref so consecutive pushes to dev serialize: a newer push cancels
+# the older in-flight build instead of racing it for the dev-latest release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_LOG_COLORS: 1
+  LLAMA_LOG_PREFIX: 1
+  LLAMA_LOG_TIMESTAMPS: 1
+  # Keep in sync with the upstream `windows` release job.
+  VULKAN_VERSION: 1.4.313.2
+
+jobs:
+  linux-x64-vulkan:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-linux-x64-vulkan
+          evict-old-files: 1d
+
+      - name: Dependencies
+        run: |
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential mesa-vulkan-drivers vulkan-sdk
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_VULKAN=ON \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Verify build
+        run: |
+          ./build/bin/llama-server --version 2>&1 || true
+          ./build/bin/llama-server --help 2>&1 | grep -A2 "cache-type-k" || true
+          ldd build/bin/llama-server || true
+
+      - name: Prepare archive
+        run: |
+          mkdir -p release/build/bin
+          cp build/bin/llama-server release/build/bin/
+          cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
+          cp LICENSE release/build/bin/ 2>/dev/null || true
+          cd release
+          zip -r ../llama-turboquant-linux-x64-vulkan.zip .
+          tar -czf ../llama-turboquant-linux-x64-vulkan.tar.gz .
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-linux-x64-vulkan
+          path: |
+            llama-turboquant-linux-x64-vulkan.zip
+            llama-turboquant-linux-x64-vulkan.tar.gz
+          retention-days: 14
+
+  windows-x64:
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            cmake_flags: ''
+          - variant: vulkan
+            cmake_flags: '-DGGML_VULKAN=ON'
+          - variant: cuda-12.4
+            cuda: '12.4'
+            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON'
+          - variant: cuda-13.3
+            cuda: '13.3'
+            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-windows-x64-${{ matrix.variant }}
+          evict-old-files: 1d
+
+      - name: Install CUDA Toolkit
+        if: ${{ startsWith(matrix.variant, 'cuda') }}
+        uses: ./.github/actions/windows-setup-cuda
+        with:
+          cuda_version: ${{ matrix.cuda }}
+
+      - name: Install Vulkan SDK
+        if: ${{ matrix.variant == 'vulkan' }}
+        shell: pwsh
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Build
+        shell: cmd
+        # NOTE: GGML_CUDA_CUB_3DOT2 can be dropped once CCCL 3.2 ships in the CTK used here.
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=ON ^
+            -DGGML_RPC=OFF ^
+            -DLLAMA_CURL=OFF ^
+            -DLLAMA_OPENSSL=OFF ^
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DLLAMA_BUILD_TOOLS=ON ^
+            -DLLAMA_BUILD_TESTS=OFF ^
+            -DLLAMA_BUILD_EXAMPLES=OFF ^
+            ${{ matrix.cmake_flags }}
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config Release -j %NINJA_JOBS% -t ggml
+          cmake --build build --config Release -j %NINJA_JOBS%
+
+      - name: Verify build
+        shell: pwsh
+        run: |
+          .\build\bin\Release\llama-server.exe --version 2>&1 | Write-Output
+          .\build\bin\Release\llama-server.exe --help 2>&1 | Select-String -Pattern "cache-type-k" -Context 0,2
+
+      - name: Bundle CUDA runtime DLLs
+        if: ${{ startsWith(matrix.variant, 'cuda') }}
+        shell: pwsh
+        run: |
+          $dst = ".\build\bin\Release"
+          Get-ChildItem "$env:CUDA_PATH\bin" -Filter *.dll |
+            Where-Object { $_.Name -match '^(cudart64|cublas64|cublasLt64)_.*\.dll$' } |
+            ForEach-Object {
+              Write-Output "Bundling $($_.Name)"
+              Copy-Item $_.FullName -Destination $dst -Force
+            }
+
+      - name: Prepare archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release\build\bin | Out-Null
+          Copy-Item .\build\bin\Release\* release\build\bin\ -Recurse -Force
+          Copy-Item .\LICENSE release\build\bin\ -ErrorAction SilentlyContinue
+          Compress-Archive -Path release\build -DestinationPath llama-turboquant-windows-x64-${{ matrix.variant }}.zip -Force
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-windows-x64-${{ matrix.variant }}
+          path: llama-turboquant-windows-x64-${{ matrix.variant }}.zip
+          retention-days: 14
+
+  macos-arm64:
+    runs-on: macos-latest
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-macos-arm64
+          evict-old-files: 1d
+
+      # Signing runs only on push: PR runs may lack the secrets, and dev
+      # binaries are for internal testing anyway.
+      - name: Import code signing certificate
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$MACOS_CERTIFICATE_P12" | base64 --decode -o $CERTIFICATE_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          security import $CERTIFICATE_PATH -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+          IDENTITY=$(security find-identity -v -p codesigning $KEYCHAIN_PATH | head -1 | grep -o '".*"' | tr -d '"')
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_USE_BF16=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $(sysctl -n hw.ncpu)
+
+      - name: Verify build
+        run: |
+          ./build/bin/llama-server --version 2>&1 || true
+          ./build/bin/llama-server --help 2>&1 | grep -A2 "cache-type-k" || true
+          if otool -L build/bin/llama-server | grep -vE '/usr/lib|/System|llama-server' | grep '\.dylib'; then
+            echo "ERROR: Found non-system dynamic dependency!"
+            exit 1
+          fi
+
+      - name: Sign binaries
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity; do
+            if [ -f "$bin" ]; then
+              codesign --force --options runtime --timestamp \
+                --entitlements .github/entitlements.plist \
+                --sign "$CODESIGN_IDENTITY" "$bin"
+              codesign --verify --verbose "$bin"
+            fi
+          done
+
+      # Dev builds are signed but NOT notarized (saves ~10 min of Apple API
+      # per push). Testers: xattr -dr com.apple.quarantine <dir> after unzip.
+      # The stable release workflow does full notarization.
+
+      - name: Prepare archive
+        run: |
+          mkdir -p release/build/bin
+          cp build/bin/llama-server release/build/bin/
+          cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cd release
+          zip -r ../llama-turboquant-macos-arm64.zip .
+          tar -czf ../llama-turboquant-macos-arm64.tar.gz .
+
+      - name: Clean up keychain
+        if: ${{ always() && github.event_name != 'pull_request' }}
+        run: |
+          security delete-keychain $KEYCHAIN_PATH 2>/dev/null || true
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-macos-arm64
+          path: |
+            llama-turboquant-macos-arm64.zip
+            llama-turboquant-macos-arm64.tar.gz
+          retention-days: 14
+
+  # Republishes the rolling `dev-latest` prerelease with whatever archives the
+  # build jobs produced. Runs even when some jobs fail (if: always()) so a
+  # broken backend never blocks the others from shipping to testers — the
+  # release notes call out what is missing.
+  publish-dev-latest:
+    needs: [linux-x64-vulkan, windows-x64, macos-arm64]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: archives
+          merge-multiple: true
+
+      - name: Recreate dev-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DATE=$(date -u +%Y-%m-%d)
+          ls -lh archives/
+
+          EXPECTED="linux-x64-vulkan windows-x64-cpu windows-x64-vulkan windows-x64-cuda-12.4 windows-x64-cuda-13.3 macos-arm64"
+          MISSING=""
+          for b in $EXPECTED; do
+            ls archives/ | grep -q "llama-turboquant-${b}\." || MISSING="$MISSING $b"
+          done
+
+          NOTES="Rolling dev build from \`dev\` at commit \`${SHORT_SHA}\` (${DATE}).
+
+          **Staging channel — not for production.** Every push to \`dev\` overwrites this release.
+
+          macOS binaries are signed but not notarized; after unpacking run \`xattr -dr com.apple.quarantine build/\`. Stable releases are fully notarized."
+          if [ -n "$MISSING" ]; then
+            NOTES="$NOTES
+
+          ⚠️ **Missing backends in this build:**${MISSING} — see the failed jobs of run ${{ github.run_id }}."
+          fi
+
+          gh release delete dev-latest --cleanup-tag --yes || true
+          sleep 5
+          gh release create dev-latest \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --title "Dev latest (${SHORT_SHA}, ${DATE})" \
+            --notes "$NOTES" \
+            archives/*

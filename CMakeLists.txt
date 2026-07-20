@@ -24,9 +24,6 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(LLAMA_STANDALONE ON)
 
     include(git-vars)
-
-    # configure project version
-    # TODO
 else()
     set(LLAMA_STANDALONE OFF)
 endif()
@@ -131,6 +128,11 @@ if (NOT DEFINED LLAMA_BUILD_COMMIT)
     set(LLAMA_BUILD_COMMIT        ${BUILD_COMMIT})
 endif()
 set(LLAMA_INSTALL_VERSION 0.0.${LLAMA_BUILD_NUMBER})
+
+# fork: semantic version of the turboquant fork, single source of truth is
+# the TURBOQUANT_VERSION file at the repo root (bumped by scripts/turboquant-release.sh)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/TURBOQUANT_VERSION" TURBOQUANT_VERSION)
+string(STRIP "${TURBOQUANT_VERSION}" TURBOQUANT_VERSION)
 
 # override ggml options
 set(GGML_ALL_WARNINGS   ${LLAMA_ALL_WARNINGS})
