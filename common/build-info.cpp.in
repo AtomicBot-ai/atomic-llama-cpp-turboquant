@@ -30,12 +30,16 @@ const char * turboquant_version(void) {
 }
 
 const char * llama_build_info(void) {
-    static std::string s = "turboquant-v" + std::string(TURBOQUANT_VERSION) + " b" + std::to_string(LLAMA_BUILD_NUMBER) + "-" + LLAMA_COMMIT;
+    // Upstream "b<N>-<commit>" format on purpose: this string is the OpenAI
+    // API `system_fingerprint` and clients (incl. the Atomic-Chat plugin's
+    // b-number feature gates) parse it. The turboquant semver is exposed via
+    // turboquant_version() and the --version output instead.
+    static std::string s = "b" + std::to_string(LLAMA_BUILD_NUMBER) + "-" + LLAMA_COMMIT;
     return s.c_str();
 }
 
 void llama_print_build_info(void) {
-    fprintf(stderr, "%s: turboquant = v%s\n",     __func__, turboquant_version());
+    fprintf(stderr, "%s: turboquant = %s\n",      __func__, turboquant_version());
     fprintf(stderr, "%s: build = %d (%s)\n",      __func__, llama_build_number(), llama_commit());
     fprintf(stderr, "%s: built with %s for %s\n", __func__, llama_compiler(), llama_build_target());
 }
