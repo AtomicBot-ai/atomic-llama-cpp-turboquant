@@ -7,6 +7,7 @@ int LLAMA_BUILD_NUMBER = @LLAMA_BUILD_NUMBER@;
 char const * LLAMA_COMMIT = "@LLAMA_BUILD_COMMIT@";
 char const * LLAMA_COMPILER = "@BUILD_COMPILER@";
 char const * LLAMA_BUILD_TARGET = "@BUILD_TARGET@";
+char const * TURBOQUANT_VERSION = "@TURBOQUANT_VERSION@";
 
 int llama_build_number(void) {
     return LLAMA_BUILD_NUMBER;
@@ -24,12 +25,17 @@ const char * llama_build_target(void) {
     return LLAMA_BUILD_TARGET;
 }
 
+const char * turboquant_version(void) {
+    return TURBOQUANT_VERSION;
+}
+
 const char * llama_build_info(void) {
-    static std::string s = "b" + std::to_string(LLAMA_BUILD_NUMBER) + "-" + LLAMA_COMMIT;
+    static std::string s = "turboquant-v" + std::string(TURBOQUANT_VERSION) + " b" + std::to_string(LLAMA_BUILD_NUMBER) + "-" + LLAMA_COMMIT;
     return s.c_str();
 }
 
 void llama_print_build_info(void) {
+    fprintf(stderr, "%s: turboquant = v%s\n",     __func__, turboquant_version());
     fprintf(stderr, "%s: build = %d (%s)\n",      __func__, llama_build_number(), llama_commit());
     fprintf(stderr, "%s: built with %s for %s\n", __func__, llama_compiler(), llama_build_target());
 }
