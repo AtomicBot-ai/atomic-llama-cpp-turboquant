@@ -39,7 +39,7 @@ const char * llama_build_info(void) {
 }
 
 void llama_print_build_info(void) {
-    fprintf(stderr, "%s: turboquant = v%s\n",     __func__, turboquant_version());
+    fprintf(stderr, "%s: turboquant = %s\n",      __func__, turboquant_version());
     fprintf(stderr, "%s: build = %d (%s)\n",      __func__, llama_build_number(), llama_commit());
     fprintf(stderr, "%s: built with %s for %s\n", __func__, llama_compiler(), llama_build_target());
 }

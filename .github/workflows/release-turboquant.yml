@@ -4,18 +4,20 @@ name: Release TurboQuant (semver, all platforms)
 #
 #   ./scripts/turboquant-release.sh [patch|minor|major|X.Y.Z]
 #
-# which bumps TURBOQUANT_VERSION, commits, tags `turboquant-vX.Y.Z` and
-# pushes. The tag push triggers this workflow: every supported backend is
-# built and ALL archives are published into ONE GitHub release named after
-# the tag. Consumers (Atomic-Chat / atomic-chat-conf manifest) then point
-# every backend entry at the same tag.
+# which bumps TURBOQUANT_VERSION, commits, tags and pushes. Version/tag
+# format: <upstream-base>-<fork-semver>, e.g. b10018-1.2.0 (upstream
+# llama.cpp build the fork is based on + the fork's own semver). The tag
+# push triggers this workflow: every supported backend is built and ALL
+# archives are published into ONE GitHub release named after the tag.
+# Consumers (Atomic-Chat / atomic-chat-conf manifest) then point every
+# backend entry at the same tag.
 #
 # The rolling dev channel is separate — see dev-build.yml.
 
 on:
   push:
     tags:
-      - 'turboquant-v*'
+      - 'b[0-9]+-[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
 
 concurrency:
@@ -43,9 +45,9 @@ jobs:
         run: |
           FILE_VERSION=$(tr -d ' \n' < TURBOQUANT_VERSION)
           TAG="${GITHUB_REF_NAME}"
-          echo "tag=$TAG file=turboquant-v$FILE_VERSION"
-          if [ "$TAG" != "turboquant-v${FILE_VERSION}" ]; then
-            echo "::error::Tag $TAG does not match TURBOQUANT_VERSION file (turboquant-v${FILE_VERSION})"
+          echo "tag=$TAG file=$FILE_VERSION"
+          if [ "$TAG" != "$FILE_VERSION" ]; then
+            echo "::error::Tag $TAG does not match TURBOQUANT_VERSION file ($FILE_VERSION)"
             exit 1
           fi
 
@@ -365,26 +367,33 @@ jobs:
           VERSION=$(tr -d ' \n' < TURBOQUANT_VERSION)
           TAG="${GITHUB_REF_NAME}"
           if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
-            TAG="turboquant-v${VERSION}"
+            TAG="${VERSION}"
           fi
+          UPSTREAM_BASE="${VERSION%%-*}"
           ls -lh archives/
 
           gh release create "$TAG" \
             --target "${{ github.sha }}" \
-            --title "TurboQuant v${VERSION}" \
+            --title "TurboQuant ${VERSION}" \
             --latest \
-            --notes "## TurboQuant v${VERSION}
+            --notes "## TurboQuant KV Cache — ${VERSION}
 
-          Commit \`${SHORT_SHA}\`. All backends in one release:
+          Built from \`master\` at commit \`${SHORT_SHA}\`, based on upstream llama.cpp \`${UPSTREAM_BASE}\`.
+
+          ### What's included
+          - \`llama-server\` with \`--cache-type-k turbo3\` / \`turbo4\` support
+          - \`llama-cli\`, \`llama-bench\`, \`llama-perplexity\`
+          - All supported backends in one release:
 
           | Backend | Asset |
           |---|---|
-          | Linux x64 (Vulkan + CPU) | \`llama-turboquant-linux-x64-vulkan.tar.gz\` |
+          | Linux x64 (Vulkan + portable CPU) | \`llama-turboquant-linux-x64-vulkan.tar.gz\` |
           | Windows x64 CPU | \`llama-turboquant-windows-x64-cpu.zip\` |
           | Windows x64 Vulkan | \`llama-turboquant-windows-x64-vulkan.zip\` |
           | Windows x64 CUDA 12.4 | \`llama-turboquant-windows-x64-cuda-12.4.zip\` |
           | Windows x64 CUDA 13.3 | \`llama-turboquant-windows-x64-cuda-13.3.zip\` |
-          | macOS ARM64 (Metal, notarized) | \`llama-turboquant-macos-arm64.zip\` |
+          | macOS ARM64 (Metal, signed + notarized) | \`llama-turboquant-macos-arm64.zip\` |
 
-          \`llama-server --version\` → \`version: turboquant-v${VERSION}\`" \
+          ### Versioning
+          \`<upstream-base>-<fork-semver>\`: \`${UPSTREAM_BASE}\` is the upstream llama.cpp build this fork is based on, \`${VERSION#*-}\` is the TurboQuant fork version. \`llama-server --version\` reports \`version: ${VERSION}\`." \
             archives/*
