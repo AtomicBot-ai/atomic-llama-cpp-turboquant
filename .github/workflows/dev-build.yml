@@ -368,15 +368,15 @@ jobs:
             ls archives/ | grep -q "llama-turboquant-${b}\." || MISSING="$MISSING $b"
           done
 
-          NOTES="Rolling dev build from \`dev\` @ \`${SHORT_SHA}\` (${DATE}).
+          NOTES="Rolling dev build from \`dev\` at commit \`${SHORT_SHA}\` (${DATE}).
 
-          **Не для продакшена** — staging-канал: каждый пуш в \`dev\` перезаписывает этот релиз.
+          **Staging channel — not for production.** Every push to \`dev\` overwrites this release.
 
-          macOS: бинари подписаны, но не нотаризованы — после распаковки: \`xattr -dr com.apple.quarantine build/\`"
+          macOS binaries are signed but not notarized; after unpacking run \`xattr -dr com.apple.quarantine build/\`. Stable releases are fully notarized."
           if [ -n "$MISSING" ]; then
             NOTES="$NOTES
 
-          ⚠️ **Missing backends this build:**${MISSING} (см. упавшие джобы run #${{ github.run_id }})"
+          ⚠️ **Missing backends in this build:**${MISSING} — see the failed jobs of run ${{ github.run_id }}."
           fi
 
           gh release delete dev-latest --cleanup-tag --yes || true

@@ -41,9 +41,21 @@ macOS dev builds are signed but **not notarized** (release builds are):
 
 ## Versioning & stable releases
 
-Semver, single source of truth: the `TURBOQUANT_VERSION` file at the repo
-root. CMake embeds it via `common/build-info.cpp.in`; `llama-server --version`
-prints `version: turboquant-vX.Y.Z (<build-number>, <commit>)`.
+Version format: **`<upstream-base>-<fork-semver>`**, e.g. `b10018-1.2.0`:
+
+- `b10018` — the upstream llama.cpp build the fork is based on
+  (`git rev-list --count $(git merge-base master upstream)`, matching
+  upstream's `b####` release tags). Changes only on upstream syncs; the sync
+  PR updates it in `TURBOQUANT_VERSION` by hand.
+- `1.2.0` — the fork's own semver: **major** for breaking changes, **minor**
+  for features (e.g. implementing turbo-ops for a new backend), **patch**
+  for fixes.
+
+Single source of truth: the `TURBOQUANT_VERSION` file at the repo root.
+CMake embeds it via `common/build-info.cpp.in`; `llama-server --version`
+prints `version: b10018-1.2.0 (build <count>, commit <sha>)`. Note that
+`llama_build_info()` (the OpenAI API `system_fingerprint`) intentionally
+keeps the upstream `b<N>-<sha>` format — clients parse it.
 
 Cut a release (from an up-to-date, clean `master` checkout):
 
@@ -51,14 +63,14 @@ Cut a release (from an up-to-date, clean `master` checkout):
 ./scripts/turboquant-release.sh patch|minor|major|X.Y.Z
 ```
 
-This bumps `TURBOQUANT_VERSION`, commits `release: turboquant-vX.Y.Z`, tags
-`turboquant-vX.Y.Z` and pushes. The tag triggers
+This bumps the fork-semver part, commits `release: b10018-X.Y.Z`, tags
+`b10018-X.Y.Z` and pushes. The tag triggers
 `.github/workflows/release-turboquant.yml`: all backends are built (macOS
 fully notarized) and published as **one** GitHub release with all archives.
 A `verify-version` job fails the release if the tag doesn't match the file.
 
 Consumers: `atomic-chat-conf/backends/turboquant-manifest.json` entries all
-point at the same `turboquant-vX.Y.Z` tag; asset names
+point at the same `b10018-X.Y.Z` tag; asset names
 (`llama-turboquant-<backend>.zip|tar.gz`) are unchanged from the legacy
 scheme, so the Atomic-Chat runtime URL builder needs no changes.
 
