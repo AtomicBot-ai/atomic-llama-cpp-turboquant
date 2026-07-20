@@ -64,6 +64,8 @@ jobs:
     steps:
       - name: Clone
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
@@ -145,6 +147,8 @@ jobs:
     steps:
       - name: Clone
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
@@ -230,6 +234,8 @@ jobs:
     steps:
       - name: Clone
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
@@ -346,6 +352,8 @@ jobs:
     steps:
       - name: Clone
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Download archives
         uses: actions/download-artifact@v4
