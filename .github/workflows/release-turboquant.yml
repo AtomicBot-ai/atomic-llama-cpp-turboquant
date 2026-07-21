@@ -106,6 +106,7 @@ jobs:
           cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
           find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cd release
@@ -290,7 +291,7 @@ jobs:
 
       - name: Sign binaries
         run: |
-          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity; do
+          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity build/bin/llama-quantize; do
             if [ -f "$bin" ]; then
               codesign --force --options runtime --timestamp \
                 --entitlements .github/entitlements.plist \
@@ -306,6 +307,7 @@ jobs:
           cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
           cd release
           zip -r ../llama-turboquant-macos-arm64.zip .
           tar -czf ../llama-turboquant-macos-arm64.tar.gz .
@@ -321,7 +323,7 @@ jobs:
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait --timeout 10m
-          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity; do
+          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity build/bin/llama-quantize; do
             if [ -f "$bin" ]; then
               name=$(basename "$bin")
               zip -j "${name}.zip" "$bin"
@@ -392,7 +394,7 @@ jobs:
 
           ### What's included
           - \`llama-server\` with \`--cache-type-k turbo3\` / \`turbo4\` support
-          - \`llama-cli\`, \`llama-bench\`, \`llama-perplexity\`
+          - \`llama-cli\`, \`llama-bench\`, \`llama-perplexity\`, \`llama-quantize\`
           - All supported backends in one release:
 
           | Backend | Asset |
