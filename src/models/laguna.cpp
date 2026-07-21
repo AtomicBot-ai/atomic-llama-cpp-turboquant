@@ -101,9 +101,12 @@ void llama_model_laguna::load_arch_tensors(llama_model_loader & ml) {
         // `gating` type and fails at conversion time on a mismatch.)
         const int64_t n_gate_per_head = n_head_il;
         const int64_t n_gate_per_elem = n_embd_head_k * n_head_il;
+        // Metadata-only loads (test-llama-archs synthesizes models without a
+        // tensor map) have no meta to inspect -- default to per-head there. A
+        // real file with the gate tensor missing still fails hard in the
+        // required create_tensor below.
         const ggml_tensor * gate_meta = ml.get_tensor_meta(tn(LLM_TENSOR_ATTN_GATE, "weight", i).str().c_str());
-        GGML_ASSERT(gate_meta != nullptr && "Laguna: missing attention gate tensor");
-        const int64_t n_gate_out = gate_meta->ne[1];
+        const int64_t n_gate_out = gate_meta != nullptr ? gate_meta->ne[1] : n_gate_per_head;
         if (n_gate_out != n_gate_per_head && n_gate_out != n_gate_per_elem) {
             GGML_ABORT("Laguna: unexpected attention gate width %lld at layer %d "
                        "(expected %lld per-head or %lld per-element)",
