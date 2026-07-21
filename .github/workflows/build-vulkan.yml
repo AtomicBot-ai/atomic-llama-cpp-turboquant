@@ -17,12 +17,12 @@ on:
       '**/*.glsl'
     ]
 
+  # No paths filter: ubuntu-llvmpipe/ubuntu-arm64 are required status checks
+  # on dev, and a required check that never reports leaves the PR stuck in
+  # "Expected" forever (e.g. a docs-only PR). This is also the only PR job
+  # that runs the full ctest suite, so running it on every PR is intended.
   pull_request:
     types: [opened, synchronize, reopened]
-    paths: [
-      '.github/workflows/build-vulkan.yml',
-      'ggml/src/ggml-vulkan/**'
-    ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
