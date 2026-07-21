@@ -122,7 +122,8 @@ jobs:
             llama-turboquant-linux-x64-vulkan.tar.gz
           retention-days: 30
 
-  linux-x64-cuda-13.3:
+  linux-x64-cuda-13-3:
+    name: linux-x64-cuda-13.3
     needs: verify-version
     runs-on: ubuntu-22.04
 
@@ -435,7 +436,7 @@ jobs:
   # A stable release must be COMPLETE: this job has hard `needs` on every
   # build job — if anything failed, no release is published at all.
   publish-release:
-    needs: [verify-version, linux-x64-vulkan, linux-x64-cuda-13.3, windows-x64, macos-arm64]
+    needs: [verify-version, linux-x64-vulkan, linux-x64-cuda-13-3, windows-x64, macos-arm64]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
