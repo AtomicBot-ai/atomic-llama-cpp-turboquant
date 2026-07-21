@@ -27,22 +27,14 @@ on:
       - '**/*.comp'
       - '**/*.glsl'
       - '**/*.metal'
+  # No paths filter: these jobs are required status checks on dev, and a
+  # required check that never reports leaves the PR stuck in "Expected"
+  # forever (e.g. a docs-only PR). Runs on PRs into master too so the
+  # dev -> master promotion PR reports the same checks.
   pull_request:
     branches:
       - dev
-    paths:
-      - '.github/workflows/dev-build.yml'
-      - '.github/actions/windows-setup-cuda/**'
-      - '**/CMakeLists.txt'
-      - '**/*.h'
-      - '**/*.hpp'
-      - '**/*.c'
-      - '**/*.cpp'
-      - '**/*.cu'
-      - '**/*.cuh'
-      - '**/*.comp'
-      - '**/*.glsl'
-      - '**/*.metal'
+      - master
 
 # Group by ref so consecutive pushes to dev serialize: a newer push cancels
 # the older in-flight build instead of racing it for the dev-latest release.
