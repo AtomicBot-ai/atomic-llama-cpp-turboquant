@@ -103,6 +103,7 @@ jobs:
           cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
           find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cd release
@@ -292,7 +293,7 @@ jobs:
       - name: Sign binaries
         if: ${{ github.event_name != 'pull_request' }}
         run: |
-          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity; do
+          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity build/bin/llama-quantize; do
             if [ -f "$bin" ]; then
               codesign --force --options runtime --timestamp \
                 --entitlements .github/entitlements.plist \
@@ -312,6 +313,7 @@ jobs:
           cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
           cd release
           zip -r ../llama-turboquant-macos-arm64.zip .
           tar -czf ../llama-turboquant-macos-arm64.tar.gz .
