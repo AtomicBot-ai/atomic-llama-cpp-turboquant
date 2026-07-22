@@ -85,11 +85,12 @@ case "$BACKEND" in
     ;;
   linux-x64-cuda-13.3)
     grep -q "load_backend: loaded CUDA backend" bench.log || fail "CUDA backend not loaded"
-    grep -Eiq "cuda.*(NVIDIA|GeForce|RTX|H[0-9]+)" bench.log || fail "CUDA device is not an NVIDIA GPU"
+    # bench log format: "  Device 0: NVIDIA GeForce RTX 5090, compute capability 12.0"
+    grep -Eq "Device [0-9]+: NVIDIA" bench.log || fail "CUDA device is not an NVIDIA GPU"
     ;;
   *) fail "unknown backend $BACKEND" ;;
 esac
-TG=$(awk -F'|' '/tg128/ {gsub(/ /,"",$7); print $7}' bench.log | head -1)
+TG=$(awk -F'|' '/tg128/ {gsub(/^ +| +$/,"",$8); split($8,a," "); print a[1]; exit}' bench.log)
 echo "tg128: ${TG:-?} t/s"
 
 echo "SMOKE OK: $BACKEND @ $TAG ($VERSION_LINE)"
