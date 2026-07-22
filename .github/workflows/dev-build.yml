@@ -27,22 +27,14 @@ on:
       - '**/*.comp'
       - '**/*.glsl'
       - '**/*.metal'
+  # No paths filter: these jobs are required status checks on dev, and a
+  # required check that never reports leaves the PR stuck in "Expected"
+  # forever (e.g. a docs-only PR). Runs on PRs into master too so the
+  # dev -> master promotion PR reports the same checks.
   pull_request:
     branches:
       - dev
-    paths:
-      - '.github/workflows/dev-build.yml'
-      - '.github/actions/windows-setup-cuda/**'
-      - '**/CMakeLists.txt'
-      - '**/*.h'
-      - '**/*.hpp'
-      - '**/*.c'
-      - '**/*.cpp'
-      - '**/*.cu'
-      - '**/*.cuh'
-      - '**/*.comp'
-      - '**/*.glsl'
-      - '**/*.metal'
+      - master
 
 # Group by ref so consecutive pushes to dev serialize: a newer push cancels
 # the older in-flight build instead of racing it for the dev-latest release.
@@ -111,6 +103,7 @@ jobs:
           cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
           find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cd release
@@ -124,6 +117,88 @@ jobs:
           path: |
             llama-turboquant-linux-x64-vulkan.zip
             llama-turboquant-linux-x64-vulkan.tar.gz
+          retention-days: 14
+
+  linux-x64-cuda-13-3:
+    name: linux-x64-cuda-13.3
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-linux-x64-cuda-13.3
+          evict-old-files: 1d
+
+      - name: Install CUDA Toolkit
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential \
+            cuda-nvcc-13-3 cuda-cccl-13-3 cuda-cudart-dev-13-3 libcublas-dev-13-3
+          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        # Arch set: A100 (80), RTX 30 (86), RTX 40 (89), H100/H200 (90),
+        # RTX 50 / Blackwell (120). Runner has no GPU -- build only, the
+        # backend is a dlopen'd libggml-cuda.so thanks to GGML_BACKEND_DL.
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_CUDA=ON \
+            -DGGML_CUDA_CUB_3DOT2=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="80;86;89;90;120" \
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Verify build
+        run: |
+          ./build/bin/llama-server --version 2>&1 || true
+          ls -l build/bin/libggml-cuda.so
+
+      - name: Prepare archive
+        run: |
+          mkdir -p release/build/bin
+          cp build/bin/llama-server release/build/bin/
+          cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
+          find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
+          # CUDA runtime is not a given on user systems -- bundle it like the
+          # Windows job bundles cudart/cublas DLLs.
+          cp -P /usr/local/cuda/lib64/libcudart.so* release/build/bin/
+          cp -P /usr/local/cuda/lib64/libcublas.so* release/build/bin/
+          cp -P /usr/local/cuda/lib64/libcublasLt.so* release/build/bin/
+          cp LICENSE release/build/bin/ 2>/dev/null || true
+          cd release
+          zip -r ../llama-turboquant-linux-x64-cuda-13.3.zip .
+          tar -czf ../llama-turboquant-linux-x64-cuda-13.3.tar.gz .
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-linux-x64-cuda-13.3
+          path: |
+            llama-turboquant-linux-x64-cuda-13.3.zip
+            llama-turboquant-linux-x64-cuda-13.3.tar.gz
           retention-days: 14
 
   windows-x64:
@@ -300,7 +375,7 @@ jobs:
       - name: Sign binaries
         if: ${{ github.event_name != 'pull_request' }}
         run: |
-          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity; do
+          for bin in build/bin/llama-server build/bin/llama-cli build/bin/llama-bench build/bin/llama-perplexity build/bin/llama-quantize; do
             if [ -f "$bin" ]; then
               codesign --force --options runtime --timestamp \
                 --entitlements .github/entitlements.plist \
@@ -320,6 +395,7 @@ jobs:
           cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
           cd release
           zip -r ../llama-turboquant-macos-arm64.zip .
           tar -czf ../llama-turboquant-macos-arm64.tar.gz .
@@ -343,7 +419,7 @@ jobs:
   # broken backend never blocks the others from shipping to testers — the
   # release notes call out what is missing.
   publish-dev-latest:
-    needs: [linux-x64-vulkan, windows-x64, macos-arm64]
+    needs: [linux-x64-vulkan, linux-x64-cuda-13-3, windows-x64, macos-arm64]
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
     runs-on: ubuntu-22.04
     permissions:
