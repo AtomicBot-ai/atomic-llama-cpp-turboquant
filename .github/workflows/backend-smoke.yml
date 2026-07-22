@@ -1,0 +1,128 @@
+# GPU smoke test of RELEASED backend archives on a rented vast.ai box.
+#
+# Not a required check by design: spot GPU rental is nondeterministic and
+# costs money, so it runs on demand (button) and nightly — never as a PR
+# gate. The result is posted as a NON-required commit status
+# (gpu-smoke/<backend>) on the commit the tested release points at, so the
+# dev -> master promotion PR shows the badge.
+#
+# What one run does (see .github/scripts/gpu-smoke/):
+#   rent cheapest matching GPU -> download the released archive -> quantize
+#   a tiny f16 model to NVFP4 with the SHIPPED llama-quantize -> serve it
+#   with -ngl 99 -> assert a coherent answer -> llama-bench -> assert the
+#   GPU backend actually did the work (a silent CPU fallback must FAIL).
+#
+# Secrets: VAST_API_KEY, VAST_SSH_KEY (private key registered with vast).
+
+name: GPU smoke (vast.ai)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to smoke'
+        default: 'dev-latest'
+      backends:
+        description: 'Backends to test (space-separated)'
+        default: 'linux-x64-vulkan linux-x64-cuda-13.3'
+      gpu_query:
+        description: 'vast.ai offer filter'
+        default: 'gpu_name=RTX_5090 num_gpus=1'
+  schedule:
+    # nightly against dev-latest; ~$1/night at current spot prices
+    - cron: '0 3 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.release_tag || 'dev-latest' }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      statuses: write
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: ['linux-x64-vulkan', 'linux-x64-cuda-13.3']
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.release_tag || 'dev-latest' }}
+      BACKENDS: ${{ github.event.inputs.backends || 'linux-x64-vulkan linux-x64-cuda-13.3' }}
+      GPU_QUERY: ${{ github.event.inputs.gpu_query || 'gpu_name=RTX_5090 num_gpus=1' }}
+
+    steps:
+      - name: Skip if backend not selected
+        id: gate
+        run: |
+          if echo "$BACKENDS" | grep -qw "${{ matrix.backend }}"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "backend ${{ matrix.backend }} not in '$BACKENDS' — skipping"
+          fi
+
+      - name: Clone
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v6
+
+      - name: Install vast CLI + ssh key
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          pip install -q vastai
+          install -m 600 /dev/null vast_key
+          printf '%s\n' "${{ secrets.VAST_SSH_KEY }}" > vast_key
+
+      - name: Rent GPU box
+        if: steps.gate.outputs.run == 'true'
+        id: rent
+        env:
+          VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          SSH_KEY_FILE: vast_key
+        run: bash .github/scripts/gpu-smoke/rent.sh
+
+      - name: Run smoke on box
+        if: steps.gate.outputs.run == 'true'
+        id: run_smoke
+        env:
+          HOST: ${{ steps.rent.outputs.host }}
+          PORT: ${{ steps.rent.outputs.port }}
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=30 -i vast_key -p $PORT root@$HOST"
+          scp -o StrictHostKeyChecking=no -i vast_key -P "$PORT" \
+            .github/scripts/gpu-smoke/remote-smoke.sh root@"$HOST":/root/remote-smoke.sh
+          # vast hosts are known to drop long ssh sessions -> nohup + poll
+          $SSH "nohup bash /root/remote-smoke.sh '${{ matrix.backend }}' '$RELEASE_TAG' >/root/smoke.log 2>&1 &"
+          for i in $(seq 1 60); do
+            STATUS=$($SSH 'cat /root/smoke.status 2>/dev/null' 2>/dev/null || true)
+            [ -n "$STATUS" ] && break
+            sleep 20
+          done
+          echo "===== smoke.log ====="
+          $SSH 'cat /root/smoke.log' 2>/dev/null || true
+          echo "====================="
+          [ "$STATUS" = "OK" ] || { echo "::error::smoke failed for ${{ matrix.backend }}"; exit 1; }
+
+      - name: Post commit status
+        if: always() && steps.gate.outputs.run == 'true' && steps.rent.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(gh api "repos/${{ github.repository }}/commits/$RELEASE_TAG" --jq .sha 2>/dev/null || true)
+          [ -n "$SHA" ] || { echo "cannot resolve $RELEASE_TAG to a commit, skipping status"; exit 0; }
+          STATE=failure
+          [ "${{ steps.run_smoke.outcome }}" = "success" ] && STATE=success
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f state="$STATE" \
+            -f context="gpu-smoke/${{ matrix.backend }}" \
+            -f description="NVFP4 smoke on rented GPU ($RELEASE_TAG)" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Destroy GPU box
+        if: always() && steps.rent.outputs.iid != ''
+        env:
+          VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+        run: |
+          vastai set api-key "$VAST_API_KEY" >/dev/null
+          vastai destroy instance "${{ steps.rent.outputs.iid }}" || true
+          echo "destroyed instance ${{ steps.rent.outputs.iid }}"
