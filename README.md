@@ -117,7 +117,7 @@ llama-server \
   -m /path/to/gemma-4-target.gguf \
   --mtp-head /path/to/gemma-4-assistant-Q4_K_M.gguf \
   --spec-type mtp \
-  --draft-block-size 3 \
+  --spec-draft-n-max 2 \
   -c 16384 \
   -ngl 99 -ngld 99 \
   -fa on \
@@ -140,8 +140,8 @@ MTP_PRESET=throughput scripts/run-gemma4-e2b-mtp-server.sh
 ### Bench snapshot (MacBook Pro M4 Max, 40-core GPU, 48 GB, Metal, single slot)
 
 Median tps over 3 runs with Q4_K_M assistant heads. Dense scripts default to
-`--draft-block-size 3`; E4B uses `MTP_PRESET=throughput` (`B = 2`,
-`--draft-max 6`). See
+two drafted tokens per round (`--spec-draft-n-max 2`); E4B uses
+`MTP_PRESET=throughput` (one drafted token per round). See
 `.scratch/bench-logs/gemma-matrix-fullrun-20260512-224705.md`.
 
 | model | mode | n=128 tps | n=512 tps | accept@128 | accept@512 |
@@ -158,8 +158,8 @@ Median tps over 3 runs with Q4_K_M assistant heads. Dense scripts default to
 
 ### Knobs
 
-- `--draft-block-size B` — head emits `B - 1` tokens per round (default 4;
-  bench used 3).
+- `--spec-draft-n-max N` — head emits `N` tokens per round (bench used 2;
+  replaces the pre-b10018 `--draft-block-size B`, `N = B - 1`).
 - `--mtp-head <path>` (preferred) / `-md <path>` (back-compat alias).
 - `LLAMA_MTP_SKIP_STREAK_THRESHOLD=N` — adaptive skip after `N` consecutive
   zero-accept batches (off by default).
@@ -225,7 +225,7 @@ llama-server \
   -hf  AtomicChat/Qwen3.6-35B-A3B-UDT-MTP-GGUF:Q4_K_XL \
   -hfd AtomicChat/Qwen3.6-35B-A3B-UDT-MTP-GGUF:Q4_K_XL \
   --spec-type nextn \
-  --draft-max 2 --draft-min 1 \
+  --spec-draft-n-max 2 --spec-draft-n-min 1 \
   -c 8192 \
   -ngl 99 -ngld 99 \
   -ctk turbo3 -ctv turbo3 -fa on \
@@ -238,7 +238,7 @@ Or with a local file (e.g. the artifact stored under `.scratch/`):
 llama-server \
   -m   /path/to/Qwen3.6-35B-A3B-UD-Q4_K_XL_MTP.gguf \
   -md  /path/to/Qwen3.6-35B-A3B-UD-Q4_K_XL_MTP.gguf \
-  --spec-type nextn --draft-max 2 --draft-min 1 \
+  --spec-type nextn --spec-draft-n-max 2 --spec-draft-n-min 1 \
   -c 8192 -ngl 99 -ngld 99 -ctk turbo3 -ctv turbo3 -fa on
 ```
 
@@ -256,7 +256,7 @@ If you ship the NextN head as a separate **NEXTN_ONLY** GGUF
 
 ### Bench snapshot (MacBook Pro M4 Max, 40-core GPU, 48 GB, Metal, single slot)
 
-Median tps over 3 runs, `--draft-max 2 --draft-min 1`, single-slot, shared
+Median tps over 3 runs, `--spec-draft-n-max 2 --spec-draft-n-min 1`, single-slot, shared
 target/draft model. See
 `.scratch/bench-logs/qwen-matrix-fullrun-20260512-222625.md`.
 
@@ -277,7 +277,7 @@ target/draft model. See
 - `--model-draft` / `-md` — pass the **same** path as `--model` for the
   shared-model path; pass a NEXTN_ONLY GGUF to use the legacy double-load
   fallback.
-- `--draft-max` / `--draft-min` — chained-draft bounds per round
+- `--spec-draft-n-max` / `--spec-draft-n-min` — chained-draft bounds per round
   (current default for the helper scripts: `2 / 1`).
 - `llama_set_nextn` (C API) — pairs target and draft contexts so that
   `llama_context_nextn_seq_rm` trims **both** KV caches in one call.
@@ -750,7 +750,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
       -m   /path/to/gemma-4-target.gguf \
       --mtp-head /path/to/gemma-4-assistant-Q4_K_M.gguf \
       --spec-type mtp \
-      --draft-block-size 3 \
+      --spec-draft-n-max 2 \
       -c 16384 \
       -ngl 99 -ngld 99 \
       -fa on \
@@ -808,7 +808,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
       -hf  unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q4_K_XL \
       -hfd unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q4_K_XL \
       --spec-type nextn \
-      --draft-max 2 --draft-min 1 \
+      --spec-draft-n-max 2 --spec-draft-n-min 1 \
       -c 8192 \
       -ngl 99 -ngld 99 \
       -ctk turbo3 -ctv turbo3 -fa on \
@@ -821,7 +821,7 @@ To learn more about model quantization, [read this documentation](tools/quantize
     llama-server \
       -m   /path/to/Qwen3.6-35B-A3B-UD-Q4_K_XL_MTP.gguf \
       -md  /path/to/Qwen3.6-35B-A3B-UD-Q4_K_XL_MTP.gguf \
-      --spec-type nextn --draft-max 2 --draft-min 1 \
+      --spec-type nextn --spec-draft-n-max 2 --spec-draft-n-min 1 \
       -c 8192 -ngl 99 -ngld 99 -ctk turbo3 -ctv turbo3 -fa on
     ```
 

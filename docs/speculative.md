@@ -31,7 +31,7 @@ A draft model is the most used approach in speculative decoding.
 For **Gemma 4** targets with the **gemma4_assistant** (MTP head) GGUF, use `--spec-type mtp`. The assistant is **not** a second `llama_context`: weights are loaded into the target model via `llama_model_load_mtp_from_file` (done automatically when using the server/CLI init path). Cross-attention in the MTP graph reads **K/V from the target KV cache** (shared full/sliding layers).
 
 - Prefer **`--mtp-head /path/to/assistant.gguf`** for clarity; **`--model-draft` (`-md`)** is accepted as a backward-compatible alias (same path field).
-- The draft block size \(B\) is **`--draft-block-size`** (the head proposes `B - 1` tokens per round; default 4).
+- The per-round draft length is **`--spec-draft-n-max N`** (the head proposes `N` tokens per round; replaces the pre-b10018 `--draft-block-size B`, `N = B - 1`).
 - **`--gpu-layers-draft` / `-ngld`** and **`-ctkd` / `-ctvd`** still apply to how the **assistant tensors** are placed and typed when the assistant GGUF is loaded; the target uses `-ngl` and `-ctk`/`-ctv`.
 
 Example (paths illustrative). **TurboQuant** KV on the target: `-ctk`/`-ctv`. Assistant-side cache types follow the draft flags if you use them for offload/quant selection.
@@ -41,7 +41,7 @@ llama-server \
   -m /path/to/gemma-4-target.gguf \
   --mtp-head /path/to/gemma-4-assistant.gguf \
   --spec-type mtp \
-  --draft-block-size 4 \
+  --spec-draft-n-max 3 \
   -c 16384 \
   -ngl 99 -ngld 99 \
   -ctk turbo3 -ctv turbo3 \
@@ -89,7 +89,7 @@ Why use the async pair?
 
 - **Graph-cache isolation**: MTP graph reuse is no longer invalidated by target
   decode resets. On Gemma 4 + Q4_K_XL, this alone delivered **~+8% throughput**
-  in single-slot benchmarks (95.3 → 102.8 tps at `--draft-block-size 3`), with
+  in single-slot benchmarks (95.3 → 102.8 tps at `--spec-draft-n-max 2`), with
   identical accept rate.
 - **Pipeline depth-2 (pure overlap, `llama-server`)**: after target
   sample/accept and `llama_memory_seq_rm`, the server calls
@@ -166,7 +166,7 @@ llama-server \
   -m /path/to/qwen3.6-MTP.gguf \
   -md /path/to/qwen3.6-MTP.gguf \
   --spec-type nextn \
-  --draft-max 2 --draft-min 1 \
+  --spec-draft-n-max 2 --spec-draft-n-min 1 \
   -c 8192 -ngl 99 -ngld 99 -fa on \
   --host 127.0.0.1 --port 8080
 ```
