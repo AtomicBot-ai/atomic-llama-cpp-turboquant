@@ -2415,18 +2415,6 @@ class TensorNameMap:
             "model.layers.{bid}.shared_head.norm",
         ),
 
-        MODEL_TENSOR.MTP_PRE_PROJECTION: (
-            "pre_projection",
-        ),
-        MODEL_TENSOR.MTP_POST_PROJECTION: (
-            "post_projection",
-        ),
-        MODEL_TENSOR.MTP_CENTROIDS: (
-            "masked_embedding.centroids",
-        ),
-        MODEL_TENSOR.MTP_TOKEN_ORDERING: (
-            "masked_embedding.token_ordering",
-        ),
     }
 
     # architecture-specific block mappings

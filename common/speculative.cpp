@@ -38,7 +38,12 @@ const std::map<std::string, common_speculative_type> common_speculative_type_fro
     {"ngram-map-k",   COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K},
     {"ngram-map-k4v", COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V},
     {"ngram-mod",     COMMON_SPECULATIVE_TYPE_NGRAM_MOD},
-    {"ngram-cache",   COMMON_SPECULATIVE_TYPE_NGRAM_CACHE}
+    {"ngram-cache",   COMMON_SPECULATIVE_TYPE_NGRAM_CACHE},
+    // fork aliases: Gemma 4 MTP ("mtp", MTP.md) and Qwen NextN ("nextn",
+    // NEXTN.md) both route to the draft-mtp implementation since the b10018
+    // upstream sync. Kept so commands from the fork docs keep working.
+    {"mtp",           COMMON_SPECULATIVE_TYPE_DRAFT_MTP},
+    {"nextn",         COMMON_SPECULATIVE_TYPE_DRAFT_MTP}
 };
 
 static std::string common_speculative_get_devices_str(const std::vector<ggml_backend_dev_t> & devices) {

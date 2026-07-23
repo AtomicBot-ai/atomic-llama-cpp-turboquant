@@ -3877,8 +3877,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_N_GPU_LAYERS_DRAFT"));
     add_opt(common_arg(
-        {"--spec-draft-model", "-md", "--model-draft"}, "FNAME",
-        "draft model for speculative decoding (default: unused)",
+        {"--spec-draft-model", "-md", "--model-draft", "--mtp-head"}, "FNAME",
+        "draft model for speculative decoding, also accepts an MTP/NextN head GGUF (default: unused)",
         [](common_params & params, const std::string & value) {
             params.speculative.draft.mparams.path = value;
             params.speculative.draft.mparams.hf_file = value; // will be used if --spec-draft-hf is set

@@ -330,6 +330,13 @@ llama_model * llama_model_create(llm_arch arch, const llama_model_params & param
 llama_model * llama_model_create(llama_model_loader & ml, const llama_model_params & params) {
     llm_arch arch = ml.get_arch();
     if (arch == LLM_ARCH_UNKNOWN) {
+        if (ml.get_arch_name() == "gemma4_assistant") {
+            // pre-b10018 fork assistant GGUFs use a different arch name, kv
+            // namespace and tensor layout than the upstream gemma4-assistant
+            // support; they cannot be loaded by this build.
+            throw std::runtime_error("this Gemma 4 assistant GGUF predates the b10018 sync and is no longer supported — "
+                                     "re-download the regenerated assistant or reconvert it with conversion/gemma.py");
+        }
         throw std::runtime_error("unknown model architecture: '" + ml.get_arch_name() + "'");
     }
 

@@ -87,9 +87,10 @@ if [[ "$SPEC" == "mtp" ]]; then
   ARGS+=(
     --mtp-head "$DRAFT"
     --spec-type mtp
-    --draft-block-size "${DRAFT_BLOCK_SIZE:-3}"
-    --draft-max "${DRAFT_MAX:-16}"
-    --draft-min "${DRAFT_MIN:-0}"
+    # b10018 sync: --draft-block-size/--draft-max are gone; per-round chain
+    # length is --spec-draft-n-max (= old block size B - 1).
+    --spec-draft-n-max "$(( ${DRAFT_BLOCK_SIZE:-3} - 1 ))"
+    --spec-draft-n-min "${DRAFT_MIN:-0}"
   )
 else
   echo "info: speculative decoding disabled (SPEC=${SPEC}); running baseline" >&2
