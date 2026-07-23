@@ -69,8 +69,8 @@ if [[ "$SPEC" == "nextn" ]]; then
   ARGS+=(
     -md "$DRAFT"
     --spec-type nextn
-    --draft-max "${DRAFT_MAX:-16}"
-    --draft-min "${DRAFT_MIN:-0}"
+    --spec-draft-n-max "${DRAFT_MAX:-2}"
+    --spec-draft-n-min "${DRAFT_MIN:-1}"
   )
 else
   echo "info: speculative decoding disabled (SPEC=${SPEC}); running baseline" >&2
