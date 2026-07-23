@@ -87,7 +87,8 @@ CLI surface (`common/arg.cpp`, `common/common.cpp`):
 
 - `--mtp-head <path>` (preferred) and `--model-draft / -md` (back-compat alias)
   — feed the same `mparams_dft.path` field.
-- `--draft-block-size <B>` — head proposes `B - 1` tokens per round.
+- `--spec-draft-n-max <N>` — head proposes `N` tokens per round (replaces
+  the pre-b10018 `--draft-block-size <B>`, `N = B - 1`).
 - `--gpu-layers-draft / -ngld`, `-ctkd / -ctvd` — placement and KV typing for
   the **assistant** weights when offloaded.
 
@@ -443,7 +444,7 @@ Helper scripts live under `scripts/`:
 
 Edge presets (`MTP_PRESET`):
 
-| Preset | `--draft-block-size` (B) | `--draft-max` |
+| Preset | `DRAFT_BLOCK_SIZE` (B, passed as `--spec-draft-n-max B-1`) | `DRAFT_MAX` (legacy cap, no longer passed) |
 |---|---:|---:|
 | `throughput` | 2 | 6 |
 | `lift`       | 3 | 8 |

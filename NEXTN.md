@@ -39,14 +39,14 @@ the same file in the HF cache and takes the shared-model branch:
 llama-server \
   -hf  AtomicChat/Qwen3.6-35B-A3B-UDT-MTP-GGUF:Q4_K_XL \
   -hfd AtomicChat/Qwen3.6-35B-A3B-UDT-MTP-GGUF:Q4_K_XL \
-  --spec-type nextn --draft-max 2 --draft-min 1 \
+  --spec-type nextn --spec-draft-n-max 2 --spec-draft-n-min 1 \
   -c 8192 -ngl 99 -ngld 99 -fa on
 
 # 27B dense
 llama-server \
   -hf  AtomicChat/Qwen3.6-27B-UDT-MTP-GGUF:Q4_K_XL \
   -hfd AtomicChat/Qwen3.6-27B-UDT-MTP-GGUF:Q4_K_XL \
-  --spec-type nextn --draft-max 2 --draft-min 1 \
+  --spec-type nextn --spec-draft-n-max 2 --spec-draft-n-min 1 \
   -c 8192 -ngl 99 -ngld 99 -fa on
 ```
 
@@ -76,7 +76,7 @@ that used to OOM the 35B-A3B target on Apple Silicon (38 GB unified memory). See
   and switches to the shared-model path (no second model load). Pointing at a standalone
   NEXTN_ONLY GGUF (`general.architecture = qwen35*_mtp`) still works but loads a second
   `llama_model`.
-- `--draft-max` / `--spec-draft-n-max` — max chained draft tokens per round (see `common` / server arg naming).
+- `--spec-draft-n-max` — max chained draft tokens per round (pre-b10018 name: `--draft-max`).
 - Gemma MTP flags (`--mtp-head`, `llama_decode_mtp_*`, `llama_model_load_mtp_from_file`) are **unchanged**.
 
 ---
@@ -123,14 +123,14 @@ let `llama-server` pull both from Hugging Face into the local cache:
 llama-server \
   -hf  AtomicChat/Qwen3.6-35B-A3B-UDT-MTP-GGUF:Q4_K_XL \
   -hfd AtomicChat/Qwen3.6-35B-A3B-UDT-MTP-GGUF:Q4_K_XL \
-  --spec-type nextn --draft-max 2 --draft-min 1
+  --spec-type nextn --spec-draft-n-max 2 --spec-draft-n-min 1
 ```
 
 ---
 
 ## 7. Performance notes (MacBook Pro M4 Max, 40-core GPU, 48 GB, Metal)
 
-Median TPS over 2 runs, prompt = 50-token instruction, `--draft-max=2 --draft-min=1`,
+Median TPS over 2 runs, prompt = 50-token instruction, `--spec-draft-n-max=2 --spec-draft-n-min=1`,
 NextN draft DM=2 (single async chain), context 8192. Single-slot
 (`--parallel 1 -np 1 --cont-batching`), full GPU offload (`-ngl 99 -ngld 99 -fa on`),
 shared-model draft path (no second mmap of combined `_MTP.gguf`),
