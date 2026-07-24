@@ -205,6 +205,113 @@ jobs:
             llama-turboquant-linux-x64-cuda-13.3.tar.gz
           retention-days: 14
 
+  linux-x64-rocm:
+    needs: verify-version
+    runs-on: ubuntu-22.04
+    env:
+      ROCM_VERSION: "7.2.1"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # ROCm SDK + build artifacts overrun the default runner disk.
+      - name: Free up disk space
+        uses: ggml-org/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-linux-x64-rocm
+          evict-old-files: 1d
+
+      - name: Install ROCm
+        run: |
+          sudo mkdir --parents --mode=0755 /etc/apt/keyrings
+          wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
+            gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          sudo tee /etc/apt/sources.list.d/rocm.list << EOF
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} jammy main
+          EOF
+          sudo tee /etc/apt/preferences.d/rocm-pin-600 << EOF
+          Package: *
+          Pin: release o=repo.radeon.com
+          Pin-Priority: 600
+          EOF
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential cmake libssl-dev rocm-hip-sdk
+
+      - name: Build
+        # RDNA only, by scope decision: gfx1030 (RDNA2), gfx1100/1101/1102
+        # (RDNA3), gfx1151 (RDNA 3.5 / Strix Halo), gfx1200/1201 (RDNA4).
+        # GCN/CDNA are intentionally excluded -- those users use Vulkan.
+        # Runner has no AMD GPU: build only. libggml-hip.so is dlopen'd
+        # thanks to GGML_BACKEND_DL.
+        run: |
+          export ROCM_PATH=/opt/rocm
+          export PATH=$PATH:$ROCM_PATH/bin
+          cmake -B build \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_HIP=ON \
+            -DHIP_PLATFORM=amd \
+            -DGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201" \
+            -DGGML_HIP_ROCWMMA_FATTN=ON \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Verify build
+        run: |
+          ./build/bin/llama-server --version 2>&1 || true
+          ls -l build/bin/libggml-hip.so
+
+      - name: Prepare archive
+        # Bundle the HIP runtime like the CUDA job bundles cudart/cublas:
+        # user boxes have the amdgpu driver but not necessarily ROCm
+        # userspace. rocBLAS/hipBLASLt also ship Tensile kernel data dirs
+        # that must travel with the .so or matmul fails at runtime.
+        run: |
+          mkdir -p release/build/bin
+          cp build/bin/llama-server release/build/bin/
+          cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
+          find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
+          for lib in libamdhip64 librocblas libhipblas libhipblaslt librocsolver librocsparse libamd_comgr libhsa-runtime64; do
+            cp -P /opt/rocm/lib/${lib}.so* release/build/bin/ 2>/dev/null || true
+          done
+          # Tensile / hipBLASLt kernel data (required at runtime by rocBLAS).
+          cp -r /opt/rocm/lib/rocblas release/build/bin/ 2>/dev/null || true
+          cp -r /opt/rocm/lib/hipblaslt release/build/bin/ 2>/dev/null || true
+          cp LICENSE release/build/bin/ 2>/dev/null || true
+          cd release
+          zip -r ../llama-turboquant-linux-x64-rocm.zip .
+          tar -czf ../llama-turboquant-linux-x64-rocm.tar.gz .
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-linux-x64-rocm
+          path: |
+            llama-turboquant-linux-x64-rocm.zip
+            llama-turboquant-linux-x64-rocm.tar.gz
+          retention-days: 30
+
   windows-x64:
     needs: verify-version
     runs-on: windows-2022
@@ -436,7 +543,7 @@ jobs:
   # A stable release must be COMPLETE: this job has hard `needs` on every
   # build job — if anything failed, no release is published at all.
   publish-release:
-    needs: [verify-version, linux-x64-vulkan, linux-x64-cuda-13-3, windows-x64, macos-arm64]
+    needs: [verify-version, linux-x64-vulkan, linux-x64-cuda-13-3, linux-x64-rocm, windows-x64, macos-arm64]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
