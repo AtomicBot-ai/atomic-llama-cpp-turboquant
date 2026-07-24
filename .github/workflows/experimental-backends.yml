@@ -25,11 +25,14 @@ on:
 jobs:
   windows-x64-rocm:
     runs-on: windows-2022
-    # AMD's Windows HIP SDK is versioned as the PRO-Edition driver, not ROCm
-    # semver. This value is a best guess; if the installer 404s, that IS the
-    # finding — bump it to a currently-published "For HIP SDK" build.
+    # AMD's Windows HIP SDK is a EULA-gated PRO-Edition installer with an
+    # unstable direct URL (the old download.amd.com path is dead). Instead we
+    # use TheRock — a portable ROCm dist that ships its own clang toolchain,
+    # sidestepping both the installer AND the MSVC+hipcc integration mess.
+    # Per-GPU-family tarballs; this probe builds the RDNA3 (gfx110X) family as
+    # the representative dGPU. Full multi-family Windows bundling is M3.
     env:
-      HIP_SDK_VERSION: "6.2.4"
+      THEROCK_URL: "https://therock-nightly-tarball.s3.amazonaws.com/therock-dist-windows-gfx110X-dgpu-7.9.0rc20251008.tar.gz"
 
     steps:
       - name: Clone
@@ -37,24 +40,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install ROCm (HIP SDK for Windows)
-        uses: ./.github/actions/windows-setup-rocm
-        with:
-          version: ${{ env.HIP_SDK_VERSION }}
-
       - name: Install Ninja
         run: choco install ninja -y
 
+      - name: Setup TheRock (portable ROCm)
+        shell: pwsh
+        run: |
+          curl.exe -L "$env:THEROCK_URL" -o therock.tar.gz
+          New-Item -ItemType Directory -Force -Path rocm | Out-Null
+          tar -xf therock.tar.gz -C rocm
+          $rocm = Join-Path (Get-Location) "rocm"
+          "ROCM_PATH=$rocm"          | Out-File -Append $env:GITHUB_ENV
+          "$rocm\bin"                | Out-File -Append $env:GITHUB_PATH
+
       - name: Build
         shell: pwsh
-        # RDNA only, per scope. hipcc under MSVC is the sharp edge we're probing.
+        # RDNA3 family for the probe. TheRock's clang is the HIP compiler.
         run: |
-          $env:HIP_PATH = "C:\Program Files\AMD\ROCm\6.2"
+          $clang = Join-Path $env:ROCM_PATH "lib\llvm\bin\clang.exe"
           cmake -B build -G "Ninja" `
             -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_HIP_COMPILER="$clang" `
             -DGGML_HIP=ON `
             -DHIP_PLATFORM=amd `
-            -DGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201" `
+            -DGPU_TARGETS="gfx1100;gfx1101;gfx1102" `
             -DGGML_HIP_ROCWMMA_FATTN=ON `
             -DGGML_BACKEND_DL=ON `
             -DGGML_NATIVE=OFF `
@@ -70,8 +79,8 @@ jobs:
       - name: Verify
         shell: pwsh
         run: |
-          Get-ChildItem build\bin\Release -Filter *ggml-hip* -ErrorAction SilentlyContinue
-          .\build\bin\Release\llama-server.exe --version 2>&1 | Write-Output
+          Get-ChildItem build\bin -Recurse -Filter *ggml-hip* -ErrorAction SilentlyContinue
+          .\build\bin\llama-server.exe --version 2>&1 | Write-Output
 
   linux-x64-sycl:
     runs-on: ubuntu-24.04
@@ -146,6 +155,10 @@ jobs:
 
       - name: Install OpenVINO dependencies
         run: |
+          # The GGML_OPENVINO backend links OpenCL; the runner has neither the
+          # loader nor headers by default (CMake: "Could NOT find OpenCL").
+          sudo apt-get update -y
+          sudo apt-get install -y ocl-icd-opencl-dev opencl-headers
           cd openvino_toolkit
           chmod +x ./install_dependencies/install_openvino_dependencies.sh
           echo "Y" | sudo -E ./install_dependencies/install_openvino_dependencies.sh
