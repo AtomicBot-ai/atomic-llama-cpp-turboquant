@@ -66,6 +66,7 @@ jobs:
             -DGPU_TARGETS="gfx1100;gfx1101;gfx1102" `
             -DGGML_HIP_ROCWMMA_FATTN=ON `
             -DGGML_BACKEND_DL=ON `
+            -DBUILD_SHARED_LIBS=ON `
             -DGGML_NATIVE=OFF `
             -DGGML_CPU_ALL_VARIANTS=ON `
             -DLLAMA_CURL=OFF `
