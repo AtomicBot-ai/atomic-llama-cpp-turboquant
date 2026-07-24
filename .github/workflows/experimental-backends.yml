@@ -1,0 +1,186 @@
+# Experimental backend build probes — do they even compile in this fork?
+#
+# Runs on manual dispatch and whenever THIS file changes (so opening the
+# probe PR builds them once, but unrelated PRs don't pay the cost).
+#
+# IMPORTANT — what each backend actually delivers:
+#   * windows-x64-rocm  : REAL. TurboQuant kernels are RDNA-aware, so this
+#                         ships turbo on AMD Windows — if MSVC+hipcc cooperate.
+#   * linux-x64-sycl    : COMPATIBILITY ONLY. No turbo kernels exist for SYCL,
+#                         so this is plain llama.cpp on Intel GPUs — the whole
+#                         TurboQuant KV feature is absent. Probe = "does it build".
+#   * linux-x64-openvino: COMPATIBILITY ONLY. Graph-offload backend; custom KV
+#                         quant types do not map onto it. Same caveat as SYCL.
+#
+# None of these are wired into a release or dev-latest. This is a build probe.
+
+name: Experimental backends (probe)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/experimental-backends.yml'
+
+jobs:
+  windows-x64-rocm:
+    runs-on: windows-2022
+    # AMD's Windows HIP SDK is a EULA-gated PRO-Edition installer with an
+    # unstable direct URL (the old download.amd.com path is dead). Instead we
+    # use TheRock — a portable ROCm dist that ships its own clang toolchain,
+    # sidestepping both the installer AND the MSVC+hipcc integration mess.
+    # Per-GPU-family tarballs; this probe builds the RDNA3 (gfx110X) family as
+    # the representative dGPU. Full multi-family Windows bundling is M3.
+    env:
+      THEROCK_URL: "https://therock-nightly-tarball.s3.amazonaws.com/therock-dist-windows-gfx110X-dgpu-7.9.0rc20251008.tar.gz"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Setup TheRock (portable ROCm)
+        shell: pwsh
+        run: |
+          curl.exe -L "$env:THEROCK_URL" -o therock.tar.gz
+          New-Item -ItemType Directory -Force -Path rocm | Out-Null
+          tar -xf therock.tar.gz -C rocm
+          $rocm = Join-Path (Get-Location) "rocm"
+          "ROCM_PATH=$rocm"          | Out-File -Append $env:GITHUB_ENV
+          "$rocm\bin"                | Out-File -Append $env:GITHUB_PATH
+
+      - name: Build
+        shell: pwsh
+        # RDNA3 family for the probe. TheRock's clang is the HIP compiler.
+        run: |
+          $clang = Join-Path $env:ROCM_PATH "lib\llvm\bin\clang.exe"
+          cmake -B build -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_HIP_COMPILER="$clang" `
+            -DGGML_HIP=ON `
+            -DHIP_PLATFORM=amd `
+            -DGPU_TARGETS="gfx1100;gfx1101;gfx1102" `
+            -DGGML_HIP_ROCWMMA_FATTN=ON `
+            -DGGML_BACKEND_DL=ON `
+            -DBUILD_SHARED_LIBS=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU_ALL_VARIANTS=ON `
+            -DLLAMA_CURL=OFF `
+            -DLLAMA_OPENSSL=OFF `
+            -DLLAMA_BUILD_SERVER=ON `
+            -DLLAMA_BUILD_TOOLS=ON `
+            -DLLAMA_BUILD_TESTS=OFF `
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Verify
+        shell: pwsh
+        run: |
+          Get-ChildItem build\bin -Recurse -Filter *ggml-hip* -ErrorAction SilentlyContinue
+          .\build\bin\llama-server.exe --version 2>&1 | Write-Output
+
+  linux-x64-sycl:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - fp16: 'ON'
+            label: fp16
+          - fp16: 'OFF'
+            label: fp32
+    env:
+      ONEAPI_ROOT: /opt/intel/oneapi/
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Free up disk space
+        uses: ggml-org/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+
+      - name: Install oneAPI
+        run: |
+          cd /tmp
+          wget -q https://registrationcenter-download.intel.com/akdlm/IRC_NAS/56f7923a-adb8-43f3-8b02-2b60fcac8cab/intel-deep-learning-essentials-2025.3.3.16_offline.sh -O oneapi.sh
+          sudo bash oneapi.sh -s -a --silent --eula accept
+
+      - name: Build (SYCL ${{ matrix.label }})
+        # NOTE: no turbo kernels for SYCL — this is plain llama.cpp on Intel GPUs.
+        run: |
+          source /opt/intel/oneapi/setvars.sh
+          cmake -B build -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_SYCL=ON \
+            -DCMAKE_C_COMPILER=icx \
+            -DCMAKE_CXX_COMPILER=icpx \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_SYCL_F16=${{ matrix.fp16 }} \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Verify
+        run: |
+          ls -l build/bin/libggml-sycl.so 2>/dev/null || true
+          ./build/bin/llama-server --version 2>&1 || true
+
+  linux-x64-openvino:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup OpenVINO
+        uses: ./.github/actions/linux-setup-openvino
+        with:
+          path: ${{ github.workspace }}/openvino_toolkit
+          version_major: "2025.3"
+          version_full: "2025.3.0.19807.44526285f24"
+
+      - name: Install OpenVINO dependencies
+        run: |
+          # The GGML_OPENVINO backend links OpenCL; the runner has neither the
+          # loader nor headers by default (CMake: "Could NOT find OpenCL").
+          sudo apt-get update -y
+          sudo apt-get install -y ocl-icd-opencl-dev opencl-headers
+          cd openvino_toolkit
+          chmod +x ./install_dependencies/install_openvino_dependencies.sh
+          echo "Y" | sudo -E ./install_dependencies/install_openvino_dependencies.sh
+
+      - name: Build
+        # NOTE: OpenVINO is graph-offload — turbo KV quant types do not map here.
+        run: |
+          source ./openvino_toolkit/setupvars.sh
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_OPENVINO=ON \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release --parallel
+
+      - name: Verify
+        run: |
+          ./build/bin/llama-server --version 2>&1 || true
