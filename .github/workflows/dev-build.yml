@@ -275,10 +275,11 @@ jobs:
           ls -l build/bin/libggml-hip.so
 
       - name: Prepare archive
-        # Bundle the HIP runtime like the CUDA job bundles cudart/cublas:
-        # user boxes have the amdgpu driver but not necessarily ROCm
-        # userspace. rocBLAS/hipBLASLt also ship Tensile kernel data dirs
-        # that must travel with the .so or matmul fails at runtime.
+        # Lean archive: binaries + libggml-*.so only. Do NOT bundle the ROCm
+        # runtime — rocBLAS/hipBLASLt ship a Tensile kernel database for every
+        # gfx arch that balloons the archive past 9 GB (and GitHub's 2 GB asset
+        # limit). AMD users install the ROCm runtime system-wide, exactly like
+        # upstream's ROCm builds; libggml-hip.so dlopen-links it at runtime.
         run: |
           mkdir -p release/build/bin
           cp build/bin/llama-server release/build/bin/
@@ -287,13 +288,12 @@ jobs:
           cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
           cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
           find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
-          for lib in libamdhip64 librocblas libhipblas libhipblaslt librocsolver librocsparse libamd_comgr libhsa-runtime64; do
-            cp -P /opt/rocm/lib/${lib}.so* release/build/bin/ 2>/dev/null || true
-          done
-          # Tensile / hipBLASLt kernel data (required at runtime by rocBLAS).
-          cp -r /opt/rocm/lib/rocblas release/build/bin/ 2>/dev/null || true
-          cp -r /opt/rocm/lib/hipblaslt release/build/bin/ 2>/dev/null || true
           cp LICENSE release/build/bin/ 2>/dev/null || true
+          cat > release/build/bin/README-ROCm.txt << 'EOF'
+          This build needs the AMD ROCm runtime installed on the system
+          (https://rocm.docs.amd.com). Targets AMD RDNA2-RDNA4:
+          gfx1030/1100/1101/1102/1151/1200/1201. GCN GPUs: use the Vulkan build.
+          EOF
           cd release
           zip -r ../llama-turboquant-linux-x64-rocm.zip .
           tar -czf ../llama-turboquant-linux-x64-rocm.tar.gz .
