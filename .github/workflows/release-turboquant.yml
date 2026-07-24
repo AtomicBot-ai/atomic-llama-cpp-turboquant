@@ -544,6 +544,10 @@ jobs:
   # build job — if anything failed, no release is published at all.
   publish-release:
     needs: [verify-version, linux-x64-vulkan, linux-x64-cuda-13-3, linux-x64-rocm, windows-x64, macos-arm64]
+    # Publish even if some backend build failed, so one broken backend never
+    # blocks shipping the others (the notes call out what is missing). Still
+    # requires the version check to pass.
+    if: ${{ always() && needs.verify-version.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -574,11 +578,15 @@ jobs:
           UPSTREAM_BASE="${VERSION%%-*}"
           ls -lh archives/
 
-          gh release create "$TAG" \
-            --target "${{ github.sha }}" \
-            --title "TurboQuant ${VERSION}" \
-            --latest \
-            --notes "## TurboQuant KV Cache — ${VERSION}
+          # A build job may have failed (if: always() above). Publish whatever
+          # archives exist and call out anything missing in the notes.
+          EXPECTED="linux-x64-vulkan linux-x64-cuda-13.3 linux-x64-rocm windows-x64-cpu windows-x64-vulkan windows-x64-cuda-12.4 windows-x64-cuda-13.3 macos-arm64"
+          MISSING=""
+          for b in $EXPECTED; do
+            ls archives/ | grep -q "llama-turboquant-${b}\." || MISSING="$MISSING $b"
+          done
+
+          NOTES="## TurboQuant KV Cache — ${VERSION}
 
           Built from \`master\` at commit \`${SHORT_SHA}\`, based on upstream llama.cpp \`${UPSTREAM_BASE}\`.
 
@@ -590,12 +598,28 @@ jobs:
           | Backend | Asset |
           |---|---|
           | Linux x64 (Vulkan + portable CPU) | \`llama-turboquant-linux-x64-vulkan.tar.gz\` |
+          | Linux x64 CUDA 13.3 (+ portable CPU) | \`llama-turboquant-linux-x64-cuda-13.3.tar.gz\` |
+          | Linux x64 ROCm/HIP — AMD RDNA (+ portable CPU) | \`llama-turboquant-linux-x64-rocm.tar.gz\` |
           | Windows x64 CPU | \`llama-turboquant-windows-x64-cpu.zip\` |
           | Windows x64 Vulkan | \`llama-turboquant-windows-x64-vulkan.zip\` |
           | Windows x64 CUDA 12.4 | \`llama-turboquant-windows-x64-cuda-12.4.zip\` |
           | Windows x64 CUDA 13.3 | \`llama-turboquant-windows-x64-cuda-13.3.zip\` |
           | macOS ARM64 (Metal, signed + notarized) | \`llama-turboquant-macos-arm64.zip\` |
 
+          The ROCm archive targets AMD RDNA2–RDNA4 (gfx1030/1100/1101/1102/1151/1200/1201); GCN GPUs use the Vulkan build.
+
           ### Versioning
-          \`<upstream-base>-<fork-semver>\`: \`${UPSTREAM_BASE}\` is the upstream llama.cpp build this fork is based on, \`${VERSION#*-}\` is the TurboQuant fork version. \`llama-server --version\` reports \`version: ${VERSION}\`." \
+          \`<upstream-base>-<fork-semver>\`: \`${UPSTREAM_BASE}\` is the upstream llama.cpp build this fork is based on, \`${VERSION#*-}\` is the TurboQuant fork version. \`llama-server --version\` reports \`version: ${VERSION}\`."
+
+          if [ -n "$MISSING" ]; then
+            NOTES="$NOTES
+
+          ⚠️ **Missing backends in this build:**${MISSING} — see the failed jobs of run ${{ github.run_id }}."
+          fi
+
+          gh release create "$TAG" \
+            --target "${{ github.sha }}" \
+            --title "TurboQuant ${VERSION}" \
+            --latest \
+            --notes "$NOTES" \
             archives/*
