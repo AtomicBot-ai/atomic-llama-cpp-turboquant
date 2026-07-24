@@ -754,7 +754,11 @@ static bool ggml_is_view_op(enum ggml_op op) {
 #endif
 
 #ifndef GGML_SCHED_MAX_SPLIT_INPUTS
-#define GGML_SCHED_MAX_SPLIT_INPUTS 30
+// 30 upstream. Gemma 4 E-series feeds a per-layer embedding input into every
+// block; with partial offload (small-VRAM Vulkan + CPU) each of them becomes
+// a split input, so a 30+-layer model trips the assert at split creation.
+// 128 covers the deepest current target (31B dense) with headroom.
+#define GGML_SCHED_MAX_SPLIT_INPUTS 128
 #endif
 
 #ifndef GGML_SCHED_MAX_COPIES
