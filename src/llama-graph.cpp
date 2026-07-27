@@ -1848,6 +1848,26 @@ ggml_tensor * llm_graph_context::build_ffn(
                 cur = ggml_silu(ctx0, cur);
                 cb(cur, "ffn_silu", il);
             } break;
+        case LLM_FFN_SITU:
+            {
+                // Kimi K3 SiTU-GLU: [beta*tanh(gate/beta)*sigmoid(gate)] * [linear_beta*tanh(up/linear_beta)]
+                const float beta  = hparams.situ_beta;
+                const float lbeta = hparams.situ_linear_beta;
+                GGML_ASSERT(beta > 0.0f && lbeta > 0.0f);
+
+                ggml_tensor * gate_act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
+                gate_act = ggml_mul(ctx0, gate_act, ggml_sigmoid(ctx0, cur));
+                cb(gate_act, "ffn_situ", il);
+
+                if (gate && type_gate == LLM_FFN_PAR) {
+                    ggml_tensor * up_cap = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, tmp, 1.0f/lbeta)), lbeta);
+                    cur = ggml_mul(ctx0, gate_act, up_cap);
+                    cb(cur, "ffn_situ_glu", il);
+                    type_gate = LLM_FFN_SEQ;
+                } else {
+                    cur = gate_act;
+                }
+            } break;
         case LLM_FFN_GELU:
             if (gate && type_gate == LLM_FFN_PAR) {
                 cur = ggml_geglu_split(ctx0, cur, tmp);
@@ -2260,6 +2280,22 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 constexpr float limit = 7.0f;
                 cur = ggml_swiglu_oai(ctx0, cur, up, alpha, limit);
                 cb(cur, "ffn_moe_swiglu_oai", il);
+            } break;
+        case LLM_FFN_SITU:
+            {
+                // Kimi K3 SiTU-GLU: [beta*tanh(gate/beta)*sigmoid(gate)] * [linear_beta*tanh(up/linear_beta)]
+                const float beta  = hparams.situ_beta;
+                const float lbeta = hparams.situ_linear_beta;
+                GGML_ASSERT(beta > 0.0f && lbeta > 0.0f);
+                GGML_ASSERT(has_gate && "SiTU without gate branch not implemented");
+
+                ggml_tensor * gate_act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
+                gate_act = ggml_mul(ctx0, gate_act, ggml_sigmoid(ctx0, cur));
+                cb(gate_act, "ffn_moe_situ", il);
+
+                ggml_tensor * up_cap = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, up, 1.0f/lbeta)), lbeta);
+                cur = ggml_mul(ctx0, gate_act, up_cap);
+                cb(cur, "ffn_moe_situ_glu", il);
             } break;
         case LLM_FFN_RELU:
             if (has_gate) {

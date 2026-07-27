@@ -395,6 +395,29 @@ class ModelBase:
 
                 return (scales[g_idx].float() * (weight - zeros[g_idx]).float()).T
 
+            def dequant_mxfp4_packed(w: Tensor, scale: Tensor, group_size: int) -> Tensor:
+                # compressed-tensors "mxfp4-pack-quantized":
+                # w: uint8 [..., K/2], two FP4 (E2M1) values per byte, low nibble = even index
+                # scale: uint8 [..., K/group_size], E8M0 exponent, scale = 2^(x - 127)
+                assert w.dtype == torch.uint8
+                assert scale.dtype == torch.uint8
+
+                kvalues = torch.tensor(
+                    [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
+                    dtype=torch.float32,
+                )
+                if self.lazy:
+                    kvalues = LazyTorchTensor.from_eager(kvalues)
+
+                lo = (w & 0x0F).to(torch.long)
+                hi = (w >> 4).to(torch.long)
+                # interleave: [..., K/2, 2] -> [..., K]
+                vals = torch.stack((kvalues[lo], kvalues[hi]), dim=-1).reshape(*w.shape[:-1], w.shape[-1] * 2)
+
+                exp = torch.ldexp(torch.ones_like(scale, dtype=torch.float32), scale.to(torch.int32) - 127)
+                vals = vals.reshape(*vals.shape[:-1], -1, group_size) * exp.unsqueeze(-1)
+                return vals.reshape(*w.shape[:-1], w.shape[-1] * 2)
+
             def dequant_packed(w: Tensor, scale: Tensor, shape_tensor: Tensor, zero_point: Tensor | None, num_bits: int, group_size: int):
                 assert w.dtype == torch.int32
                 shape = tuple(shape_tensor.tolist())
@@ -540,6 +563,23 @@ class ModelBase:
                             tensors_to_remove += [base_name + n for n in ("_packed", "_shape", "_scale")]
                             if (base_name + "_zero_point") in self.model_tensors:
                                 tensors_to_remove.append(base_name + "_zero_point")
+                elif quant_format == "mxfp4-pack-quantized":
+                    assert weight_config.get("strategy") == "group"
+                    assert weight_config.get("type") == "float"
+                    assert weight_config.get("num_bits") == 4
+                    group_size = weight_config.get("group_size")
+                    assert isinstance(group_size, int)
+                    for name in self.model_tensors.keys():
+                        if name.endswith(".weight_packed"):
+                            base_name = name.removesuffix("_packed")
+                            w = self.model_tensors[name]
+                            scale = self.model_tensors[base_name + "_scale"]
+                            new_tensors[base_name] = (
+                                lambda w=w, scale=scale: dequant_mxfp4_packed(w(), scale(), group_size)
+                            )
+                            tensors_to_remove += [base_name + n for n in ("_packed", "_scale")]
+                            if (base_name + "_shape") in self.model_tensors:
+                                tensors_to_remove.append(base_name + "_shape")
                 elif nvfp4_compressed_tensors:
                     # Don't error from compressed-tensors, we'll handle them in _generate_nvfp4_tensors
                     pass
@@ -2664,7 +2704,7 @@ def get_model_architecture(hparams: dict[str, Any], model_type: ModelType) -> st
     # Step3-VL keeps text config under text_config but uses a custom top-level architecture.
     # For text conversion we route to a dedicated text-only class.
     # TODO: refactor this later to avoid adding exception here
-    if model_type == ModelType.TEXT and arch in ("StepVLForConditionalGeneration", "Sarashina2VisionForCausalLM", "Exaone4_5_ForConditionalGeneration", "Step3p7ForConditionalGeneration"):
+    if model_type == ModelType.TEXT and arch in ("StepVLForConditionalGeneration", "Sarashina2VisionForCausalLM", "Exaone4_5_ForConditionalGeneration", "Step3p7ForConditionalGeneration", "KimiK3ForConditionalGeneration"):
         return arch
 
     # if "architectures" is found in the sub-config, use that instead

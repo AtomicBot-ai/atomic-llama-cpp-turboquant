@@ -331,6 +331,13 @@ struct llama_layer {
     // ff MoE latent proj
     struct ggml_tensor * ffn_latent_down = nullptr;
     struct ggml_tensor * ffn_latent_up   = nullptr;
+    struct ggml_tensor * ffn_latent_norm = nullptr; // kimi k3
+
+    // attention residuals (kimi k3)
+    struct ggml_tensor * attn_res_norm = nullptr;
+    struct ggml_tensor * attn_res_proj = nullptr;
+    struct ggml_tensor * ffn_res_norm  = nullptr;
+    struct ggml_tensor * ffn_res_proj  = nullptr;
 
     // ff shared expert (shexp)
     struct ggml_tensor * ffn_gate_inp_shexp = nullptr;
@@ -621,6 +628,10 @@ struct llama_model {
 
     // kimi-k3 final cross-layer residual mix
     struct ggml_tensor * output_res_score = nullptr;
+    // attention residuals output mixture (kimi k3)
+    struct ggml_tensor * output_res_norm = nullptr;
+    struct ggml_tensor * output_res_proj = nullptr;
+
 
     // NVFP4 per-tensor scale2, input_scale for LM head
     struct ggml_tensor * output_s    = nullptr;

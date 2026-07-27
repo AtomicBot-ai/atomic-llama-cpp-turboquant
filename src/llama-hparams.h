@@ -176,6 +176,12 @@ struct llama_hparams {
     // for Kimi Linear KDA
     uint32_t n_embd_head_kda = 0;
 
+    // for Kimi K3
+    float    kda_gate_lower_bound = 0.0f;   // safe-gate lower bound (K3: -5.0)
+    float    situ_beta            = 0.0f;   // SiTU gate soft-cap (K3: 4.0)
+    float    situ_linear_beta     = 0.0f;   // SiTU up-branch soft-cap (K3: 25.0)
+    uint32_t attn_res_block_size  = 0;      // AttnRes snapshot interval (K3: 12)
+
     bool ssm_dt_b_c_rms = false;
 
     float f_clamp_kqv      = 0.0f;
