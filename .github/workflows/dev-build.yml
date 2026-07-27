@@ -298,7 +298,9 @@ jobs:
       - name: Build
         # CUDA 12.4 for consumer cards on OLDER drivers (12.4 works where 13.x
         # needs a newer driver -- the most-downloaded variant on Windows).
-        # Same consumer-SASS + Turing-PTX-floor arch policy as the 13.3 job.
+        # Wide old-card net: SASS for Turing/Ampere/Ada (75/86/89), PTX floor
+        # at Pascal (61) for JIT. No sm_120 -- CUDA 12.4 predates Blackwell,
+        # and RTX 50 needs the newer driver + the 13.3 build anyway.
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -309,7 +311,7 @@ jobs:
             -DGGML_CPU_ALL_VARIANTS=ON \
             -DGGML_CUDA=ON \
             -DGGML_CUDA_CUB_3DOT2=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="75-virtual;86-real;89-real;120-real" \
+            -DCMAKE_CUDA_ARCHITECTURES="61-virtual;75-real;86-real;89-real" \
             -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
             -DLLAMA_CURL=OFF \
             -DLLAMA_OPENSSL=OFF \
