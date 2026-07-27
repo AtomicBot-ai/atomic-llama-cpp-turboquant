@@ -586,7 +586,7 @@ jobs:
             ls archives/ | grep -q "llama-turboquant-${b}\." || MISSING="$MISSING $b"
           done
 
-          NOTES="## TurboQuant KV Cache — ${VERSION}
+          NOTES="## TurboQuant KV Cache ${VERSION}
 
           Built from \`master\` at commit \`${SHORT_SHA}\`, based on upstream llama.cpp \`${UPSTREAM_BASE}\`.
 
@@ -599,14 +599,14 @@ jobs:
           |---|---|
           | Linux x64 (Vulkan + portable CPU) | \`llama-turboquant-linux-x64-vulkan.tar.gz\` |
           | Linux x64 CUDA 13.3 (+ portable CPU) | \`llama-turboquant-linux-x64-cuda-13.3.tar.gz\` |
-          | Linux x64 ROCm/HIP — AMD RDNA (+ portable CPU) | \`llama-turboquant-linux-x64-rocm.tar.gz\` |
+          | Linux x64 AMD ROCm, RDNA2-RDNA4 (+ portable CPU) | \`llama-turboquant-linux-x64-rocm.tar.gz\` |
           | Windows x64 CPU | \`llama-turboquant-windows-x64-cpu.zip\` |
           | Windows x64 Vulkan | \`llama-turboquant-windows-x64-vulkan.zip\` |
           | Windows x64 CUDA 12.4 | \`llama-turboquant-windows-x64-cuda-12.4.zip\` |
           | Windows x64 CUDA 13.3 | \`llama-turboquant-windows-x64-cuda-13.3.zip\` |
           | macOS ARM64 (Metal, signed + notarized) | \`llama-turboquant-macos-arm64.zip\` |
 
-          The ROCm archive targets AMD RDNA2–RDNA4 (gfx1030/1100/1101/1102/1151/1200/1201); GCN GPUs use the Vulkan build.
+          The AMD ROCm archive targets RDNA2 through RDNA4 (gfx1030/1100/1101/1102/1151/1200/1201) and needs the ROCm runtime installed on the system. Older GCN cards: use the Vulkan build.
 
           ### Versioning
           \`<upstream-base>-<fork-semver>\`: \`${UPSTREAM_BASE}\` is the upstream llama.cpp build this fork is based on, \`${VERSION#*-}\` is the TurboQuant fork version. \`llama-server --version\` reports \`version: ${VERSION}\`."
