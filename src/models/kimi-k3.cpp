@@ -47,7 +47,13 @@ void llama_model_kimi_k3::load_arch_hparams(llama_model_loader & ml) {
     // K3 always renormalizes the top-k sigmoid weights (moe_renormalize = true)
     hparams.expert_weights_norm = true;
 
-    type = LLM_TYPE_UNKNOWN;
+    GGML_ASSERT(hparams.attn_res_block_size > 0 && "Kimi-K3 requires attn_res_block_size");
+    GGML_ASSERT(hparams.moe_latent_size    > 0 && "Kimi-K3 requires moe_latent_size");
+
+    switch (hparams.n_layer()) {
+        case 93: type = LLM_TYPE_2_8T_A50B; break; // Kimi-K3
+        default: type = LLM_TYPE_UNKNOWN;
+    }
 }
 
 void llama_model_kimi_k3::load_arch_tensors(llama_model_loader &) {
