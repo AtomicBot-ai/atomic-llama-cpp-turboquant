@@ -28,6 +28,15 @@ class KimiK3Model(KimiLinearModel):
     """
     model_arch = gguf.MODEL_ARCH.KIMI_K3
 
+    def set_vocab(self):
+        super().set_vocab()
+        # KimiLinearModel.set_vocab forces the tokenizer's own eos, which for K3
+        # is 163585 = [EOS], the document terminator. The config says 163586 =
+        # <|end_of_msg|>, the chat turn terminator; keeping [EOS] means chat
+        # generation never stops at the end of an assistant turn. Restore it.
+        if (eos := self.hparams.get("eos_token_id")) is not None:
+            self.gguf_writer.add_eos_token_id(eos)
+
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
 

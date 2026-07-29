@@ -1844,6 +1844,7 @@ class TensorNameMap:
             "visual.merger.post_projection_norm", # glm4v
             "vision_tower.post_trunk_norm", # dots.ocr
             "vit.perceive.after_rms", # HunyuanVL
+            "mm_projector.post_norm", # Kimi-K3 (patchmergerv2 post-norm)
         ),
 
         MODEL_TENSOR.V_MM_INP_PROJ: (
