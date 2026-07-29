@@ -168,3 +168,79 @@ class Glm5vModel(KimiK25Model):
             name = name.replace("mm_projector.linear_", "mm_projector.proj.linear_", 1)
 
         yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("KimiK3ForConditionalGeneration")
+class KimiK3VisionModel(MmprojModel):
+    """Kimi-K3 MoonViT-3d vision tower (image path).
+
+    Structurally the Kimi-K2.5 tower with RMSNorm, no biases, a non-square fused QKV
+    (qkv_hidden_size 1536 vs vt_hidden_size 1024) and a post-norm patchmergerv2 projector.
+    Video is out of scope: for t == 1 the temporal pool and temporal position term vanish.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.hparams_vision is not None, "Kimi-K3 requires vision_config in config.json"
+        self.merge_kernel_size = tuple(self.hparams_vision.get("merge_kernel_size", [2, 2]))
+        self.patch_size = self.hparams_vision.get("patch_size", 14)
+        pos_emb_h = self.hparams_vision.get("init_pos_emb_height", 64)
+        self.hparams_vision["image_size"] = pos_emb_h * self.patch_size
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        assert self.hparams_vision is not None
+        self.gguf_writer.add_clip_projector_type(gguf.VisionProjectorType.KIMIK3)
+
+        # qkv width != n_embd, so the runtime cannot derive d_head
+        n_head = self.hparams_vision["vt_num_attention_heads"]
+        qkv_hidden = self.hparams_vision.get("qkv_hidden_size") or self.hparams_vision["vt_hidden_size"]
+        assert qkv_hidden % n_head == 0, f"qkv_hidden_size {qkv_hidden} not divisible by {n_head} heads"
+        self.gguf_writer.add_vision_head_dim(qkv_hidden // n_head)
+
+        self.gguf_writer.add_vision_use_gelu(True)  # activation_func is gelu_pytorch_tanh
+        self.gguf_writer.add_vision_attention_layernorm_eps(
+            self.hparams_vision.get("projector_ln_eps", 1e-5))
+        self.gguf_writer.add_vision_projector_scale_factor(self.merge_kernel_size[0])
+
+        in_patch_limit = self.preprocessor_config.get("media_proc_cfg", {}).get(
+            "in_patch_limit", self.preprocessor_config.get("in_patch_limit", 16384))
+        pixels_per_patch = self.patch_size ** 2
+        self.gguf_writer.add_vision_min_pixels(8 * pixels_per_patch)
+        self.gguf_writer.add_vision_max_pixels(in_patch_limit * pixels_per_patch)
+
+    @classmethod
+    def filter_tensors(cls, item: tuple[str, Callable[[], Tensor]]) -> tuple[str, Callable[[], Tensor]] | None:
+        name, _ = item
+        if not name.startswith(("vision_tower.", "mm_projector.")):
+            return None
+        return super().filter_tensors(item)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        assert self.hparams_vision is not None
+        n_head = self.hparams_vision["vt_num_attention_heads"]
+
+        if "wqkv" in name and "weight" in name:
+            # de-interleave Q/K so the runtime can use build_rope_2d(interleave_freq=false)
+            out_dim = data_torch.shape[0]
+            qkv_dim = out_dim // 3
+            head_dim = qkv_dim // n_head
+            wq, wk, wv = (data_torch[:qkv_dim], data_torch[qkv_dim:2 * qkv_dim], data_torch[2 * qkv_dim:])
+
+            def deinterleave(w: Tensor) -> Tensor:
+                return (w.reshape(n_head, head_dim // 4, 2, 2, w.shape[-1])
+                         .permute(0, 2, 1, 3, 4)
+                         .reshape(w.shape[0], w.shape[-1]))
+
+            data_torch = torch.cat([deinterleave(wq), deinterleave(wk), wv], dim=0)
+
+        if "pos_emb.weight" in name:
+            # kept 3D: the runtime reads grid extents from ne[1]/ne[2]
+            pass
+
+        if "mm_projector.proj.0." in name:
+            name = name.replace(".proj.0.", ".proj.linear_1.")
+        elif "mm_projector.proj.2." in name:
+            name = name.replace(".proj.2.", ".proj.linear_2.")
+
+        yield from super().modify_tensors(data_torch, name, bid)

@@ -1007,6 +1007,10 @@ static std::unique_ptr<clip_graph> clip_get_graph_builder(clip_ctx * ctx, const 
             {
                 builder = std::make_unique<clip_graph_kimik25>(ctx, img);
             } break;
+        case PROJECTOR_TYPE_KIMIK3:
+            {
+                builder = std::make_unique<clip_graph_kimik3>(ctx, img);
+            } break;
         case PROJECTOR_TYPE_COGVLM:
             {
                 builder = std::make_unique<clip_graph_cogvlm>(ctx, img);
@@ -1516,6 +1520,23 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_KIMIK25:
                     {
                         hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
+                        hparams.rope_theta = 10000.0f;
+                        get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);
+
+                        int min_pixels = 0, max_pixels = 0;
+                        get_u32(KEY_IMAGE_MIN_PIXELS, min_pixels, false);
+                        get_u32(KEY_IMAGE_MAX_PIXELS, max_pixels, false);
+                        if (min_pixels > 0 && max_pixels > 0) {
+                            hparams.image_min_pixels = min_pixels;
+                            hparams.image_max_pixels = max_pixels;
+                            hparams.warmup_image_size = static_cast<int>(std::sqrt(max_pixels));
+                        } else {
+                            hparams.set_limit_image_tokens(2, 4096);
+                        }
+                    } break;
+                case PROJECTOR_TYPE_KIMIK3:
+                    {
+                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
                         hparams.rope_theta = 10000.0f;
                         get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);
 
@@ -2598,6 +2619,13 @@ struct clip_model_loader {
                     model.mm_1_b = get_tensor(string_format(TN_LLAVA_PROJ, 1, "bias"));
                     model.mm_2_w = get_tensor(string_format(TN_LLAVA_PROJ, 2, "weight"));
                     model.mm_2_b = get_tensor(string_format(TN_LLAVA_PROJ, 2, "bias"));
+                } break;
+            case PROJECTOR_TYPE_KIMIK3:
+                {
+                    // patchmergerv2, bias-free, norm after the projection
+                    model.mm_1_w = get_tensor(string_format(TN_LLAVA_PROJ, 1, "weight"));
+                    model.mm_2_w = get_tensor(string_format(TN_LLAVA_PROJ, 2, "weight"));
+                    model.mm_post_norm_w = get_tensor(string_format(TN_MM_POST_NORM, "weight"));
                 } break;
             case PROJECTOR_TYPE_KIMIVL:
             case PROJECTOR_TYPE_PADDLEOCR:
@@ -3955,6 +3983,7 @@ int clip_n_output_tokens(const clip_ctx * ctx, const clip_image_f32 * img) {
         case PROJECTOR_TYPE_LFM2:
         case PROJECTOR_TYPE_KIMIVL:
         case PROJECTOR_TYPE_KIMIK25:
+        case PROJECTOR_TYPE_KIMIK3:
             {
                 // dynamic size
                 int out_patch_size = params.patch_size * ctx->model.hparams.n_merge;
@@ -4743,6 +4772,7 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
         case PROJECTOR_TYPE_PIXTRAL:
         case PROJECTOR_TYPE_KIMIVL:
         case PROJECTOR_TYPE_KIMIK25:
+        case PROJECTOR_TYPE_KIMIK3:
         case PROJECTOR_TYPE_LIGHTONOCR:
             {
                 // set the 2D positions
@@ -5560,6 +5590,7 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
         case PROJECTOR_TYPE_KIMIVL:
         case PROJECTOR_TYPE_PADDLEOCR:
         case PROJECTOR_TYPE_KIMIK25:
+        case PROJECTOR_TYPE_KIMIK3:
         case PROJECTOR_TYPE_YASA2:
             return ctx->model.mm_2_w->ne[1];
         case PROJECTOR_TYPE_HUNYUANVL:
