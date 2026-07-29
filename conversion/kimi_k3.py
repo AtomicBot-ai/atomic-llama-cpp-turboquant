@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Iterable, TYPE_CHECKING
 
 import torch
@@ -7,7 +9,7 @@ import torch
 if TYPE_CHECKING:
     from torch import Tensor
 
-from .base import ModelBase, gguf
+from .base import ModelBase, gguf, logger
 from .kimi_linear import KimiLinearModel
 
 
@@ -36,6 +38,23 @@ class KimiK3Model(KimiLinearModel):
         # generation never stops at the end of an assistant turn. Restore it.
         if (eos := self.hparams.get("eos_token_id")) is not None:
             self.gguf_writer.add_eos_token_id(eos)
+
+        # Moonshot ships no chat_template in tokenizer_config.json (K3 is
+        # API-first), so GGUFs come out template-less and chat tools refuse to
+        # run. Embed the reference template from models/templates/Kimi-K3.jinja
+        # unless the checkpoint provides one.
+        has_template = (self.dir_model / "chat_template.jinja").is_file()
+        if not has_template:
+            try:
+                with open(self.dir_model / "tokenizer_config.json", encoding="utf-8") as f:
+                    has_template = "chat_template" in json.load(f)
+            except OSError:
+                pass
+        if not has_template:
+            tmpl = Path(__file__).resolve().parent.parent / "models" / "templates" / "Kimi-K3.jinja"
+            if tmpl.is_file():
+                logger.info("embedding reference chat template from models/templates/Kimi-K3.jinja")
+                self.gguf_writer.add_chat_template(tmpl.read_text(encoding="utf-8"))
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
