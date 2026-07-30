@@ -12,7 +12,9 @@ void llama_model_gemma4_assistant::load_arch_hparams(llama_model_loader & ml) {
     hparams.f_attention_scale = 1.0f;
 
     ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.n_layer_nextn, false);
-    GGML_ASSERT(hparams.n_layer_nextn == hparams.n_layer_all && "n_layer_nextn must be == n_layer_impl");
+    if (hparams.n_layer_nextn == 0) {
+        hparams.n_layer_nextn = hparams.n_layer();
+    }
 
     ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA,           hparams.rope_freq_base_train_swa, false);
     ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW,     hparams.n_swa);
@@ -21,7 +23,7 @@ void llama_model_gemma4_assistant::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH_SWA,   hparams.n_embd_head_v_swa);
 }
 
-void llama_model_gemma4_assistant::load_arch_tensors(llama_model_loader &) {
+void llama_model_gemma4_assistant::load_arch_tensors(llama_model_loader & ml) {
     LLAMA_LOAD_LOCALS;
 
     if (n_embd_head_k != n_embd_head_v) {
@@ -29,9 +31,6 @@ void llama_model_gemma4_assistant::load_arch_tensors(llama_model_loader &) {
     }
     if (hparams.n_embd_head_k_swa != hparams.n_embd_head_v_swa) {
         throw std::runtime_error("Gemma 4 assistant requires n_embd_head_k_swa == n_embd_head_v_swa");
-    }
-    if (hparams.n_embd_out() == n_embd) {
-        throw std::runtime_error("Gemma 4 assistant requires embedding_length_out to carry the target hidden size");
     }
 
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
@@ -42,7 +41,16 @@ void llama_model_gemma4_assistant::load_arch_tensors(llama_model_loader &) {
     create_tensor(tn(LLM_TENSOR_MASKED_EMBD_CENTROIDS, "weight"), {}, TENSOR_NOT_REQUIRED);
     create_tensor(tn(LLM_TENSOR_MASKED_EMBD_ORDERING),  {}, TENSOR_NOT_REQUIRED);
 
-    const int64_t n_embd_backbone = hparams.n_embd_inp();
+    // Determine backbone hidden size from projection tensor shape
+    int64_t n_embd_backbone = hparams.n_embd_inp();
+    {
+        auto * meta = ml.get_tensor_meta(tn(LLM_TENSOR_NEXTN_PROJ_POST, "weight").str().c_str());
+        if (meta && meta->ne[1] > 0) {
+            n_embd_backbone = meta->ne[1];
+        }
+    }
+    hparams.n_embd_inp_impl = n_embd_backbone;
+    hparams.n_embd_out_impl = n_embd_backbone;
     nextn_proj_post = create_tensor(tn(LLM_TENSOR_NEXTN_PROJ_POST, "weight"), { n_embd, n_embd_backbone }, 0);
 
     int rope_freqs_flag = 0;
