@@ -51,7 +51,7 @@ void llama_model_kimi_k3::load_arch_hparams(llama_model_loader & ml) {
     GGML_ASSERT(hparams.moe_latent_size    > 0 && "Kimi-K3 requires moe_latent_size");
 
     switch (hparams.n_layer()) {
-        case 93: type = LLM_TYPE_2_8T_A50B; break; // Kimi-K3
+        case 93: type = LLM_TYPE_2_8T_A104B; break; // Kimi-K3
         default: type = LLM_TYPE_UNKNOWN;
     }
 }
