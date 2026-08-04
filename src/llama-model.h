@@ -124,6 +124,7 @@ enum llm_type {
     LLM_TYPE_26B_A4B, // Gemma4
     LLM_TYPE_30B_A3B,
     LLM_TYPE_118B_A8B,
+    LLM_TYPE_124B_A5B, // Ling 3.0 flash
     LLM_TYPE_31B_A3_5B,
     LLM_TYPE_35B_A3B, // Qwen3.5
     LLM_TYPE_48B_A3B, // Kimi Linear
@@ -528,6 +529,8 @@ struct llama_layer {
     struct ggml_tensor * ssm_q_conv = nullptr;
     struct ggml_tensor * ssm_k_conv = nullptr;
     struct ggml_tensor * ssm_v_conv = nullptr;
+    struct ggml_tensor * ssm_f      = nullptr;  // bailingmoe3 (full-rank)
+    struct ggml_tensor * ssm_g      = nullptr;  // bailingmoe3 (full-rank)
     struct ggml_tensor * ssm_f_a    = nullptr;
     struct ggml_tensor * ssm_f_b    = nullptr;
     struct ggml_tensor * ssm_beta   = nullptr;

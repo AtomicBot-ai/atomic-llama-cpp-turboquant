@@ -263,6 +263,7 @@ class TensorNameMap:
 
         # Attention query
         MODEL_TENSOR.ATTN_Q: (
+            "model.layers.{bid}.attention.q_proj",              # bailingmoe3
             "model.layers.{bid}.self_attn.q_proj",                       # llama-hf nemotron olmoe olmo2 phimoe
             "layers.{bid}.self_attn.q_proj",                             # embeddinggemma
             "model.layers.{bid}.self_attn.q_proj_no_perm",               # llama-custom
@@ -283,6 +284,7 @@ class TensorNameMap:
 
         # Attention key
         MODEL_TENSOR.ATTN_K: (
+            "model.layers.{bid}.attention.k_proj",              # bailingmoe3
             "model.layers.{bid}.self_attn.k_proj",                     # llama-hf nemotron olmoe olmo2 phimoe
             "layers.{bid}.self_attn.k_proj",                           # embeddinggemma
             "model.layers.{bid}.self_attn.k_proj_no_perm",             # llama-custom
@@ -304,6 +306,7 @@ class TensorNameMap:
 
         # Attention value
         MODEL_TENSOR.ATTN_V: (
+            "model.layers.{bid}.attention.v_proj",              # bailingmoe3
             "model.layers.{bid}.self_attn.v_proj",                       # llama-hf nemotron olmoe olmo2 phimoe
             "layers.{bid}.self_attn.v_proj",                             # embeddinggemma
             "layers.{bid}.attention.wv",                                 # llama-pth
@@ -324,6 +327,7 @@ class TensorNameMap:
 
         # Attention output
         MODEL_TENSOR.ATTN_OUT: (
+            "model.layers.{bid}.attention.o_proj",              # bailingmoe3
             "gpt_neox.layers.{bid}.attention.dense",                        # gptneox
             "transformer.h.{bid}.attn.c_proj",                              # gpt2 refact qwen jais
             "transformer.blocks.{bid}.attn.out_proj",                       # mpt
@@ -857,6 +861,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.SSM_DT: (
+            "model.layers.{bid}.attention.dt_proj",   # bailingmoe3
             "model.layers.{bid}.dt_proj",               # mamba-hf
             "backbone.layers.{bid}.mixer.dt_proj",      # mamba
             "model.layers.{bid}.mamba.dt_proj",         # jamba falcon-h1 granite-hybrid
@@ -872,6 +877,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.SSM_A: (
+            "model.layers.{bid}.attention.A_log",     # bailingmoe3
             "model.layers.{bid}.A_log",               # mamba-hf
             "backbone.layers.{bid}.mixer.A_log",      # mamba
             "model.layers.{bid}.mamba.A_log",         # jamba falcon-h1 granite-hybrid
@@ -904,6 +910,7 @@ class TensorNameMap:
             "model.layers.{bid}.linear_attn.norm",  # qwen3next
             "backbone.layers.{bid}.mixer.norm",     # mamba2
             "model.layers.{bid}.self_attn.o_norm",  # kimi
+            "model.layers.{bid}.attention.o_norm",  # bailingmoe3
         ),
 
         MODEL_TENSOR.SSM_OUT: (
@@ -925,12 +932,21 @@ class TensorNameMap:
         # Kimi Linear KDA (using SSM_ prefix for consistency)
         MODEL_TENSOR.SSM_CONV1D_Q: (
             "model.layers.{bid}.self_attn.q_conv1d",
+            "model.layers.{bid}.attention.q_conv1d",  # bailingmoe3
         ),
         MODEL_TENSOR.SSM_CONV1D_K: (
             "model.layers.{bid}.self_attn.k_conv1d",
+            "model.layers.{bid}.attention.k_conv1d",  # bailingmoe3
         ),
         MODEL_TENSOR.SSM_CONV1D_V: (
             "model.layers.{bid}.self_attn.v_conv1d",
+            "model.layers.{bid}.attention.v_conv1d",  # bailingmoe3
+        ),
+        MODEL_TENSOR.SSM_F: (
+            "model.layers.{bid}.attention.f_proj",  # bailingmoe3
+        ),
+        MODEL_TENSOR.SSM_G: (
+            "model.layers.{bid}.attention.g_proj",  # bailingmoe3 (KDA layers only)
         ),
         MODEL_TENSOR.SSM_F_A: (
             "model.layers.{bid}.self_attn.f_a_proj",
@@ -941,6 +957,7 @@ class TensorNameMap:
         MODEL_TENSOR.SSM_BETA: (
             "model.layers.{bid}.linear_attn.in_proj_b",  # qwen3.5
             "model.layers.{bid}.self_attn.b_proj",       # Kimi Linear
+            "model.layers.{bid}.attention.b_proj",       # bailingmoe3
         ),
         MODEL_TENSOR.SSM_G_A: (
             "model.layers.{bid}.self_attn.g_a_proj",
@@ -1129,6 +1146,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.ATTN_KV_A_MQA: (
+            "model.layers.{bid}.attention.kv_a_proj_with_mqa",  # bailingmoe3
             "model.layers.{bid}.self_attn.kv_a_proj_with_mqa", # deepseek2
             "layers.{bid}.attention.wkv_a_with_mqa",           # mistral-large
         ),
@@ -1153,6 +1171,7 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.ATTN_KV_A_NORM: (
+            "model.layers.{bid}.attention.kv_a_layernorm",      # bailingmoe3
             "model.layers.{bid}.self_attn.kv_a_layernorm", # deepseek2
             "layers.{bid}.attention.kv_a_norm",            # mistral-large
         ),

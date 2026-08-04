@@ -112,6 +112,7 @@ enum llm_arch {
     LLM_ARCH_PLM,
     LLM_ARCH_BAILINGMOE,
     LLM_ARCH_BAILINGMOE2,
+    LLM_ARCH_BAILINGMOE3,
     LLM_ARCH_DOTS1,
     LLM_ARCH_ARCEE,
     LLM_ARCH_AFMOE,
@@ -538,6 +539,8 @@ enum llm_tensor {
     LLM_TENSOR_SSM_CONV1D_Q,        // kimi: Q conv1d weight
     LLM_TENSOR_SSM_CONV1D_K,        // kimi: K conv1d weight
     LLM_TENSOR_SSM_CONV1D_V,        // kimi: V conv1d weight
+    LLM_TENSOR_SSM_F,               // bailingmoe3: full-rank forget gate projection
+    LLM_TENSOR_SSM_G,               // bailingmoe3: full-rank output gate projection
     LLM_TENSOR_SSM_F_A,             // kimi: forget gate projection A
     LLM_TENSOR_SSM_F_B,             // kimi: forget gate projection B
     LLM_TENSOR_SSM_BETA,            // kimi: beta mixing coefficient and qwen3.5
