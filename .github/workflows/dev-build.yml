@@ -393,9 +393,15 @@ jobs:
           sudo apt-get install -y build-essential cmake libssl-dev rocm-hip-sdk
 
       - name: Build
-        # RDNA only, by scope decision: gfx1030 (RDNA2), gfx1100/1101/1102
-        # (RDNA3), gfx1151 (RDNA 3.5 / Strix Halo), gfx1200/1201 (RDNA4).
-        # GCN/CDNA are intentionally excluded -- those users use Vulkan.
+        # RDNA2-RDNA4: gfx1030, gfx1100/1101/1102, gfx1151 (Strix Halo),
+        # gfx1200/1201. CDNA: gfx90a, gfx942 (MI200/MI300).
+        #
+        # Both families ship in one archive. --offload-compress makes that
+        # affordable: measured on gfx942, libggml-hip.so is 439 MiB for RDNA
+        # alone without it, 48 MiB for RDNA with it, and 65 MiB for RDNA+CDNA
+        # with it. Without the flag the combined build is ~2 GB, which is why
+        # CDNA used to be excluded.
+        #
         # Runner has no AMD GPU: build only. libggml-hip.so is dlopen'd
         # thanks to GGML_BACKEND_DL.
         run: |
@@ -411,7 +417,8 @@ jobs:
             -DGGML_CPU_ALL_VARIANTS=ON \
             -DGGML_HIP=ON \
             -DHIP_PLATFORM=amd \
-            -DGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201" \
+            -DGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201;gfx90a;gfx942" \
+            -DCMAKE_HIP_FLAGS="--offload-compress" \
             -DGGML_HIP_ROCWMMA_FATTN=ON \
             -DLLAMA_CURL=OFF \
             -DLLAMA_OPENSSL=OFF \
@@ -443,8 +450,9 @@ jobs:
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cat > release/build/bin/README-ROCm.txt << 'EOF'
           This build needs the AMD ROCm runtime installed on the system
-          (https://rocm.docs.amd.com). Targets AMD RDNA2-RDNA4:
-          gfx1030/1100/1101/1102/1151/1200/1201. GCN GPUs: use the Vulkan build.
+          (https://rocm.docs.amd.com). Targets AMD RDNA2-RDNA4
+          (gfx1030/1100/1101/1102/1151/1200/1201) and CDNA (gfx90a, gfx942 --
+          MI200/MI300). Older GCN GPUs: use the Vulkan build.
           EOF
           cd release
           zip -r ../llama-turboquant-linux-x64-rocm.zip .

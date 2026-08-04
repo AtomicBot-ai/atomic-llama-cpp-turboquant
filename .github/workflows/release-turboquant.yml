@@ -417,7 +417,8 @@ jobs:
             -DGGML_CPU_ALL_VARIANTS=ON \
             -DGGML_HIP=ON \
             -DHIP_PLATFORM=amd \
-            -DGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201" \
+            -DGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201;gfx90a;gfx942" \
+            -DCMAKE_HIP_FLAGS="--offload-compress" \
             -DGGML_HIP_ROCWMMA_FATTN=ON \
             -DLLAMA_CURL=OFF \
             -DLLAMA_OPENSSL=OFF \
@@ -449,8 +450,9 @@ jobs:
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cat > release/build/bin/README-ROCm.txt << 'EOF'
           This build needs the AMD ROCm runtime installed on the system
-          (https://rocm.docs.amd.com). Targets AMD RDNA2-RDNA4:
-          gfx1030/1100/1101/1102/1151/1200/1201. GCN GPUs: use the Vulkan build.
+          (https://rocm.docs.amd.com). Targets AMD RDNA2-RDNA4
+          (gfx1030/1100/1101/1102/1151/1200/1201) and CDNA (gfx90a, gfx942 --
+          MI200/MI300). Older GCN GPUs: use the Vulkan build.
           EOF
           cd release
           zip -r ../llama-turboquant-linux-x64-rocm.zip .
@@ -770,7 +772,7 @@ jobs:
           | Windows x64 CUDA 13.3 | \`llama-turboquant-windows-x64-cuda-13.3.zip\` |
           | macOS ARM64 (Metal, signed + notarized) | \`llama-turboquant-macos-arm64.zip\` |
 
-          The AMD ROCm archive targets RDNA2 through RDNA4 (gfx1030/1100/1101/1102/1151/1200/1201) and needs the ROCm runtime installed on the system. Older GCN cards: use the Vulkan build.
+          The AMD ROCm archive targets RDNA2 through RDNA4 (gfx1030/1100/1101/1102/1151/1200/1201) and CDNA (gfx90a, gfx942 -- Instinct MI200/MI300) in a single archive, and needs the ROCm runtime installed on the system. Older GCN cards: use the Vulkan build.
 
           ### Versioning
           \`<upstream-base>-<fork-semver>\`: \`${UPSTREAM_BASE}\` is the upstream llama.cpp build this fork is based on, \`${VERSION#*-}\` is the TurboQuant fork version. \`llama-server --version\` reports \`version: ${VERSION}\`."
