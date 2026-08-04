@@ -175,6 +175,7 @@ struct llama_hparams {
 
     // for Kimi Linear KDA
     uint32_t n_embd_head_kda = 0;
+    float    f_kda_lower_bound = 0.0f; // bailingmoe3 safe gate
 
     // for Kimi K3
     float    kda_gate_lower_bound = 0.0f;   // safe-gate lower bound (K3: -5.0)

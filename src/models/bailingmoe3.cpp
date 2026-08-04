@@ -6,12 +6,11 @@
 //
 // Differences to Kimi-Linear, which shares the KDA + MLA layout:
 //   - KDA forget/output gates are full-rank projections (config: no_kda_lora = true)
-//   - the KDA log-decay is clamped from below (config: kda_safe_gate, kda_lower_bound)
+//   - the KDA gate uses the safe-gate form (config: kda_safe_gate, kda_lower_bound):
+//     lower_bound * sigmoid(exp(A_log) * (f_proj(x) + dt_bias)) instead of
+//     -exp(A_log) * softplus(f_proj(x) + dt_bias)
 //   - MLA layers do use RoPE (partial, interleaved -> ggml NORM) and carry a head-wise
 //     sigmoid output gate applied before the output projection
-
-// safe_gate clamp of the KDA log-decay, config: kda_lower_bound
-static const float BAILINGMOE3_KDA_LOWER_BOUND = -5.0f;
 
 void llama_model_bailingmoe3::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
@@ -20,6 +19,7 @@ void llama_model_bailingmoe3::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_KV_LORA_RANK,      hparams.n_lora_kv);
     ml.get_key(LLM_KV_SSM_CONV_KERNEL,             hparams.ssm_d_conv);
     ml.get_key(LLM_KV_KDA_HEAD_DIM,                hparams.n_embd_head_kda);
+    ml.get_key(LLM_KV_KDA_LOWER_BOUND,             hparams.f_kda_lower_bound);
 
     // n_head_kv == 0 marks the KDA (recurrent) layers, the rest are full attention
     for (uint32_t i = 0; i < hparams.n_layer(); ++i) {
@@ -83,7 +83,7 @@ void llama_model_bailingmoe3::load_arch_tensors(llama_model_loader &) {
 
             layer.ssm_beta = create_tensor(tn(LLM_TENSOR_SSM_BETA, "weight", i), {n_embd, n_head}, 0);
 
-            // note: -exp(A_log) is already applied by the conversion script
+            // note: the conversion script stores exp(A_log)
             layer.ssm_a = create_tensor(tn(LLM_TENSOR_SSM_A, i), {1, n_head, 1, 1}, TENSOR_NOT_REQUIRED);
             if (!layer.ssm_a) {
                 layer.ssm_a = create_tensor(tn(LLM_TENSOR_SSM_A, i), {1, n_head}, 0);
@@ -248,15 +248,16 @@ llama_model_bailingmoe3::graph::graph(const llama_model & model, const llm_graph
             ggml_tensor * Kcur = bailingmoe3_causal_conv1d(gf, ctx0, conv_states_all, conv_state_all, 1, cur, layer.wk, layer.ssm_k_conv, d_conv, head_dim, n_head, n_seq_tokens, n_seqs, n_tokens, kv_head);
             ggml_tensor * Vcur = bailingmoe3_causal_conv1d(gf, ctx0, conv_states_all, conv_state_all, 2, cur, layer.wv, layer.ssm_v_conv, d_conv, head_dim, n_head, n_seq_tokens, n_seqs, n_tokens, kv_head);
 
-            // g1 = -exp(A_log) * softplus(f_proj(x) + dt_bias), clamped from below (safe_gate)
+            // safe gate: g1 = lower_bound * sigmoid(exp(A_log) * (f_proj(x) + dt_bias))
+            // note: ssm_a holds exp(A_log), applied by the conversion script
             ggml_tensor * g1 = ggml_mul_mat(ctx0, layer.ssm_f, cur);
             g1 = ggml_add(ctx0, g1, layer.ssm_dt_b);
-            g1 = ggml_softplus(ctx0, g1);
             g1 = ggml_reshape_3d(ctx0, g1, head_dim, n_head, n_tokens);
 
             ggml_tensor * A = ggml_reshape_3d(ctx0, layer.ssm_a, 1, n_head, 1);
             g1 = ggml_mul(ctx0, g1, A);
-            g1 = ggml_clamp(ctx0, g1, BAILINGMOE3_KDA_LOWER_BOUND, INFINITY);
+            g1 = ggml_sigmoid(ctx0, g1);
+            g1 = ggml_scale(ctx0, g1, hparams.f_kda_lower_bound);
             cb(g1, "kda_g1", il);
 
             g1 = ggml_reshape_4d(ctx0, g1, head_dim, n_head, n_seq_tokens, n_seqs);

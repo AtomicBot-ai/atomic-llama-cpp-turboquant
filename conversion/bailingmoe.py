@@ -229,6 +229,9 @@ class BailingMoeV3Model(TextModel):
         # KDA
         self.gguf_writer.add_ssm_conv_kernel(hparams["short_conv_kernel_size"])
         self.gguf_writer.add_kda_head_dim(hparams["head_dim"])
+        # safe gate: g = lower_bound * sigmoid(exp(A_log) * (f_proj(x) + dt_bias))
+        assert hparams.get("kda_safe_gate", False), "only the safe gate form is implemented"
+        self.gguf_writer.add_kda_lower_bound(hparams["kda_lower_bound"])
 
         # MLA - converted into MQA with larger heads, then decompressed to MHA
         kv_lora_rank = hparams["kv_lora_rank"]
@@ -273,8 +276,10 @@ class BailingMoeV3Model(TextModel):
         head_dim = self.hparams["head_dim"]
 
         if name.endswith(".A_log"):
+            # the safe gate uses -exp(A_log) only through exp(A_log), see the graph:
+            #   g = kda_lower_bound * sigmoid(exp(A_log) * (f_proj(x) + dt_bias))
             # {n_head} -> ggml ne = [1, n_head]
-            data_torch = -torch.exp(data_torch.float())
+            data_torch = torch.exp(data_torch.float())
             data_torch = data_torch.reshape(-1, 1)
         elif name.endswith(".dt_bias"):
             name = name.rpartition(".dt_bias")[0] + ".dt_proj.bias"
