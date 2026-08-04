@@ -231,7 +231,7 @@ class BailingMoeV3Model(TextModel):
         self.gguf_writer.add_kda_head_dim(hparams["head_dim"])
         # safe gate: g = lower_bound * sigmoid(exp(A_log) * (f_proj(x) + dt_bias))
         assert hparams.get("kda_safe_gate", False), "only the safe gate form is implemented"
-        self.gguf_writer.add_kda_lower_bound(hparams["kda_lower_bound"])
+        self.gguf_writer.add_kda_gate_lower_bound(hparams["kda_lower_bound"])
 
         # MLA - converted into MQA with larger heads, then decompressed to MHA
         kv_lora_rank = hparams["kv_lora_rank"]

@@ -1152,8 +1152,6 @@ class GGUFWriter:
     def add_kda_head_dim(self, value: int) -> None:
         self.add_uint32(Keys.KDA.HEAD_DIM.format(arch=self.arch), value)
 
-    def add_kda_lower_bound(self, value: float) -> None:
-        self.add_float32(Keys.KDA.LOWER_BOUND.format(arch=self.arch), value)
 
     def add_kda_gate_lower_bound(self, value: float) -> None:
         self.add_float32(Keys.KDA.GATE_LOWER_BOUND.format(arch=self.arch), value)
