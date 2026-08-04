@@ -1,0 +1,144 @@
+name: "Windows - Code Signing"
+description: "Authenticode-sign Windows binaries with the DigiCert KeyLocker signtool KSP"
+
+inputs:
+  path:
+    description: "Directory holding the .exe/.dll files to sign"
+    required: true
+  sm-api-key:
+    description: "DigiCert KeyLocker API key (secrets.SM_API_KEY)"
+    required: true
+  sm-client-cert-b64:
+    description: "Base64 DigiCert client authentication certificate (secrets.SM_CLIENT_CERT_FILE_B64)"
+    required: true
+  sm-client-cert-password:
+    description: "Password for the client authentication certificate (secrets.SM_CLIENT_CERT_PASSWORD)"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup DigiCert KeyLocker
+      shell: pwsh
+      env:
+        SM_API_KEY: ${{ inputs.sm-api-key }}
+        SM_CLIENT_CERT_FILE_B64: ${{ inputs.sm-client-cert-b64 }}
+      run: |
+          $headers = @{ "x-api-key" = $env:SM_API_KEY }
+          $msi = "$env:TEMP\smtools.msi"
+          $maxAttempts = 5
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+            try {
+              Invoke-WebRequest -Uri "https://one.digicert.com/signingmanager/api-ui/v1/releases/smtools-windows-x64.msi/download" `
+                -Headers $headers -OutFile $msi
+              if ((Get-Item $msi).Length -gt 0) { break }
+              throw "Downloaded file is empty"
+            } catch {
+              Write-Host "smtools download attempt $i/$maxAttempts failed: $($_.Exception.Message)"
+              if ($i -eq $maxAttempts) { throw }
+              Start-Sleep -Seconds ($i * 10)
+            }
+          }
+          Start-Process msiexec.exe -ArgumentList "/i", $msi, "/quiet", "/norestart" -Wait
+          Remove-Item $msi
+
+          echo "C:\Program Files\DigiCert\DigiCert One Signing Manager Tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          $certBytes = [Convert]::FromBase64String($env:SM_CLIENT_CERT_FILE_B64)
+          $certPath = "$env:RUNNER_TEMP\digicert_client_cert.p12"
+          [IO.File]::WriteAllBytes($certPath, $certBytes)
+          echo "SM_CLIENT_CERT_FILE=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Verify DigiCert KeyLocker
+      shell: pwsh
+      env:
+        SM_HOST: https://clientauth.one.digicert.com
+        SM_API_KEY: ${{ inputs.sm-api-key }}
+        SM_CLIENT_CERT_PASSWORD: ${{ inputs.sm-client-cert-password }}
+      run: |
+          smctl healthcheck
+
+    - name: Sync certificate to Windows store
+      shell: pwsh
+      env:
+        SM_HOST: https://clientauth.one.digicert.com
+        SM_API_KEY: ${{ inputs.sm-api-key }}
+        SM_CLIENT_CERT_PASSWORD: ${{ inputs.sm-client-cert-password }}
+      run: |
+          $output = smctl windows certsync 2>&1
+          $output | ForEach-Object { Write-Host $_ }
+          if ($LASTEXITCODE -ne 0) { throw "smctl windows certsync failed" }
+
+          # certsync installs the KSP and the cert but cannot hand signtool a
+          # selector, so capture the SHA1 fingerprint and pass it via /sha1.
+          $m = [regex]::Match(($output -join "`n"), '(?i)fingerprint[^0-9A-Fa-f]*([0-9A-Fa-f]{40})')
+          if (-not $m.Success) { throw "Could not extract SHA1 fingerprint from certsync output" }
+          echo "SM_CODE_SIGNING_CERT_SHA1_HASH=$($m.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Captured code-signing certificate SHA1: $($m.Groups[1].Value)"
+
+    - name: Setup Windows SDK signtool
+      shell: pwsh
+      run: |
+          $signtoolPath = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" `
+            -Recurse -Filter "signtool.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*\x64\*" } |
+            Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*', '$1') } -Descending |
+            Select-Object -First 1
+          if (-not $signtoolPath) {
+            Write-Error "signtool.exe not found in Windows SDK"
+            exit 1
+          }
+          Write-Host "Found signtool at: $($signtoolPath.DirectoryName)"
+          echo "$($signtoolPath.DirectoryName)" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    - name: Sign binaries
+      shell: pwsh
+      env:
+        SM_HOST: https://clientauth.one.digicert.com
+        SM_API_KEY: ${{ inputs.sm-api-key }}
+        SM_CLIENT_CERT_PASSWORD: ${{ inputs.sm-client-cert-password }}
+        SIGN_PATH: ${{ inputs.path }}
+      run: |
+          if (-not $env:SM_CODE_SIGNING_CERT_SHA1_HASH) {
+            throw "SM_CODE_SIGNING_CERT_SHA1_HASH is not set (certsync did not capture a fingerprint)"
+          }
+
+          $dir = Resolve-Path -LiteralPath $env:SIGN_PATH
+          $files = Get-ChildItem -Path $dir -File |
+            Where-Object { $_.Extension -in '.exe', '.dll' }
+          if (-not $files) { throw "No .exe/.dll found under $dir" }
+
+          $signed = 0
+          $skipped = 0
+          foreach ($f in $files) {
+            # CUDA redistributables arrive signed by NVIDIA; leave them alone.
+            if ((Get-AuthenticodeSignature -LiteralPath $f.FullName).Status -eq 'Valid') {
+              Write-Host "Skipping (already signed): $($f.Name)"
+              $skipped++
+              continue
+            }
+
+            Write-Host "Signing: $($f.Name)"
+            signtool sign /sha1 "$env:SM_CODE_SIGNING_CERT_SHA1_HASH" `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $($f.FullName)" }
+            signtool verify /pa $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signature verification failed for $($f.FullName)" }
+            $signed++
+          }
+
+          Write-Host "Signed $signed file(s), skipped $skipped already-signed file(s)"
+
+    - name: Report signature status
+      shell: pwsh
+      env:
+        SIGN_PATH: ${{ inputs.path }}
+      run: |
+          $dir = Resolve-Path -LiteralPath $env:SIGN_PATH
+          $unsigned = @()
+          foreach ($f in (Get-ChildItem -Path $dir -File | Where-Object { $_.Extension -in '.exe', '.dll' })) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
+            Write-Host ("{0,-28} {1,-12} {2}" -f $f.Name, $sig.Status, $sig.SignerCertificate.Subject)
+            if ($sig.Status -eq 'NotSigned') { $unsigned += $f.Name }
+          }
+          if ($unsigned.Count -gt 0) { throw "Unsigned binaries in archive: $($unsigned -join ', ')" }

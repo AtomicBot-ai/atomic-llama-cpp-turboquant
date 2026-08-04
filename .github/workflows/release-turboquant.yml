@@ -551,6 +551,15 @@ jobs:
               Copy-Item $_.FullName -Destination $dst -Force
             }
 
+      # Signed before staging, so the archive carries the signatures.
+      - name: Sign Windows binaries
+        uses: ./.github/actions/windows-code-sign
+        with:
+          path: build\bin\Release
+          sm-api-key: ${{ secrets.SM_API_KEY }}
+          sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+
       - name: Prepare archive
         shell: pwsh
         run: |
