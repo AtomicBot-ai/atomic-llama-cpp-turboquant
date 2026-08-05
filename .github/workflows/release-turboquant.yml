@@ -589,21 +589,13 @@ jobs:
             cmake_flags: ''
           - variant: vulkan
             cmake_flags: '-DGGML_VULKAN=ON'
-          # Arch lists are pinned instead of falling back to the ggml default,
-          # which builds 8 targets for 12.4 and 7 for 13.3. Nothing that runs
-          # today stops running: the only targets dropped are 90-virtual on
-          # 12.4 (Hopper on a 12.4-era driver is not a Windows scenario, and it
-          # still JITs from 80-virtual) and 121a-real on 13.3 (GB10 is the
-          # arm64 Linux archive's job).
+          # Do not add flags here -- see the CUDA_EXTRA note in the Build step.
           - variant: cuda-12.4
             cuda: '12.4'
-            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON -DCMAKE_CUDA_ARCHITECTURES="50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real"'
-          # -compress-mode=size shrinks the fatbin at no cost to kernel speed
-          # (decompression happens once, at module load). Needs CTK >= 12.8, so
-          # the 12.4 variant cannot have it.
+            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON'
           - variant: cuda-13.3
             cuda: '13.3'
-            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON -DCMAKE_CUDA_ARCHITECTURES="75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real" -DCMAKE_CUDA_FLAGS=-compress-mode=size'
+            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON'
 
     steps:
       - name: Clone
@@ -652,8 +644,20 @@ jobs:
 
       - name: Build
         shell: cmd
+        # CUDA_EXTRA carries the pinned arch lists (the ggml default builds 8
+        # targets on 12.4 and 7 on 13.3, including DGX Spark SASS on Windows)
+        # and -compress-mode=size, which needs CTK >= 12.8 so 12.4 cannot have
+        # it. These live here rather than in the matrix because a matrix value
+        # becomes part of the job's display name, and those names are master's
+        # required status checks -- renaming one leaves the required check
+        # permanently "Expected" and the PR unmergeable.
+        # Nothing that runs today loses support: only 90-virtual on 12.4
+        # (Hopper still JITs from 80-virtual) and 121a-real on 13.3 are dropped.
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          set CUDA_EXTRA=
+          if "${{ matrix.variant }}"=="cuda-12.4" set CUDA_EXTRA=-DCMAKE_CUDA_ARCHITECTURES="50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real"
+          if "${{ matrix.variant }}"=="cuda-13.3" set CUDA_EXTRA=-DCMAKE_CUDA_ARCHITECTURES="75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real" -DCMAKE_CUDA_FLAGS=-compress-mode=size
           cmake -S . -B build -G "Ninja Multi-Config" ^
             -DGGML_NATIVE=OFF ^
             -DGGML_BACKEND_DL=ON ^
@@ -665,7 +669,7 @@ jobs:
             -DLLAMA_BUILD_TOOLS=ON ^
             -DLLAMA_BUILD_TESTS=OFF ^
             -DLLAMA_BUILD_EXAMPLES=OFF ^
-            ${{ matrix.cmake_flags }}
+            ${{ matrix.cmake_flags }} %CUDA_EXTRA%
           set NINJA_JOBS=%NUMBER_OF_PROCESSORS%
           cmake --build build --config Release -j %NINJA_JOBS% -t ggml
           cmake --build build --config Release -j %NINJA_JOBS%
