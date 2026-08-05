@@ -20,12 +20,24 @@ custom quant types, Inkling arch, merge history) see `MERGE_NOTES.md`.
 
 Workflow: `.github/workflows/dev-build.yml`.
 
-Every push to `dev` builds **linux-x64-vulkan, windows-x64
-{cpu, vulkan, cuda-12.4, cuda-13.3}, macos-arm64** and republishes the
+Every push to `dev` builds all eleven archives and republishes the
 [`dev-latest`](https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant/releases/tag/dev-latest)
-rolling prerelease with all archives. PRs into `dev` build everything but
-publish nothing. If some backend fails, `dev-latest` is still published with
-the survivors and the notes list what is missing.
+rolling prerelease with them. PRs into `dev` — and into `master`, so the
+promotion PR reports the same checks — build everything but publish nothing.
+If some backend fails, `dev-latest` is still published with the survivors and
+the notes list what is missing.
+
+| Platform | Archives |
+|---|---|
+| Linux x64 | `cpu`, `vulkan`, `cuda-12.4`, `cuda-13.3`, `rocm` |
+| Linux arm64 | `cuda-13.3` — NVIDIA DGX Spark / GB10, sm_121 |
+| Windows x64 | `cpu`, `vulkan`, `cuda-12.4`, `cuda-13.3` |
+| macOS arm64 | `macos-arm64` (Metal) |
+
+The CUDA archives bundle their own `libcudart`/`libcublas` and are linked with
+an `$ORIGIN` RPATH, so they do not need a CUDA toolkit on the target machine —
+only a recent enough driver. The Linux arm64 archive uses the arm64-SBSA CUDA
+build; DGX Spark needs driver r580+ for the bundled CUDA 13.3 runtime.
 
 Grab-and-test on any machine:
 
@@ -60,6 +72,9 @@ keeps the upstream `b<N>-<sha>` format — clients parse it.
 Cut a release (from an up-to-date, clean `master` checkout):
 
 ```bash
+# 1. Write the CHANGELOG section for the version you are about to cut,
+#    commit it. `verify-version` refuses the release without it.
+# 2. Then:
 ./scripts/turboquant-release.sh patch|minor|major|X.Y.Z
 ```
 
@@ -67,7 +82,19 @@ This bumps the fork-semver part, commits `release: b10018-X.Y.Z`, tags
 `b10018-X.Y.Z` and pushes. The tag triggers
 `.github/workflows/release-turboquant.yml`: all backends are built (macOS
 fully notarized) and published as **one** GitHub release with all archives.
-A `verify-version` job fails the release if the tag doesn't match the file.
+`verify-version` fails the release — in seconds, before three hours of
+building — if the tag doesn't match `TURBOQUANT_VERSION` or if `CHANGELOG.md`
+has no `## <tag>` section.
+
+### Release notes
+
+`CHANGELOG.md` has one section per tag, and the release notes are generated
+from it verbatim: that section *is* the release announcement, so write it for
+whoever downloads the build — what they get, what changed for them, what to
+watch out for. Everything mechanical (the asset table, the full commit list
+since the previous tag, versioning boilerplate) the workflow adds by itself,
+collapsed below the fold. Do not paste a commit dump into the changelog; the
+notes already carry one.
 
 Consumers: `atomic-chat-conf/backends/turboquant-manifest.json` entries all
 point at the same `b10018-X.Y.Z` tag; asset names

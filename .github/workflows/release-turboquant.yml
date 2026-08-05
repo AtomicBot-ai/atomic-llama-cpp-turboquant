@@ -53,6 +53,17 @@ jobs:
             exit 1
           fi
 
+      # Fails here, in 30 seconds, rather than after three hours of building --
+      # the release notes are generated from this section, so a missing one
+      # means shipping the same wall of boilerplate as every other release.
+      - name: Check CHANGELOG has a section for the tag
+        if: ${{ github.ref_type == 'tag' }}
+        run: |
+          if ! grep -qx "## ${GITHUB_REF_NAME}" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## ${GITHUB_REF_NAME}' section — write it before tagging"
+            exit 1
+          fi
+
   linux-x64-vulkan:
     needs: verify-version
     runs-on: ubuntu-22.04
@@ -897,14 +908,26 @@ jobs:
             ls archives/ | grep -q "llama-turboquant-${b}\." || MISSING="$MISSING $b"
           done
 
-          NOTES="## TurboQuant KV Cache ${VERSION}
+          # The human-written part of the notes. verify-version already refused
+          # the release if this section is missing, so it is here.
+          CHANGES=$(awk -v hdr="## ${VERSION}" '
+            $0 == hdr { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md)
 
-          Built from \`master\` at commit \`${SHORT_SHA}\`, based on upstream llama.cpp \`${UPSTREAM_BASE}\`.
+          # Everything since the previous release tag, for traceability. Nobody
+          # reads it, which is exactly why it is collapsed and not the headline.
+          PREV_TAG=$(git tag --list 'b[0-9]*-[0-9]*.[0-9]*.[0-9]*' --sort=-creatordate | grep -vFx "$TAG" | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log --no-merges --pretty='- %s' "${PREV_TAG}..HEAD")
+          else
+            COMMITS="- (no previous release tag found)"
+          fi
 
-          ### What's included
-          - \`llama-server\` with \`--cache-type-k turbo3\` / \`turbo4\` support
-          - \`llama-cli\`, \`llama-bench\`, \`llama-perplexity\`, \`llama-quantize\`
-          - All supported backends in one release:
+          NOTES="## TurboQuant ${VERSION}
+          ${CHANGES}
+          ### Downloads
 
           | Backend | Asset |
           |---|---|
@@ -924,8 +947,22 @@ jobs:
 
           The Linux arm64 CUDA archive is built for NVIDIA DGX Spark (GB10, sm_121); other arm64 NVIDIA machines (GH200, GB200, Thor) run it too but JIT the kernels from PTX on first launch.
 
-          ### Versioning
-          \`<upstream-base>-<fork-semver>\`: \`${UPSTREAM_BASE}\` is the upstream llama.cpp build this fork is based on, \`${VERSION#*-}\` is the TurboQuant fork version. \`llama-server --version\` reports \`version: ${VERSION}\`."
+          <details>
+          <summary>All commits since ${PREV_TAG}</summary>
+
+          ${COMMITS}
+          </details>
+
+          <details>
+          <summary>What every archive contains, and how versions work</summary>
+
+          - \`llama-server\` with \`--cache-type-k turbo3\` / \`turbo4\` support
+          - \`llama-cli\`, \`llama-bench\`, \`llama-perplexity\`, \`llama-quantize\`
+
+          Built from \`master\` at commit \`${SHORT_SHA}\`, based on upstream llama.cpp \`${UPSTREAM_BASE}\`.
+
+          \`<upstream-base>-<fork-semver>\`: \`${UPSTREAM_BASE}\` is the upstream llama.cpp build this fork is based on, \`${VERSION#*-}\` is the TurboQuant fork version. \`llama-server --version\` reports \`version: ${VERSION}\`.
+          </details>"
 
           if [ -n "$MISSING" ]; then
             NOTES="$NOTES
