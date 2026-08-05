@@ -207,6 +207,113 @@ jobs:
             llama-turboquant-linux-x64-cuda-13.3.tar.gz
           retention-days: 14
 
+  # NVIDIA DGX Spark (GB10) and other arm64 + NVIDIA Linux boxes. Built on
+  # the free GitHub arm64 runner -- no cross-compilation involved.
+  linux-arm64-cuda-13-3:
+    name: linux-arm64-cuda-13.3
+    needs: verify-version
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-linux-arm64-cuda-13.3
+          evict-old-files: 1d
+
+      # GCC 14: GGML_CPU_ALL_VARIANTS builds armv9.2+sme CPU variants, which
+      # the 24.04 default GCC 13 cannot assemble. Same workaround as the
+      # upstream arm64 job in build-cpu.yml.
+      - name: Toolchain
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential gcc-14 g++-14
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
+
+      - name: Install CUDA Toolkit
+        # arm64-SBSA repo -- the one NVIDIA ships for DGX Spark / GH200-class
+        # machines. The `arm64` repo of the same distro is Jetson/L4T and has
+        # no CUDA 13 packages; `cccl` lost its `cuda-` prefix in 13.3.
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            cuda-nvcc-13-3 cccl-13-3 cuda-cudart-dev-13-3 libcublas-dev-13-3 \
+            cuda-cuobjdump-13-3
+          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        # SASS for GB10 / DGX Spark only (sm_121). PTX floor at Hopper
+        # (90-virtual) so the other arm64 CUDA machines -- GH200 (90),
+        # GB200 (100), Jetson Thor (110) -- JIT at first run instead of
+        # doubling build time on a 4-core runner. Runner has no GPU: build
+        # only, the backend is a dlopen'd libggml-cuda.so.
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_CUDA=ON \
+            -DGGML_CUDA_CUB_3DOT2=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="90-virtual;121-real" \
+            -DCMAKE_CUDA_HOST_COMPILER=g++-14 \
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Verify build
+        run: |
+          ./build/bin/llama-server --version 2>&1 || true
+          ls -l build/bin/libggml-cuda.so
+          # Catch a silently-empty arch list: the archive is worthless without
+          # sm_121 SASS in it.
+          cuobjdump --list-elf build/bin/libggml-cuda.so | grep -q 'sm_121'
+
+      - name: Prepare archive
+        run: |
+          mkdir -p release/build/bin
+          cp build/bin/llama-server release/build/bin/
+          cp build/bin/llama-cli release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-bench release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-perplexity release/build/bin/ 2>/dev/null || true
+          cp build/bin/llama-quantize release/build/bin/ 2>/dev/null || true
+          find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
+          # CUDA runtime is not a given on user systems -- bundle it like the
+          # x64 job does. On aarch64 the libs live under targets/sbsa-linux.
+          CUDA_LIB=/usr/local/cuda/lib64
+          [ -d "$CUDA_LIB" ] || CUDA_LIB=/usr/local/cuda/targets/sbsa-linux/lib
+          cp -P "$CUDA_LIB"/libcudart.so* release/build/bin/
+          cp -P "$CUDA_LIB"/libcublas.so* release/build/bin/
+          cp -P "$CUDA_LIB"/libcublasLt.so* release/build/bin/
+          cp LICENSE release/build/bin/ 2>/dev/null || true
+          cd release
+          zip -r ../llama-turboquant-linux-arm64-cuda-13.3.zip .
+          tar -czf ../llama-turboquant-linux-arm64-cuda-13.3.tar.gz .
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-linux-arm64-cuda-13.3
+          path: |
+            llama-turboquant-linux-arm64-cuda-13.3.zip
+            llama-turboquant-linux-arm64-cuda-13.3.tar.gz
+          retention-days: 14
+
   linux-x64-cpu:
     needs: verify-version
     runs-on: ubuntu-22.04
@@ -707,7 +814,7 @@ jobs:
   # A stable release must be COMPLETE: this job has hard `needs` on every
   # build job — if anything failed, no release is published at all.
   publish-release:
-    needs: [verify-version, linux-x64-cpu, linux-x64-vulkan, linux-x64-cuda-12-4, linux-x64-cuda-13-3, linux-x64-rocm, windows-x64, macos-arm64]
+    needs: [verify-version, linux-x64-cpu, linux-x64-vulkan, linux-x64-cuda-12-4, linux-x64-cuda-13-3, linux-arm64-cuda-13-3, linux-x64-rocm, windows-x64, macos-arm64]
     # Publish even if some backend build failed, so one broken backend never
     # blocks shipping the others (the notes call out what is missing). Still
     # requires the version check to pass.
@@ -744,7 +851,7 @@ jobs:
 
           # A build job may have failed (if: always() above). Publish whatever
           # archives exist and call out anything missing in the notes.
-          EXPECTED="linux-x64-cpu linux-x64-vulkan linux-x64-cuda-12.4 linux-x64-cuda-13.3 linux-x64-rocm windows-x64-cpu windows-x64-vulkan windows-x64-cuda-12.4 windows-x64-cuda-13.3 macos-arm64"
+          EXPECTED="linux-x64-cpu linux-x64-vulkan linux-x64-cuda-12.4 linux-x64-cuda-13.3 linux-arm64-cuda-13.3 linux-x64-rocm windows-x64-cpu windows-x64-vulkan windows-x64-cuda-12.4 windows-x64-cuda-13.3 macos-arm64"
           MISSING=""
           for b in $EXPECTED; do
             ls archives/ | grep -q "llama-turboquant-${b}\." || MISSING="$MISSING $b"
@@ -765,6 +872,7 @@ jobs:
           | Linux x64 Vulkan (+ portable CPU) | \`llama-turboquant-linux-x64-vulkan.tar.gz\` |
           | Linux x64 CUDA 12.4, older drivers (+ portable CPU) | \`llama-turboquant-linux-x64-cuda-12.4.tar.gz\` |
           | Linux x64 CUDA 13.3 (+ portable CPU) | \`llama-turboquant-linux-x64-cuda-13.3.tar.gz\` |
+          | Linux arm64 CUDA 13.3, DGX Spark / GB10 (+ portable CPU) | \`llama-turboquant-linux-arm64-cuda-13.3.tar.gz\` |
           | Linux x64 AMD ROCm, RDNA2-RDNA4 (+ portable CPU) | \`llama-turboquant-linux-x64-rocm.tar.gz\` |
           | Windows x64 CPU | \`llama-turboquant-windows-x64-cpu.zip\` |
           | Windows x64 Vulkan | \`llama-turboquant-windows-x64-vulkan.zip\` |
@@ -773,6 +881,8 @@ jobs:
           | macOS ARM64 (Metal, signed + notarized) | \`llama-turboquant-macos-arm64.zip\` |
 
           The AMD ROCm archive targets RDNA2 through RDNA4 (gfx1030/1100/1101/1102/1151/1200/1201) and CDNA (gfx90a, gfx942 -- Instinct MI200/MI300) in a single archive, and needs the ROCm runtime installed on the system. Older GCN cards: use the Vulkan build.
+
+          The Linux arm64 CUDA archive is built for NVIDIA DGX Spark (GB10, sm_121); other arm64 NVIDIA machines (GH200, GB200, Thor) run it too but JIT the kernels from PTX on first launch.
 
           ### Versioning
           \`<upstream-base>-<fork-semver>\`: \`${UPSTREAM_BASE}\` is the upstream llama.cpp build this fork is based on, \`${VERSION#*-}\` is the TurboQuant fork version. \`llama-server --version\` reports \`version: ${VERSION}\`."
