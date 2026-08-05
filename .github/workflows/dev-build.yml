@@ -108,7 +108,7 @@ jobs:
           find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cd release
-          zip -r ../llama-turboquant-linux-x64-vulkan.zip .
+          zip -ry ../llama-turboquant-linux-x64-vulkan.zip .
           tar -czf ../llama-turboquant-linux-x64-vulkan.tar.gz .
 
       - name: Upload archive
@@ -147,9 +147,10 @@ jobs:
 
       - name: Build
         # Consumer SASS: RTX 30 (86), RTX 40 (89), RTX 50 / Blackwell (120).
-        # PTX floor at Turing (75-virtual) so Turing/older consumer and all
-        # server cards (A100 80, H100/H200 90, B200 100) JIT at first run --
-        # we don't ship their SASS, which is what bloated the archive. Runner
+        # Two PTX floors: 75-virtual for Turing, 80-virtual so the server cards
+        # (A100 80, H100 90, B200 100) JIT Ampere-class code instead of Turing
+        # code -- cp.async and the Ampere MMA path are gated on __CUDA_ARCH__
+        # >= 800, so a compute_75 PTX fallback quietly cost them both. Runner
         # has no GPU: build only, backend is a dlopen'd libggml-cuda.so.
         run: |
           cmake -B build \
@@ -161,7 +162,8 @@ jobs:
             -DGGML_CPU_ALL_VARIANTS=ON \
             -DGGML_CUDA=ON \
             -DGGML_CUDA_CUB_3DOT2=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="75-virtual;86-real;89-real;120-real" \
+            -DCMAKE_CUDA_ARCHITECTURES="75-virtual;80-virtual;86-real;89-real;120-real" \
+            -DCMAKE_CUDA_FLAGS=-compress-mode=size \
             -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
             -DLLAMA_CURL=OFF \
             -DLLAMA_OPENSSL=OFF \
@@ -192,7 +194,7 @@ jobs:
           cp -P /usr/local/cuda/lib64/libcublasLt.so* release/build/bin/
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cd release
-          zip -r ../llama-turboquant-linux-x64-cuda-13.3.zip .
+          zip -ry ../llama-turboquant-linux-x64-cuda-13.3.zip .
           tar -czf ../llama-turboquant-linux-x64-cuda-13.3.tar.gz .
 
       - name: Upload archive
@@ -262,6 +264,7 @@ jobs:
             -DGGML_CUDA=ON \
             -DGGML_CUDA_CUB_3DOT2=ON \
             -DCMAKE_CUDA_ARCHITECTURES="90-virtual;121-real" \
+            -DCMAKE_CUDA_FLAGS=-compress-mode=size \
             -DCMAKE_CUDA_HOST_COMPILER=g++-14 \
             -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
             -DLLAMA_CURL=OFF \
@@ -298,7 +301,7 @@ jobs:
           cp -P "$CUDA_LIB"/libcublasLt.so* release/build/bin/
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cd release
-          zip -r ../llama-turboquant-linux-arm64-cuda-13.3.zip .
+          zip -ry ../llama-turboquant-linux-arm64-cuda-13.3.zip .
           tar -czf ../llama-turboquant-linux-arm64-cuda-13.3.tar.gz .
 
       - name: Upload archive
@@ -365,7 +368,7 @@ jobs:
           find build/bin -name "*.so*" -exec cp -P {} release/build/bin/ \; 2>/dev/null || true
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cd release
-          zip -r ../llama-turboquant-linux-x64-cpu.zip .
+          zip -ry ../llama-turboquant-linux-x64-cpu.zip .
           tar -czf ../llama-turboquant-linux-x64-cpu.tar.gz .
 
       - name: Upload archive
@@ -447,7 +450,7 @@ jobs:
           cp -P /usr/local/cuda/lib64/libcublasLt.so* release/build/bin/
           cp LICENSE release/build/bin/ 2>/dev/null || true
           cd release
-          zip -r ../llama-turboquant-linux-x64-cuda-12.4.zip .
+          zip -ry ../llama-turboquant-linux-x64-cuda-12.4.zip .
           tar -czf ../llama-turboquant-linux-x64-cuda-12.4.tar.gz .
 
       - name: Upload archive
@@ -561,7 +564,7 @@ jobs:
           MI200/MI300). Older GCN GPUs: use the Vulkan build.
           EOF
           cd release
-          zip -r ../llama-turboquant-linux-x64-rocm.zip .
+          zip -ry ../llama-turboquant-linux-x64-rocm.zip .
           tar -czf ../llama-turboquant-linux-x64-rocm.tar.gz .
 
       - name: Upload archive
@@ -584,12 +587,21 @@ jobs:
             cmake_flags: ''
           - variant: vulkan
             cmake_flags: '-DGGML_VULKAN=ON'
+          # Arch lists are pinned instead of falling back to the ggml default,
+          # which builds 8 targets for 12.4 and 7 for 13.3. Nothing that runs
+          # today stops running: the only targets dropped are 90-virtual on
+          # 12.4 (Hopper on a 12.4-era driver is not a Windows scenario, and it
+          # still JITs from 80-virtual) and 121a-real on 13.3 (GB10 is the
+          # arm64 Linux archive's job).
           - variant: cuda-12.4
             cuda: '12.4'
-            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON'
+            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON -DCMAKE_CUDA_ARCHITECTURES="50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real"'
+          # -compress-mode=size shrinks the fatbin at no cost to kernel speed
+          # (decompression happens once, at module load). Needs CTK >= 12.8, so
+          # the 12.4 variant cannot have it.
           - variant: cuda-13.3
             cuda: '13.3'
-            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON'
+            cmake_flags: '-DGGML_CUDA=ON -DGGML_CUDA_CUB_3DOT2=ON -DCMAKE_CUDA_ARCHITECTURES="75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real" -DCMAKE_CUDA_FLAGS=-compress-mode=size'
 
     steps:
       - name: Clone
@@ -601,7 +613,10 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-windows-x64-${{ matrix.variant }}
-          evict-old-files: 1d
+          # 500M (the action default) cannot hold a CUDA build, so the cache
+          # thrashed and every run was effectively cold.
+          max-size: ${{ startsWith(matrix.variant, 'cuda') && '2G' || '500M' }}
+          evict-old-files: 7d
 
       - name: Install CUDA Toolkit
         if: ${{ startsWith(matrix.variant, 'cuda') }}
@@ -621,6 +636,18 @@ jobs:
       - name: Install Ninja
         run: choco install ninja -y
 
+      # Defender scans every object nvcc writes, and the CUDA variants write
+      # tens of thousands of them. Best-effort: never fail the build over it.
+      - name: Exclude build tree from Defender
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$env:RUNNER_TEMP"
+            Add-MpPreference -ExclusionProcess "nvcc.exe", "cl.exe", "ninja.exe", "cicc.exe", "ptxas.exe", "cudafe++.exe"
+          } catch {
+            Write-Host "Defender exclusions unavailable: $_"
+          }
+
       - name: Build
         shell: cmd
         # NOTE: GGML_CUDA_CUB_3DOT2 can be dropped once CCCL 3.2 ships in the CTK used here.
@@ -638,7 +665,7 @@ jobs:
             -DLLAMA_BUILD_TESTS=OFF ^
             -DLLAMA_BUILD_EXAMPLES=OFF ^
             ${{ matrix.cmake_flags }}
-          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          set NINJA_JOBS=%NUMBER_OF_PROCESSORS%
           cmake --build build --config Release -j %NINJA_JOBS% -t ggml
           cmake --build build --config Release -j %NINJA_JOBS%
 
@@ -678,7 +705,16 @@ jobs:
           New-Item -ItemType Directory -Force -Path release\build\bin | Out-Null
           Copy-Item .\build\bin\Release\* release\build\bin\ -Recurse -Force
           Copy-Item .\LICENSE release\build\bin\ -ErrorAction SilentlyContinue
-          Compress-Archive -Path release\build -DestinationPath llama-turboquant-windows-x64-${{ matrix.variant }}.zip -Force
+          $zip = "llama-turboquant-windows-x64-${{ matrix.variant }}.zip"
+          # Compress-Archive is single-threaded and needs double-digit minutes
+          # on the CUDA archives. 7-Zip ships with the runner image.
+          if (Get-Command 7z -ErrorAction SilentlyContinue) {
+            Push-Location release
+            7z a -tzip -mx=5 -mmt=on "..\$zip" build | Out-Null
+            Pop-Location
+          } else {
+            Compress-Archive -Path release\build -DestinationPath $zip -Force
+          }
 
       - name: Upload archive
         uses: actions/upload-artifact@v4
