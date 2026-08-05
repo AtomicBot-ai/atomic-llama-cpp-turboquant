@@ -466,6 +466,9 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_KIMI_K3) {
         return false; // TODO fixture params for the arch-specific hparams (kda, situ, attn_res, moe_latent)
     }
+    if (arch == LLM_ARCH_BAILINGMOE3) {
+        return false; // TODO fixture params for the arch-specific hparams (kda, mla, per-layer head_kv)
+    }
     if (arch == LLM_ARCH_INKLING) {
         return false; // TODO fixture params for the arch-specific hparams (d_rel, rel_extent, shortconv, logit_scale_denom)
     }
