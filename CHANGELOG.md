@@ -10,6 +10,31 @@ commit list underneath.
 
 Releases before `b10269-1.5.0` predate this file; see the git history.
 
+## b10269-1.5.1
+
+### Fixed
+
+- **Ling-3.0-flash (BailingMoeV3) no longer emits garbage token bursts.** The
+  model is trained with clamped SwiGLU activations in its late layers, and the
+  per-layer limits live in `config.json` under `expert_swiglu_limit_list` and
+  `share_expert_swiglu_limit_list`. The public HF modeling code ignores those
+  keys and so did this port, which caused deterministic transient logit
+  collapse - output like `count += 1eville` dropped into otherwise fine
+  generations. Measured at roughly -20 pass@1 on HumanEval (72.6% -> 93%+ with
+  the fix); the garbage-token repro is eliminated.
+
+### Notes
+
+- **Re-convert your Ling-3.0-flash GGUF to get the fix.** The clamp limits are
+  written by the converter into two new KVs (`{arch}.swiglu_clamp_exp` and
+  `{arch}.swiglu_clamp_shexp`); a GGUF produced before this release does not
+  carry them, and the runtime then defaults to no clamping. Re-download the
+  quant or re-run `conversion/bailingmoe.py`.
+- Both KVs are optional and default to zero, so existing GGUFs and every other
+  architecture are unaffected. The graph needed no change - the SwiGLU clamp
+  branches in `build_ffn` / `build_moe_ffn` already trigger on a nonzero
+  per-layer limit, matching the vLLM `SwigluStepAndMul` semantics.
+
 ## b10269-1.5.0
 
 ### Added
