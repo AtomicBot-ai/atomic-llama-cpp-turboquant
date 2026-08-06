@@ -36,6 +36,10 @@ void llama_model_bailingmoe3::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_EXPERT_GROUP_COUNT,                hparams.n_expert_groups, false);
     ml.get_key(LLM_KV_EXPERT_GROUP_USED_COUNT,           hparams.n_group_used, false);
 
+    // trained per-layer SwiGLU clamps (config: expert_swiglu_limit_list / share_expert_swiglu_limit_list)
+    ml.get_key_or_arr(LLM_KV_SWIGLU_CLAMP_EXP,   hparams.swiglu_clamp_exp,   hparams.n_layer_all, false);
+    ml.get_key_or_arr(LLM_KV_SWIGLU_CLAMP_SHEXP, hparams.swiglu_clamp_shexp, hparams.n_layer_all, false);
+
     switch (hparams.n_layer()) {
         case 42: type = LLM_TYPE_124B_A5B; break; // Ling-3.0-flash
         default: type = LLM_TYPE_UNKNOWN;

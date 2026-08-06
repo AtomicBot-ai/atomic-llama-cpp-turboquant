@@ -255,6 +255,20 @@ class BailingMoeV3Model(TextModel):
         self.gguf_writer.add_expert_group_count(hparams["n_group"])
         self.gguf_writer.add_expert_group_used_count(hparams["topk_group"])
 
+        # Optional per-layer SwiGLU clamps (vLLM SwigluStepAndMul):
+        #   out = silu(gate).clamp(max=limit) * up.clamp(-limit, limit)
+        # 0.0 (or a missing/null entry) means no clamping for that layer.
+        def _clamp_limits(key: str) -> list[float] | None:
+            if (limits := hparams.get(key)) is None:
+                return None
+            limits = [0.0 if v is None else float(v) for v in limits[:self.block_count]]
+            return limits + [0.0] * (self.block_count - len(limits))
+
+        if (limits := _clamp_limits("expert_swiglu_limit_list")) is not None:
+            self.gguf_writer.add_swiglu_clamp_exp(limits)
+        if (limits := _clamp_limits("share_expert_swiglu_limit_list")) is not None:
+            self.gguf_writer.add_swiglu_clamp_shexp(limits)
+
         if (nextn_layers := hparams.get("num_nextn_predict_layers")) is not None:
             self.gguf_writer.add_nextn_predict_layers(nextn_layers)
 
