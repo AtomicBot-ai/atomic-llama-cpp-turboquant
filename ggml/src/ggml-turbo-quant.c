@@ -16,6 +16,8 @@
 #include <assert.h>
 #include <stdlib.h>
 
+GGML_API void turbo_cpu_fwht_inverse(float * x, int group_size);
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
