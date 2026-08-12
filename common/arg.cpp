@@ -3877,7 +3877,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_N_GPU_LAYERS_DRAFT"));
     add_opt(common_arg(
-        {"--spec-draft-model", "-md", "--model-draft"}, "FNAME",
+        {"--spec-draft-model", "-md", "--model-draft", "--mtp-head"}, "FNAME",
         "draft model for speculative decoding (default: unused)",
         [](common_params & params, const std::string & value) {
             params.speculative.draft.mparams.path = value;
@@ -4023,10 +4023,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     //
 
     add_opt(common_arg(
-        {"--draft", "--draft-n", "--draft-max"}, "N",
-        "the argument has been removed. use --spec-draft-n-max or --spec-ngram-mod-n-max",
-        [](common_params & /*params*/, int /*value*/) {
-            arg_removed("use --spec-draft-n-max or --spec-ngram-mod-n-max");
+        {"--draft", "--draft-n", "--draft-max", "--draft-block-size"}, "N",
+        "alias for --spec-draft-n-max: max number of tokens to draft per step",
+        [](common_params & params, int value) {
+            params.speculative.draft.n_max = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_MAX"));
     add_opt(common_arg(
