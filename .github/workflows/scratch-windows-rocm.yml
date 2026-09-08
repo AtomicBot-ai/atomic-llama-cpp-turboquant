@@ -89,11 +89,22 @@ jobs:
               $n = (Get-ChildItem $_.FullName -Recurse -File | Measure-Object).Count
               $out += ("   {0}  ({1} files, {2:N1} MiB)" -f $_.FullName.Replace($sp, ""), $n, ($s / 1MB))
             }
-          $out += "== files matching rocblas / kpack / hsaco / Tensile (first 60)"
-          Get-ChildItem $sp -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match "rocblas|\.kpack$|\.hsaco$|Tensile" } |
-            Select-Object -First 60 |
+          $out += "== every file above 4 MiB under _rocm_sdk_* (largest first)"
+          Get-ChildItem "$sp\_rocm_sdk_core", "$sp\_rocm_sdk_libraries", "$sp\_rocm_sdk_devel" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -gt 4MB } | Sort-Object Length -Descending |
             ForEach-Object { $out += ("   {0,10:N1} MiB  {1}" -f ($_.Length / 1MB), $_.FullName.Replace($sp, "")) }
+          $out += "== files without extension (kernel packs?)"
+          Get-ChildItem "$sp\_rocm_sdk_core", "$sp\_rocm_sdk_libraries" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -eq "" } |
+            ForEach-Object { $out += ("   {0,10:N1} MiB  {1}" -f ($_.Length / 1MB), $_.FullName.Replace($sp, "")) }
+          $out += "== rocblas.dll imports (which DLL holds the kernels?)"
+          $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*Hostx64\x64*" } | Select-Object -First 1
+          if ($dumpbin) {
+            foreach ($d in @("rocblas.dll", "hipblas.dll", "amdhip64_7.dll")) {
+              $out += "   -- $d"
+              & $dumpbin.FullName /DEPENDENTS "$sp\_rocm_sdk_libraries\bin\$d" 2>$null | Where-Object { $_ -match "\.dll" } | ForEach-Object { $out += "      $($_.Trim())" }
+            }
+          }
           $out += "== extension histogram under _rocm_sdk_core and _rocm_sdk_libraries"
           Get-ChildItem "$sp\_rocm_sdk_core", "$sp\_rocm_sdk_libraries" -Recurse -File -ErrorAction SilentlyContinue |
             Group-Object Extension | Sort-Object Count -Descending | Select-Object -First 25 |
@@ -113,6 +124,10 @@ jobs:
 
       - name: Build
         shell: pwsh
+        # On Windows ggml-hip compiles the .cu files as CXX with hip::device
+        # (CXX_IS_HIPCC in ggml/src/ggml-hip/CMakeLists.txt), so CMAKE_HIP_FLAGS
+        # is never used: --offload-compress has to go through CMAKE_CXX_FLAGS.
+        # Without it ggml-hip.dll is 545 MB for 9 targets.
         # -Wno-ignored-attributes: 850k lines of GGML_API dllimport warnings per
         # build otherwise, which makes the job log unfetchable.
         run: |
@@ -122,8 +137,7 @@ jobs:
             -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang++.exe" `
             -DCMAKE_HIP_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
             -DCMAKE_C_FLAGS="-Wno-error=incompatible-pointer-types -Wno-ignored-attributes" `
-            -DCMAKE_CXX_FLAGS="-Wno-ignored-attributes" `
-            -DCMAKE_HIP_FLAGS="--offload-compress -Wno-ignored-attributes" `
+            -DCMAKE_CXX_FLAGS="--offload-compress -Wno-ignored-attributes" `
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON `
             -DHIP_PATH="${env:HIP_PATH}" `
             -DHIP_PLATFORM=amd `
