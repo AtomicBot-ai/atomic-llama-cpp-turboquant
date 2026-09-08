@@ -70,6 +70,7 @@ jobs:
       # the build so the answer is there even if a later step fails.
       - name: Inspect ROCm layout
         shell: pwsh
+        continue-on-error: true
         run: |
           $sp = "C:\TheRock\build\.venv\Lib\site-packages"
           $out = @()
@@ -97,20 +98,19 @@ jobs:
           Get-ChildItem "$sp\_rocm_sdk_core", "$sp\_rocm_sdk_libraries" -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Extension -eq "" } |
             ForEach-Object { $out += ("   {0,10:N1} MiB  {1}" -f ($_.Length / 1MB), $_.FullName.Replace($sp, "")) }
-          $out += "== rocblas.dll imports (which DLL holds the kernels?)"
+          $out += "== imports of the ROCm DLLs ggml-hip needs"
           $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*Hostx64\x64*" } | Select-Object -First 1
           if ($dumpbin) {
-            foreach ($d in @("rocblas.dll", "hipblas.dll", "amdhip64_7.dll")) {
-              $out += "   -- $d"
-              & $dumpbin.FullName /DEPENDENTS "$sp\_rocm_sdk_libraries\bin\$d" 2>$null | Where-Object { $_ -match "\.dll" } | ForEach-Object { $out += "      $($_.Trim())" }
+            foreach ($d in @("rocblas.dll", "hipblas.dll", "libhipblaslt.dll", "rocsolver.dll", "amdhip64_7.dll", "rocm_kpack.dll")) {
+              $p = "$sp\_rocm_sdk_devel\bin\$d"
+              if (-not (Test-Path $p)) { $out += "   -- $d: not in devel\bin"; continue }
+              $out += ("   -- {0} ({1:N1} MiB)" -f $d, ((Get-Item $p).Length / 1MB))
+              & $dumpbin.FullName /NOLOGO /DEPENDENTS $p 2>$null | Where-Object { $_ -match "^\s+\S+\.dll\s*$" } | ForEach-Object { $out += "      $($_.Trim())" }
             }
           }
-          $out += "== extension histogram under _rocm_sdk_core and _rocm_sdk_libraries"
-          Get-ChildItem "$sp\_rocm_sdk_core", "$sp\_rocm_sdk_libraries" -Recurse -File -ErrorAction SilentlyContinue |
-            Group-Object Extension | Sort-Object Count -Descending | Select-Object -First 25 |
-            ForEach-Object { $out += ("   {0,-12} {1,6}" -f $_.Name, $_.Count) }
           $out | Out-File rocm-layout.txt -Encoding utf8
           Get-Content rocm-layout.txt
+          exit 0
 
       - name: Exclude build tree from Defender
         shell: pwsh
@@ -177,47 +177,44 @@ jobs:
           Copy-Item build\bin\Release\ggml-hip.dll hip-out\
           Copy-Item rocm-layout.txt hip-out\
 
-      - name: Bundle ROCm runtime (diagnostic, non-fatal)
+      - name: Bundle ROCm runtime
         shell: pwsh
+        # The ROCm 10 wheels ship no rocBLAS kernel library: rocblas.dll imports
+        # libhipblaslt.dll and kernels come from amd_comgr.dll at run time. So
+        # the bundle is the import closure of ggml-hip.dll over the ROCm bin
+        # dirs (amdhip64_7, rocm_kpack, amd_comgr, hipblas, rocblas,
+        # libhipblaslt, rocsolver, ...). System DLLs are left alone.
+        # amdhip64_7.dll must sit next to the binaries: the Adrenalin driver
+        # ships its own copy in System32 and the loader searches the exe
+        # directory first (ggml-org/llama.cpp#26929).
         run: |
-          $bin = $env:ROCM_BIN_PATH
+          $ErrorActionPreference = "Stop"
           $sp = "C:\TheRock\build\.venv\Lib\site-packages"
-          foreach ($name in @("amdhip64_7.dll", "rocm_kpack.dll", "amd_comgr.dll", "rocblas.dll", "hipblas.dll")) {
-            $f = Get-ChildItem -Path $bin -Filter $name -ErrorAction SilentlyContinue
-            if (-not $f) { Write-Host "##[warning]no match for $name in $bin"; continue }
-            Copy-Item $f.FullName -Destination hip-out -Force
-            Write-Host ("  {0,-20} {1,8:N1} MiB" -f $f.Name, ($f.Length / 1MB))
+          $bins = @("$sp\_rocm_sdk_devel\bin", "$sp\_rocm_sdk_core\bin", "$sp\_rocm_sdk_libraries\bin")
+          $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*Hostx64\x64*" } | Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe not found" }
+          function Get-Imports($path) {
+            & $dumpbin.FullName /NOLOGO /DEPENDENTS $path 2>$null |
+              Where-Object { $_ -match "^\s+(\S+\.dll)\s*$" } | ForEach-Object { $Matches[1] }
           }
-          $targets = $env:GPU_TARGETS -split ";"
-          # Candidate kernel stores: any rocblas\library dir, plus any *rocblas*
-          # kernel pack files. Copied gfx-filtered, layout preserved relative to
-          # the package root so a later run can pick the right rule.
-          $cands = Get-ChildItem $sp -Recurse -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq "library" -and $_.Parent.Name -eq "rocblas" }
-          foreach ($lib in $cands) {
-            $dst = "hip-out\rocblas\library"
-            New-Item -ItemType Directory -Force -Path $dst | Out-Null
-            $kept = 0; $bytes = 0
-            foreach ($f in Get-ChildItem -Path $lib.FullName -File) {
-              $m = [regex]::Match($f.Name, "gfx[0-9a-f]+")
-              if ($m.Success -and ($targets -notcontains $m.Value)) { continue }
-              Copy-Item $f.FullName -Destination $dst -Force
-              $kept++; $bytes += $f.Length
+          $queue = [System.Collections.Generic.Queue[string]]::new()
+          $queue.Enqueue("hip-out\ggml-hip.dll")
+          $seen = @{ "ggml-hip.dll" = $true }
+          while ($queue.Count -gt 0) {
+            $p = $queue.Dequeue()
+            foreach ($d in Get-Imports $p) {
+              if ($seen.ContainsKey($d.ToLower())) { continue }
+              $seen[$d.ToLower()] = $true
+              $src = $null
+              foreach ($b in $bins) { if (Test-Path "$b\$d") { $src = "$b\$d"; break } }
+              if (-not $src) { continue }
+              Copy-Item $src -Destination hip-out -Force
+              Write-Host ("  {0,-22} {1,8:N1} MiB   needed by {2}" -f $d, ((Get-Item $src).Length / 1MB), (Split-Path $p -Leaf))
+              $queue.Enqueue("hip-out\$d")
             }
-            Write-Host ("  rocblas/library from {0}: {1} files, {2:N1} MiB" -f $lib.FullName.Replace($sp, ""), $kept, ($bytes / 1MB))
           }
-          $packs = Get-ChildItem $sp -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match "rocblas" -and $_.Extension -ne ".dll" -and $_.Extension -ne ".lib" }
-          foreach ($f in $packs) {
-            $m = [regex]::Match($f.Name, "gfx[0-9a-f]+")
-            if ($m.Success -and ($targets -notcontains $m.Value)) { continue }
-            $rel = $f.FullName.Replace($sp, "").TrimStart("\")
-            $dst = Join-Path "hip-out\_packs" $rel
-            New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
-            Copy-Item $f.FullName -Destination $dst -Force
-            Write-Host ("  pack {0,10:N1} MiB  {1}" -f ($f.Length / 1MB), $rel)
-          }
-          $total = (Get-ChildItem -Path hip-out -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          $total = (Get-ChildItem -Path hip-out -File | Measure-Object -Property Length -Sum).Sum
           Write-Host ("  HIP backend payload total: {0:N1} MiB" -f ($total / 1MB))
 
       - name: Upload HIP backend
