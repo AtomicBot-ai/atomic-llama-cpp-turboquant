@@ -348,7 +348,7 @@ because of the lighter memory traffic.
 | Metal (Apple Silicon) | yes; `TurboFlash` flash-attn decode kernel for `turbo3` (off-by-default on Apple10 — see PR #91) | yes (V2.1 fused kernels) |
 | CUDA (NVIDIA) | `turbo3` / `turbo4` (full); `turbo2` via reference path | `TQ4_1S` MUL_MAT_VEC |
 | Vulkan | `turbo3` KV (FA + coopmat), `SET_ROWS` for `turbo2/4` | `TQ4_1S` (specialised MUL_MAT_VEC, SET_ROWS, CPY) |
-| HIP / ROCm | `turbo3` KV; F16-K + TURBO-V mixed dispatch | reference |
+| HIP / ROCm | `turbo2` / `turbo3` / `turbo4` KV (same fattn-vec instances as CUDA, incl. mixed K/V types); validated on RDNA3/RDNA4 and MI300X/MI355X, see [docs/amd](docs/amd/README.md) | `TQ3_1S` / `TQ4_1S` via the scalar MUL_MAT_VEC path |
 | CPU | reference (correctness, not throughput) | reference |
 
 ### Pre-built binaries
@@ -361,8 +361,10 @@ Each push to `feature/turboquant-kv-cache` publishes self-contained
 |---|---|---|
 | macOS arm64 | `llama-turboquant-macos-arm64.{zip,tar.gz}` | Metal (`TurboFlash`) + CPU |
 | Linux x64 | `llama-turboquant-linux-x64-vulkan.{zip,tar.gz}` | Vulkan + portable CPU |
+| Linux x64 | `llama-turboquant-linux-x64-rocm.{zip,tar.gz}` | AMD ROCm/HIP (RDNA2-RDNA4, Strix Halo, CDNA MI200/MI300/MI350; needs the ROCm runtime installed) + portable CPU |
 | Windows x64 | `llama-turboquant-windows-x64-cpu.zip` | portable CPU |
 | Windows x64 | `llama-turboquant-windows-x64-vulkan.zip` | Vulkan + portable CPU |
+| Windows x64 | `llama-turboquant-windows-x64-rocm.zip` | AMD ROCm/HIP (RDNA2-RDNA4, Ryzen AI 300 / Strix Halo; HIP runtime + rocBLAS bundled) + portable CPU |
 | Windows x64 | `llama-turboquant-windows-x64-cuda-12.4.zip` | CUDA 12.4 (`cudart` bundled) + portable CPU |
 | Windows x64 | `llama-turboquant-windows-x64-cuda-13.3.zip` | CUDA 13.3 (`cudart` bundled) + portable CPU |
 
