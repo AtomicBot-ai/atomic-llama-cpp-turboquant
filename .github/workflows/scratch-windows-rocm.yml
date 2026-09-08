@@ -3,8 +3,16 @@
 # file once the job in dev-build.yml / release-turboquant.yml is final.
 name: Scratch - Windows ROCm job
 
+# workflow_dispatch only resolves workflows that exist on the default branch,
+# so this one runs on push to its own branch instead.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/windows-rocm-amd-bench
+    paths:
+      - '.github/workflows/scratch-windows-rocm.yml'
+      - '.github/actions/windows-setup-rocm/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
