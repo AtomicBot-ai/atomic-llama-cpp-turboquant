@@ -1,15 +1,27 @@
 name: "Windows - Setup ROCm"
-description: "Setup ROCm for Windows"
+description: "Install ROCm for Windows from the TheRock wheels (same layout as the upstream windows-rocm release job)"
 inputs:
   version:
-    description: "ROCm version"
+    description: "ROCm version, e.g. 10.0.0"
     required: true
 
 runs:
   using: "composite"
   steps:
-    - name: Setup ROCm
-      uses: ./.github/actions/install-exe
-      with:
-        url: https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-${{ inputs.version }}-Win11-For-HIP.exe
-        args: -install
+    - name: Install ROCm wheels
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        # The venv lives at a fixed path so the devel tree it expands can be
+        # cached and does not need relocation.
+        New-Item -Path "C:\TheRock\build" -ItemType Directory -Force | Out-Null
+        python -m venv C:\TheRock\build\.venv
+        & C:\TheRock\build\.venv\Scripts\Activate.ps1
+
+        python -m pip install --upgrade pip
+        # Multi-arch wheels: one install covers every gfx target we build for.
+        python -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "rocm[libraries,devel]==${{ inputs.version }}"
+
+        rocm-sdk init
+        if ($LASTEXITCODE -ne 0) { throw "rocm-sdk init failed with exit code $LASTEXITCODE" }
+        Write-Host "ROCm ${{ inputs.version }} installed under C:\TheRock\build"

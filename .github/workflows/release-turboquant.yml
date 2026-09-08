@@ -520,9 +520,10 @@ jobs:
           sudo apt-get install -y build-essential cmake libssl-dev rocm-hip-sdk
 
       - name: Build
-        # RDNA only, by scope decision: gfx1030 (RDNA2), gfx1100/1101/1102
-        # (RDNA3), gfx1151 (RDNA 3.5 / Strix Halo), gfx1200/1201 (RDNA4).
-        # GCN/CDNA are intentionally excluded -- those users use Vulkan.
+        # RDNA2-RDNA4: gfx1030, gfx1100/1101/1102/1103, gfx1150/1151 (Ryzen AI
+        # 300 / Strix Halo), gfx1200/1201. CDNA: gfx90a, gfx942, gfx950
+        # (MI200/MI300/MI350). Both families ship in one archive thanks to
+        # --offload-compress (see dev-build.yml for the measured sizes).
         # Runner has no AMD GPU: build only. libggml-hip.so is dlopen'd
         # thanks to GGML_BACKEND_DL.
         run: |
@@ -538,9 +539,8 @@ jobs:
             -DGGML_CPU_ALL_VARIANTS=ON \
             -DGGML_HIP=ON \
             -DHIP_PLATFORM=amd \
-            -DGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1151;gfx1200;gfx1201;gfx90a;gfx942" \
+            -DGPU_TARGETS="gfx1030;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1200;gfx1201;gfx90a;gfx942;gfx950" \
             -DCMAKE_HIP_FLAGS="--offload-compress" \
-            -DGGML_HIP_ROCWMMA_FATTN=ON \
             -DLLAMA_CURL=OFF \
             -DLLAMA_OPENSSL=OFF \
             -DLLAMA_BUILD_SERVER=ON \
@@ -735,6 +735,188 @@ jobs:
           path: llama-turboquant-windows-x64-${{ matrix.variant }}.zip
           retention-days: 30
 
+  # HIP backend only, built with the clang that ships inside the ROCm wheels.
+  # The archive itself is assembled in publish-release: the windows-x64-cpu
+  # archive plus ggml-hip.dll and the ROCm runtime. llama-server.exe from the
+  # CPU archive dlopens ggml-hip.dll thanks to GGML_BACKEND_DL, the same way
+  # the upstream windows-rocm release works. Separate job rather than a matrix
+  # row: different toolchain, and the matrix row names are required checks.
+  windows-x64-rocm:
+    needs: verify-version
+    runs-on: windows-2022
+    env:
+      # ROCm wheels (TheRock). Keep in sync with the upstream `windows-rocm` job.
+      ROCM_VERSION: "10.0.0"
+      # Consumer parts only: RDNA2, RDNA3, RDNA3.5 (Ryzen AI 300 / Strix Halo),
+      # RDNA4. CDNA has no Windows driver, RDNA1 has no usable HIP support.
+      GPU_TARGETS: "gfx1030;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1200;gfx1201"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-windows-x64-rocm
+          # 9 gfx targets x every fattn/mmq template instance: a CUDA-sized build.
+          max-size: 2G
+          evict-old-files: 7d
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Setup ROCm
+        uses: ./.github/actions/windows-setup-rocm
+        with:
+          version: ${{ env.ROCM_VERSION }}
+
+      - name: Setup ROCm environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & C:\TheRock\build\.venv\Scripts\Activate.ps1
+          rocm-sdk init
+          if ($LASTEXITCODE -ne 0) { throw "rocm-sdk init failed with exit code $LASTEXITCODE" }
+          $rocmPath = (rocm-sdk path --root)
+          if (-not $rocmPath) { throw "rocm-sdk path --root returned empty - devel package may not be installed" }
+          $rocmPath = $rocmPath.Trim()
+          $cmakePath = (rocm-sdk path --cmake).Trim()
+          $binPath = (rocm-sdk path --bin).Trim()
+          Write-Host "ROCm root: $rocmPath"
+          Write-Host "CMake path: $cmakePath"
+          Write-Host "Bin path: $binPath"
+          echo "HIP_PATH=$rocmPath" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=$cmakePath" >> $env:GITHUB_ENV
+          echo "HIP_DEVICE_LIB_PATH=$rocmPath\lib\llvm\amdgcn\bitcode" >> $env:GITHUB_ENV
+          echo "HIP_PLATFORM=amd" >> $env:GITHUB_ENV
+          echo "LLVM_PATH=$rocmPath\lib\llvm" >> $env:GITHUB_ENV
+          echo "ROCM_BIN_PATH=$binPath" >> $env:GITHUB_ENV
+          echo "$binPath" >> $env:GITHUB_PATH
+          echo "C:\TheRock\build\.venv\Scripts" >> $env:GITHUB_PATH
+
+      # Best-effort, same reason as the CUDA variants: Defender scans every
+      # object clang writes.
+      - name: Exclude build tree from Defender
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$env:RUNNER_TEMP", "C:\TheRock"
+            Add-MpPreference -ExclusionProcess "clang.exe", "clang++.exe", "lld.exe", "lld-link.exe", "ninja.exe"
+          } catch {
+            Write-Host "Defender exclusions unavailable: $_"
+          }
+
+      - name: Build
+        shell: pwsh
+        # --offload-compress: upstream ships ggml-hip.dll at ~900 MB for 20
+        # targets without it; the Linux job measured 439 -> 48 MiB with it.
+        run: |
+          cmake -S . -B build -G "Ninja Multi-Config" `
+            -DCMAKE_PREFIX_PATH="${env:HIP_PATH}" `
+            -DCMAKE_C_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang++.exe" `
+            -DCMAKE_HIP_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
+            -DCMAKE_C_FLAGS="-Wno-error=incompatible-pointer-types" `
+            -DHIP_PATH="${env:HIP_PATH}" `
+            -DHIP_PLATFORM=amd `
+            -DGGML_HIP=ON `
+            -DGPU_TARGETS="${env:GPU_TARGETS}" `
+            -DCMAKE_HIP_FLAGS="--offload-compress" `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU=OFF `
+            -DGGML_RPC=OFF `
+            -DLLAMA_CURL=OFF `
+            -DLLAMA_OPENSSL=OFF `
+            -DLLAMA_BUILD_SERVER=OFF `
+            -DLLAMA_BUILD_TOOLS=OFF `
+            -DLLAMA_BUILD_TESTS=OFF `
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+          cmake --build build --config Release --parallel ${env:NUMBER_OF_PROCESSORS} --target ggml-hip
+          if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
+
+      - name: Verify HIP backend was built
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build\bin\Release -Filter "ggml-hip*.dll" -ErrorAction SilentlyContinue
+          if (-not $dll) {
+            Write-Host "##[error]ggml-hip*.dll was NOT produced. The HIP backend silently failed to build."
+            Get-ChildItem build\bin\Release | Format-Table -AutoSize
+            exit 1
+          }
+          $dll | Format-Table FullName, Length -AutoSize
+
+      # Only our own DLL gets our signature; the AMD DLLs stay as AMD ships them.
+      - name: Stage ggml-hip.dll for signing
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path hip-out | Out-Null
+          Copy-Item build\bin\Release\ggml-hip.dll hip-out\
+
+      - name: Sign ggml-hip.dll
+        uses: ./.github/actions/windows-code-sign
+        with:
+          path: hip-out
+          sm-api-key: ${{ secrets.SM_API_KEY }}
+          sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+
+      - name: Bundle ROCm runtime
+        shell: pwsh
+        # amdhip64_7.dll: the Adrenalin driver ships its own copy in System32
+        # and the loader searches the exe directory first, so the runtime that
+        # matches this ggml-hip.dll has to sit next to the binaries
+        # (ggml-org/llama.cpp#26929). rocm_kpack.dll and amd_comgr.dll are its
+        # dependencies and must match it.
+        # rocblas.dll / hipblas.dll: ggml-hip.dll imports them and the driver
+        # does not install them. Upstream stopped bundling them and its Windows
+        # ROCm zip no longer loads without a ROCm SDK (ggml-org/llama.cpp#26996).
+        # Atomic Chat users have no SDK, so they ship here together with the
+        # rocBLAS Tensile kernels filtered to our gfx targets: the full library
+        # covers every gfx and does not fit a GitHub release asset.
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = $env:ROCM_BIN_PATH
+          $root = $env:HIP_PATH
+          foreach ($name in @("amdhip64_7.dll", "rocm_kpack.dll", "amd_comgr.dll", "rocblas.dll", "hipblas.dll")) {
+            $f = Get-ChildItem -Path $bin -Filter $name -ErrorAction SilentlyContinue
+            if (-not $f) { throw "no match for $name in $bin" }
+            Copy-Item $f.FullName -Destination hip-out -Force
+            Write-Host ("  {0,-20} {1,8:N1} MiB" -f $f.Name, ($f.Length / 1MB))
+          }
+
+          # rocBLAS looks for its kernels in <dir of rocblas.dll>\rocblas\library
+          # (ROCBLAS_TENSILE_LIBPATH overrides). Keep the per-gfx files for our
+          # targets plus the arch-independent ones.
+          $lib = Get-ChildItem -Path $root -Recurse -Directory -Filter "library" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Parent.Name -eq "rocblas" } | Select-Object -First 1
+          if (-not $lib) { throw "rocblas\library directory not found under $root" }
+          $targets = $env:GPU_TARGETS -split ";"
+          $dst = "hip-out\rocblas\library"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          $kept = 0; $bytes = 0
+          foreach ($f in Get-ChildItem -Path $lib.FullName -File) {
+            $m = [regex]::Match($f.Name, "gfx[0-9a-f]+")
+            if ($m.Success -and ($targets -notcontains $m.Value)) { continue }
+            Copy-Item $f.FullName -Destination $dst -Force
+            $kept++; $bytes += $f.Length
+          }
+          Write-Host ("  rocblas/library: {0} files, {1:N1} MiB (from {2})" -f $kept, ($bytes / 1MB), $lib.FullName)
+
+          $total = (Get-ChildItem -Path hip-out -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          Write-Host ("  HIP backend payload total: {0:N1} MiB" -f ($total / 1MB))
+
+      - name: Upload HIP backend
+        uses: actions/upload-artifact@v4
+        with:
+          name: hip-windows-x64-rocm
+          path: hip-out
+          retention-days: 30
+
   macos-arm64:
     needs: verify-version
     runs-on: macos-latest
@@ -865,7 +1047,7 @@ jobs:
   # A stable release must be COMPLETE: this job has hard `needs` on every
   # build job — if anything failed, no release is published at all.
   publish-release:
-    needs: [verify-version, linux-x64-cpu, linux-x64-vulkan, linux-x64-cuda-12-4, linux-x64-cuda-13-3, linux-arm64-cuda-13-3, linux-x64-rocm, windows-x64, macos-arm64]
+    needs: [verify-version, linux-x64-cpu, linux-x64-vulkan, linux-x64-cuda-12-4, linux-x64-cuda-13-3, linux-arm64-cuda-13-3, linux-x64-rocm, windows-x64, windows-x64-rocm, macos-arm64]
     # Publish even if some backend build failed, so one broken backend never
     # blocks shipping the others (the notes call out what is missing). Still
     # requires the version check to pass.
@@ -887,6 +1069,45 @@ jobs:
           path: archives
           merge-multiple: true
 
+      # The Windows ROCm archive is the CPU archive plus the HIP payload from
+      # windows-x64-rocm. Either input may be missing when a build job failed;
+      # then the archive is simply absent and the notes call it out.
+      - name: Download Windows HIP backend
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: hip-windows-x64-rocm
+          path: hip-windows
+
+      - name: Assemble Windows ROCm archive
+        run: |
+          CPU_ZIP=archives/llama-turboquant-windows-x64-cpu.zip
+          if [ ! -f "$CPU_ZIP" ] || [ ! -f hip-windows/ggml-hip.dll ]; then
+            echo "windows-x64-rocm: inputs missing, skipping"
+            exit 0
+          fi
+          rm -rf rocm-win && mkdir rocm-win
+          unzip -q "$CPU_ZIP" -d rocm-win
+          cp -r hip-windows/. rocm-win/build/bin/
+          cat > rocm-win/build/bin/README-ROCm.txt << 'EOF'
+          AMD ROCm (HIP) build for Windows x64.
+
+          Self-contained: ggml-hip.dll plus the matching HIP runtime
+          (amdhip64_7.dll, rocm_kpack.dll, amd_comgr.dll) and rocBLAS/hipBLAS
+          with kernels for the GPUs below. No ROCm SDK install is needed, only
+          a current AMD Adrenalin driver.
+
+          Targets: gfx1030 (RX 6000), gfx1100/1101/1102/1103 (RX 7000, Radeon
+          780M/760M), gfx1150/gfx1151 (Ryzen AI 300 / Ryzen AI Max, Strix Halo),
+          gfx1200/gfx1201 (RX 9000). Other GPUs: use the Vulkan build.
+
+          llama-server picks the HIP device automatically; check with
+          `llama-server --list-devices`. To force the CPU backend instead,
+          delete ggml-hip.dll.
+          EOF
+          (cd rocm-win && zip -qr ../archives/llama-turboquant-windows-x64-rocm.zip build)
+          ls -lh archives/llama-turboquant-windows-x64-rocm.zip
+
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -902,7 +1123,7 @@ jobs:
 
           # A build job may have failed (if: always() above). Publish whatever
           # archives exist and call out anything missing in the notes.
-          EXPECTED="linux-x64-cpu linux-x64-vulkan linux-x64-cuda-12.4 linux-x64-cuda-13.3 linux-arm64-cuda-13.3 linux-x64-rocm windows-x64-cpu windows-x64-vulkan windows-x64-cuda-12.4 windows-x64-cuda-13.3 macos-arm64"
+          EXPECTED="linux-x64-cpu linux-x64-vulkan linux-x64-cuda-12.4 linux-x64-cuda-13.3 linux-arm64-cuda-13.3 linux-x64-rocm windows-x64-cpu windows-x64-vulkan windows-x64-cuda-12.4 windows-x64-cuda-13.3 windows-x64-rocm macos-arm64"
           MISSING=""
           for b in $EXPECTED; do
             ls archives/ | grep -q "llama-turboquant-${b}\." || MISSING="$MISSING $b"
@@ -941,9 +1162,10 @@ jobs:
           | Windows x64 Vulkan | \`llama-turboquant-windows-x64-vulkan.zip\` |
           | Windows x64 CUDA 12.4 | \`llama-turboquant-windows-x64-cuda-12.4.zip\` |
           | Windows x64 CUDA 13.3 | \`llama-turboquant-windows-x64-cuda-13.3.zip\` |
+          | Windows x64 AMD ROCm, RDNA2-RDNA4 + Ryzen AI (HIP runtime and rocBLAS bundled) | \`llama-turboquant-windows-x64-rocm.zip\` |
           | macOS ARM64 (Metal, signed + notarized) | \`llama-turboquant-macos-arm64.zip\` |
 
-          The AMD ROCm archive targets RDNA2 through RDNA4 (gfx1030/1100/1101/1102/1151/1200/1201) and CDNA (gfx90a, gfx942 -- Instinct MI200/MI300) in a single archive, and needs the ROCm runtime installed on the system. Older GCN cards: use the Vulkan build.
+          The Linux AMD ROCm archive targets RDNA2 through RDNA4 (gfx1030/1100/1101/1102/1103/1150/1151/1200/1201) and CDNA (gfx90a, gfx942, gfx950 -- Instinct MI200/MI300/MI350) in a single archive, and needs the ROCm runtime installed on the system. The Windows AMD ROCm archive covers the same RDNA targets, bundles the HIP runtime and rocBLAS, and only needs a current Adrenalin driver. Older GCN cards: use the Vulkan build.
 
           The Linux arm64 CUDA archive is built for NVIDIA DGX Spark (GB10, sm_121); other arm64 NVIDIA machines (GH200, GB200, Thor) run it too but JIT the kernels from PTX on first launch.
 
