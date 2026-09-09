@@ -10,16 +10,26 @@ for the team and for the AMD partner conversation; numbers go into
 | Archive | Targets | Runtime |
 |---|---|---|
 | `llama-turboquant-linux-x64-rocm.tar.gz` | RDNA2-RDNA4: gfx1030, gfx1100/1101/1102/1103, gfx1150/1151 (Ryzen AI 300 / Strix Halo), gfx1200/1201; CDNA: gfx90a, gfx942, gfx950 (MI200/MI300/MI350) | needs the ROCm runtime installed (rocBLAS/hipBLASLt for every gfx do not fit a release asset) |
-| `llama-turboquant-windows-x64-rocm.zip` | the RDNA targets above | self-contained: HIP runtime + rocBLAS/hipBLAS + Tensile kernels for those targets bundled, only an Adrenalin driver is needed |
+| `llama-turboquant-windows-x64-rocm.zip` | the RDNA targets above | self-contained: HIP runtime + the BLAS DLLs ggml-hip links bundled, only an Adrenalin driver is needed |
 | `llama-turboquant-*-vulkan.*` | any Vulkan 1.2+ GPU | driver only |
 
 Both ROCm archives are built with `--offload-compress` and `GGML_BACKEND_DL=ON`
 (`libggml-hip.so` / `ggml-hip.dll` is dlopen'd). The Windows one follows the
 upstream `windows-rocm` release job (ROCm 10.0 wheels, clang from the wheels,
 `amdhip64_7.dll` next to the binaries because the loader prefers the exe
-directory over the driver copy in System32, ggml-org/llama.cpp#26929) and adds
-rocBLAS, which upstream stopped bundling and whose zip therefore no longer
-loads without a ROCm SDK (ggml-org/llama.cpp#26996).
+directory over the driver copy in System32, ggml-org/llama.cpp#26929) with two
+differences learned the hard way:
+
+- On Windows the `.cu` files are compiled as CXX through `hip::device`
+  (`CXX_IS_HIPCC`), so `CMAKE_HIP_FLAGS` is ignored and `--offload-compress`
+  has to go through `CMAKE_CXX_FLAGS`. That takes `ggml-hip.dll` from 545 MB to
+  47 MiB for 9 targets (upstream ships about 900 MB for 20).
+- The bundle is the import closure of `ggml-hip.dll` over the ROCm wheels:
+  amdhip64_7, rocm_kpack, amd_comgr, hipblas, rocblas, libhipblaslt, rocsolver,
+  origami; 230 MiB unpacked, 92 MiB zipped. The ROCm 10 wheels ship no rocBLAS
+  Tensile kernel library at all; kernels come from `amd_comgr.dll` at run time.
+  Upstream stopped bundling rocBLAS and its Windows zip no longer loads without
+  a ROCm SDK (ggml-org/llama.cpp#26996).
 
 TurboQuant on HIP: the CUDA kernels compile unchanged (no `GGML_USE_HIP`
 guards in any turbo kernel), all 21 turbo fattn-vec instances are listed in

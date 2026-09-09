@@ -801,20 +801,24 @@ jobs:
 
       - name: Build
         shell: pwsh
-        # --offload-compress: upstream ships ggml-hip.dll at ~900 MB for 20
-        # targets without it; the Linux job measured 439 -> 48 MiB with it.
+        # On Windows ggml-hip compiles the .cu files as CXX with hip::device
+        # (CXX_IS_HIPCC in ggml/src/ggml-hip/CMakeLists.txt), so CMAKE_HIP_FLAGS
+        # is never used and --offload-compress must go through CMAKE_CXX_FLAGS.
+        # Without it ggml-hip.dll is 545 MB for these 9 targets (upstream ships
+        # ~900 MB for 20). -Wno-ignored-attributes drops 850k GGML_API dllimport
+        # warnings per build that otherwise make the job log unfetchable.
         run: |
           cmake -S . -B build -G "Ninja Multi-Config" `
             -DCMAKE_PREFIX_PATH="${env:HIP_PATH}" `
             -DCMAKE_C_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
             -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang++.exe" `
             -DCMAKE_HIP_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
-            -DCMAKE_C_FLAGS="-Wno-error=incompatible-pointer-types" `
+            -DCMAKE_C_FLAGS="-Wno-error=incompatible-pointer-types -Wno-ignored-attributes" `
+            -DCMAKE_CXX_FLAGS="--offload-compress -Wno-ignored-attributes" `
             -DHIP_PATH="${env:HIP_PATH}" `
             -DHIP_PLATFORM=amd `
             -DGGML_HIP=ON `
             -DGPU_TARGETS="${env:GPU_TARGETS}" `
-            -DCMAKE_HIP_FLAGS="--offload-compress" `
             -DGGML_BACKEND_DL=ON `
             -DGGML_NATIVE=OFF `
             -DGGML_CPU=OFF `
@@ -857,47 +861,47 @@ jobs:
 
       - name: Bundle ROCm runtime
         shell: pwsh
-        # amdhip64_7.dll: the Adrenalin driver ships its own copy in System32
-        # and the loader searches the exe directory first, so the runtime that
-        # matches this ggml-hip.dll has to sit next to the binaries
-        # (ggml-org/llama.cpp#26929). rocm_kpack.dll and amd_comgr.dll are its
-        # dependencies and must match it.
-        # rocblas.dll / hipblas.dll: ggml-hip.dll imports them and the driver
-        # does not install them. Upstream stopped bundling them and its Windows
-        # ROCm zip no longer loads without a ROCm SDK (ggml-org/llama.cpp#26996).
-        # Atomic Chat users have no SDK, so they ship here together with the
-        # rocBLAS Tensile kernels filtered to our gfx targets: the full library
-        # covers every gfx and does not fit a GitHub release asset.
+        # The bundle is the import closure of ggml-hip.dll over the ROCm wheel
+        # bin dirs: amdhip64_7 (+ rocm_kpack, amd_comgr), hipblas, rocblas
+        # (+ libhipblaslt), rocsolver, ... System DLLs are left alone.
+        # The ROCm 10 wheels ship no rocBLAS kernel library: kernels come from
+        # amd_comgr.dll at run time, so there is no gfx-specific data to copy.
+        # amdhip64_7.dll must sit next to the binaries: the Adrenalin driver
+        # ships its own copy in System32 and the loader searches the exe
+        # directory first (ggml-org/llama.cpp#26929). rocblas/hipblas are not
+        # installed by the driver; upstream stopped bundling them and its
+        # Windows ROCm zip no longer loads without a ROCm SDK (#26996).
         run: |
           $ErrorActionPreference = "Stop"
-          $bin = $env:ROCM_BIN_PATH
-          $root = $env:HIP_PATH
-          foreach ($name in @("amdhip64_7.dll", "rocm_kpack.dll", "amd_comgr.dll", "rocblas.dll", "hipblas.dll")) {
-            $f = Get-ChildItem -Path $bin -Filter $name -ErrorAction SilentlyContinue
-            if (-not $f) { throw "no match for $name in $bin" }
-            Copy-Item $f.FullName -Destination hip-out -Force
-            Write-Host ("  {0,-20} {1,8:N1} MiB" -f $f.Name, ($f.Length / 1MB))
+          $sp = "C:\TheRock\build\.venv\Lib\site-packages"
+          $bins = @("$sp\_rocm_sdk_devel\bin", "$sp\_rocm_sdk_core\bin", "$sp\_rocm_sdk_libraries\bin")
+          $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*Hostx64\x64*" } | Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe not found" }
+          function Get-Imports($path) {
+            & $dumpbin.FullName /NOLOGO /DEPENDENTS $path 2>$null |
+              Where-Object { $_ -match "^\s+(\S+\.dll)\s*$" } | ForEach-Object { $Matches[1] }
           }
-
-          # rocBLAS looks for its kernels in <dir of rocblas.dll>\rocblas\library
-          # (ROCBLAS_TENSILE_LIBPATH overrides). Keep the per-gfx files for our
-          # targets plus the arch-independent ones.
-          $lib = Get-ChildItem -Path $root -Recurse -Directory -Filter "library" -ErrorAction SilentlyContinue |
-            Where-Object { $_.Parent.Name -eq "rocblas" } | Select-Object -First 1
-          if (-not $lib) { throw "rocblas\library directory not found under $root" }
-          $targets = $env:GPU_TARGETS -split ";"
-          $dst = "hip-out\rocblas\library"
-          New-Item -ItemType Directory -Force -Path $dst | Out-Null
-          $kept = 0; $bytes = 0
-          foreach ($f in Get-ChildItem -Path $lib.FullName -File) {
-            $m = [regex]::Match($f.Name, "gfx[0-9a-f]+")
-            if ($m.Success -and ($targets -notcontains $m.Value)) { continue }
-            Copy-Item $f.FullName -Destination $dst -Force
-            $kept++; $bytes += $f.Length
+          $queue = [System.Collections.Generic.Queue[string]]::new()
+          $queue.Enqueue("hip-out\ggml-hip.dll")
+          $seen = @{ "ggml-hip.dll" = $true }
+          while ($queue.Count -gt 0) {
+            $p = $queue.Dequeue()
+            foreach ($d in Get-Imports $p) {
+              if ($seen.ContainsKey($d.ToLower())) { continue }
+              $seen[$d.ToLower()] = $true
+              $src = $null
+              foreach ($b in $bins) { if (Test-Path "$b\$d") { $src = "$b\$d"; break } }
+              if (-not $src) { continue }
+              Copy-Item $src -Destination hip-out -Force
+              Write-Host ("  {0,-22} {1,8:N1} MiB   needed by {2}" -f $d, ((Get-Item $src).Length / 1MB), (Split-Path $p -Leaf))
+              $queue.Enqueue("hip-out\$d")
+            }
           }
-          Write-Host ("  rocblas/library: {0} files, {1:N1} MiB (from {2})" -f $kept, ($bytes / 1MB), $lib.FullName)
-
-          $total = (Get-ChildItem -Path hip-out -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          foreach ($must in @("amdhip64_7.dll", "rocblas.dll", "hipblas.dll")) {
+            if (-not (Test-Path "hip-out\$must")) { throw "$must missing from the bundle" }
+          }
+          $total = (Get-ChildItem -Path hip-out -File | Measure-Object -Property Length -Sum).Sum
           Write-Host ("  HIP backend payload total: {0:N1} MiB" -f ($total / 1MB))
 
       - name: Upload HIP backend
@@ -1066,9 +1070,9 @@ jobs:
           AMD ROCm (HIP) build for Windows x64.
 
           Self-contained: ggml-hip.dll plus the matching HIP runtime
-          (amdhip64_7.dll, rocm_kpack.dll, amd_comgr.dll) and rocBLAS/hipBLAS
-          with kernels for the GPUs below. No ROCm SDK install is needed, only
-          a current AMD Adrenalin driver.
+          (amdhip64_7.dll, rocm_kpack.dll, amd_comgr.dll) and the BLAS stack it
+          links (hipblas, rocblas, libhipblaslt, rocsolver, origami). No ROCm
+          SDK install is needed, only a current AMD Adrenalin driver.
 
           Targets: gfx1030 (RX 6000), gfx1100/1101/1102/1103 (RX 7000, Radeon
           780M/760M), gfx1150/gfx1151 (Ryzen AI 300 / Ryzen AI Max, Strix Halo),
