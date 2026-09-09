@@ -103,7 +103,7 @@ jobs:
           if ($dumpbin) {
             foreach ($d in @("rocblas.dll", "hipblas.dll", "libhipblaslt.dll", "rocsolver.dll", "amdhip64_7.dll", "rocm_kpack.dll")) {
               $p = "$sp\_rocm_sdk_devel\bin\$d"
-              if (-not (Test-Path $p)) { $out += "   -- $d: not in devel\bin"; continue }
+              if (-not (Test-Path $p)) { $out += "   -- ${d}: not in devel\bin"; continue }
               $out += ("   -- {0} ({1:N1} MiB)" -f $d, ((Get-Item $p).Length / 1MB))
               & $dumpbin.FullName /NOLOGO /DEPENDENTS $p 2>$null | Where-Object { $_ -match "^\s+\S+\.dll\s*$" } | ForEach-Object { $out += "      $($_.Trim())" }
             }
@@ -175,7 +175,7 @@ jobs:
           $dll | Format-Table FullName, Length -AutoSize
           New-Item -ItemType Directory -Force -Path hip-out | Out-Null
           Copy-Item build\bin\Release\ggml-hip.dll hip-out\
-          Copy-Item rocm-layout.txt hip-out\
+          Copy-Item rocm-layout.txt hip-out\ -ErrorAction SilentlyContinue
 
       - name: Bundle ROCm runtime
         shell: pwsh
