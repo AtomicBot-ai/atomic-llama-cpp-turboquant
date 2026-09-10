@@ -31,7 +31,7 @@ the notes list what is missing.
 |---|---|
 | Linux x64 | `cpu`, `vulkan`, `cuda-12.4`, `cuda-13.3`, `rocm` |
 | Linux arm64 | `cuda-13.3` — NVIDIA DGX Spark / GB10, sm_121 |
-| Windows x64 | `cpu`, `vulkan`, `cuda-12.4`, `cuda-13.3` |
+| Windows x64 | `cpu`, `vulkan`, `cuda-12.4`, `cuda-13.3`, `rocm` |
 | macOS arm64 | `macos-arm64` (Metal) |
 
 The CUDA archives bundle their own `libcudart`/`libcublas` and are linked with
