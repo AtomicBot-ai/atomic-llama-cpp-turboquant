@@ -844,20 +844,11 @@ jobs:
           }
           $dll | Format-Table FullName, Length -AutoSize
 
-      # Only our own DLL gets our signature; the AMD DLLs stay as AMD ships them.
-      - name: Stage ggml-hip.dll for signing
+      - name: Stage ggml-hip.dll
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path hip-out | Out-Null
           Copy-Item build\bin\Release\ggml-hip.dll hip-out\
-
-      - name: Sign ggml-hip.dll
-        uses: ./.github/actions/windows-code-sign
-        with:
-          path: hip-out
-          sm-api-key: ${{ secrets.SM_API_KEY }}
-          sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
-          sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
 
       - name: Bundle ROCm runtime
         shell: pwsh
@@ -903,6 +894,17 @@ jobs:
           }
           $total = (Get-ChildItem -Path hip-out -File | Measure-Object -Property Length -Sum).Sum
           Write-Host ("  HIP backend payload total: {0:N1} MiB" -f ($total / 1MB))
+
+      # Same rule as the CUDA archives: everything in the payload carries a
+      # signature. The action skips files that already have a valid one, so
+      # AMD-signed DLLs keep AMD's signature and unsigned ones get ours.
+      - name: Sign HIP backend
+        uses: ./.github/actions/windows-code-sign
+        with:
+          path: hip-out
+          sm-api-key: ${{ secrets.SM_API_KEY }}
+          sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+          sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
 
       - name: Upload HIP backend
         uses: actions/upload-artifact@v4

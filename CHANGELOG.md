@@ -10,6 +10,39 @@ commit list underneath.
 
 Releases before `b10269-1.5.0` predate this file; see the git history.
 
+## b10269-1.6.0
+
+### Added
+
+- **Windows AMD ROCm archive** `llama-turboquant-windows-x64-rocm.zip`. HIP
+  backend for RDNA2 through RDNA4 and Ryzen AI 300 / Ryzen AI Max (gfx1030,
+  gfx1100/1101/1102/1103, gfx1150/1151, gfx1200/1201), self-contained: the HIP
+  runtime and the BLAS DLLs it links are bundled (about 100 MB), only a current
+  Adrenalin driver is needed, no ROCm SDK install. Until now Windows + Radeon
+  meant the Vulkan build; HIP is the faster prompt-processing path on these
+  GPUs. Everything in the archive is Authenticode-signed, the AMD DLLs with
+  AMD's signature where they ship one.
+- **Linux ROCm archive** now also targets gfx950 (Instinct MI350/MI355X),
+  gfx1150 (Ryzen AI 300) and gfx1103 (Radeon 780M/760M).
+- `docs/amd/`: what ships for AMD, the ROCm vs Vulkan benchmark plan for the
+  TurboQuant KV cache, and the open items. `scripts/bench-amd.sh` runs that
+  matrix per backend build, `scripts/bench-amd-report.py` renders one table.
+
+### Changed
+
+- ROCm builds no longer pass `GGML_HIP_ROCWMMA_FATTN`; upstream removed the
+  rocWMMA flash-attention path and the flag was a no-op.
+
+### Notes
+
+- **The Windows ROCm archive is beta.** It is built, signed and checked for
+  completeness in CI, but has not been run on a Radeon yet. `llama-server
+  --list-devices` must show a HIP device; if it does not, or if loading fails,
+  report the GPU, driver version and the error, and use the Vulkan archive in
+  the meantime.
+- Atomic Chat does not select the Windows ROCm backend yet; the client change
+  follows separately. Until then it is a manual download.
+
 ## b10269-1.5.1
 
 ### Fixed
