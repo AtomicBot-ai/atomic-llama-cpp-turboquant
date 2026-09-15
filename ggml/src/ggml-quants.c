@@ -2305,10 +2305,158 @@ size_t quantize_mxfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
     return nrow * ggml_row_size(GGML_TYPE_MXFP4, n_per_row);
 }
 
+static void quantize_row_nvfp4_impl(const float * GGML_RESTRICT x, block_nvfp4 * GGML_RESTRICT y, int64_t n_per_row, const float * quant_weights) {
+    static const int qk     = QK_NVFP4;
+    static const int qk_sub = QK_NVFP4_SUB;
+    static const int n_sub  = QK_NVFP4 / QK_NVFP4_SUB;
+
+    if (!quant_weights) {
+        quantize_row_nvfp4_ref(x, y, n_per_row);
+        return;
+    }
+
+    // The scale of a sub-block is stored as UE4M3, so neighbouring scales are ~12.5% apart.
+    // Round to nearest with d = amax/6 is only one point on that grid and rarely the best one:
+    // a smaller scale clips the single largest weight but resolves the other fifteen better.
+    // For every candidate scale we assign the values, then refit the scale by weighted least
+    // squares against that assignment and try again. Alternating like this is what the K quants
+    // do; here it is cheap because a sub-block is 16 elements.
+    static const int trial_lo = -5;
+    static const int trial_hi =  2;
+    static const int n_refine =  2;
+
+    float sum_x2 = 0.0f;
+    for (int64_t j = 0; j < n_per_row; ++j) {
+        sum_x2 += x[j]*x[j];
+    }
+    const float sigma2 = sum_x2/n_per_row;
+
+    const int64_t nb = n_per_row/qk;
+
+    for (int64_t i = 0; i < nb; i++) {
+        for (int s = 0; s < n_sub; s++) {
+            const float * xb = x             + i*qk + s*qk_sub;
+            const float * qw = quant_weights + i*qk + s*qk_sub;
+
+            float amax = 0.0f;
+            for (int j = 0; j < qk_sub; j++) {
+                if (amax < fabsf(xb[j])) {
+                    amax = fabsf(xb[j]);
+                }
+            }
+
+            if (amax == 0.0f) {
+                y[i].d[s] = ggml_fp32_to_ue4m3(0.0f);
+                for (int j = 0; j < qk_sub/2; ++j) {
+                    y[i].qs[s*(qk_sub/2) + j] = 0;
+                }
+                continue;
+            }
+
+            // Experts that the calibration corpus never routed to have all-zero importance.
+            // Weighting by that would make every scale look equally good and let the search
+            // pick an arbitrary one, so fall back to magnitude-only weights for such blocks.
+            float weight[QK_NVFP4_SUB];
+            float wsum = 0.0f;
+            for (int j = 0; j < qk_sub; ++j) {
+                wsum += qw[j];
+            }
+            if (wsum > 0.0f) {
+                for (int j = 0; j < qk_sub; ++j) {
+                    weight[j] = qw[j] * sqrtf(sigma2 + xb[j]*xb[j]);
+                }
+            } else {
+                for (int j = 0; j < qk_sub; ++j) {
+                    weight[j] = sqrtf(sigma2 + xb[j]*xb[j]);
+                }
+            }
+
+            const int ue0 = (int) ggml_fp32_to_ue4m3(amax / 6.0f);
+
+            uint8_t best_ue  = (uint8_t) ue0;
+            float   best_err = INFINITY;
+
+            for (int t = trial_lo; t <= trial_hi; ++t) {
+                const int ue_i = ue0 + t;
+                if (ue_i < 0 || ue_i > 255) {
+                    continue;
+                }
+
+                uint8_t ue = (uint8_t) ue_i;
+                float   d  = ggml_ue4m3_to_fp32(ue);
+                if (d == 0.0f) {
+                    continue;
+                }
+
+                // score the starting point before refining, so a refit that wanders off
+                // can never win over the scale it started from
+                {
+                    float err0 = 0.0f;
+                    for (int j = 0; j < qk_sub; ++j) {
+                        const float diff = kvalues_mxfp4[best_index_mxfp4(xb[j], d)]*d - xb[j];
+                        err0 += weight[j]*diff*diff;
+                    }
+                    if (err0 < best_err) {
+                        best_err = err0;
+                        best_ue  = ue;
+                    }
+                }
+
+                // refit the scale against its own assignment a couple of times
+                for (int r = 0; r < n_refine; ++r) {
+                    float num = 0.0f, den = 0.0f;
+                    for (int j = 0; j < qk_sub; ++j) {
+                        const float v = kvalues_mxfp4[best_index_mxfp4(xb[j], d)];
+                        num += weight[j]*xb[j]*v;
+                        den += weight[j]*v*v;
+                    }
+                    if (!(num > 0.0f) || !(den > 0.0f)) {
+                        break;      // ue4m3 is unsigned, a non-positive fit is not representable
+                    }
+                    const uint8_t ue_fit = ggml_fp32_to_ue4m3(num/den);
+                    const float   d_fit  = ggml_ue4m3_to_fp32(ue_fit);
+                    if (d_fit == 0.0f || ue_fit == ue) {
+                        break;
+                    }
+                    ue = ue_fit;
+                    d  = d_fit;
+                }
+
+                // score the candidate at the scale it actually ended up with
+                float err = 0.0f;
+                for (int j = 0; j < qk_sub; ++j) {
+                    const float diff = kvalues_mxfp4[best_index_mxfp4(xb[j], d)]*d - xb[j];
+                    err += weight[j]*diff*diff;
+                }
+
+                if (err < best_err) {
+                    best_err = err;
+                    best_ue  = ue;
+                }
+            }
+
+            y[i].d[s] = best_ue;
+
+            const float d = ggml_ue4m3_to_fp32(best_ue);
+            for (int j = 0; j < qk_sub/2; ++j) {
+                const uint8_t x0 = best_index_mxfp4(xb[0        + j], d);
+                const uint8_t x1 = best_index_mxfp4(xb[qk_sub/2 + j], d);
+
+                y[i].qs[s*(qk_sub/2) + j] = x0 | (x1 << 4);
+            }
+        }
+    }
+}
+
 size_t quantize_nvfp4(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
-    GGML_UNUSED(quant_weights);
-    quantize_row_nvfp4_ref(src, dst, (int64_t)nrow*n_per_row);
-    return nrow * ggml_row_size(GGML_TYPE_NVFP4, n_per_row);
+    const size_t row_size = ggml_row_size(GGML_TYPE_NVFP4, n_per_row);
+    char * qrow = (char *)dst;
+    for (int64_t row = 0; row < nrow; ++row) {
+        quantize_row_nvfp4_impl(src, (block_nvfp4 *)qrow, n_per_row, quant_weights);
+        src  += n_per_row;
+        qrow += row_size;
+    }
+    return nrow * row_size;
 }
 
 // ====================== Ternary (de)-quantization (BitNet b1.58 and TriLMs)
