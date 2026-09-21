@@ -915,6 +915,10 @@ jobs:
 
   macos-arm64:
     runs-on: macos-latest
+    env:
+      # Oldest macOS the archive runs on. Without it the binaries get the
+      # runner's OS as their minimum and dyld refuses them on anything older.
+      MACOS_DEPLOYMENT_TARGET: "13.3"
 
     steps:
       - name: Clone
@@ -967,6 +971,7 @@ jobs:
             -DGGML_METAL=ON \
             -DGGML_METAL_USE_BF16=ON \
             -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
             -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_BUILD_TOOLS=ON \
             -DLLAMA_BUILD_TESTS=OFF \
@@ -979,6 +984,11 @@ jobs:
           ./build/bin/llama-server --help 2>&1 | grep -A2 "cache-type-k" || true
           if otool -L build/bin/llama-server | grep -vE '/usr/lib|/System|llama-server' | grep '\.dylib'; then
             echo "ERROR: Found non-system dynamic dependency!"
+            exit 1
+          fi
+          minos=$(otool -l build/bin/llama-server | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
+          if [ "$minos" != "$MACOS_DEPLOYMENT_TARGET" ]; then
+            echo "ERROR: llama-server minos is '$minos', expected $MACOS_DEPLOYMENT_TARGET"
             exit 1
           fi
 
