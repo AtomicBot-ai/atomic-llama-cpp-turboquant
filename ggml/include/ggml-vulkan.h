@@ -34,6 +34,8 @@ GGML_BACKEND_API VkDevice      ggml_backend_vk_get_device_handle(ggml_backend_t 
 GGML_BACKEND_API VkQueue       ggml_backend_vk_get_queue_handle(ggml_backend_t backend);
 GGML_BACKEND_API VkPhysicalDevice ggml_backend_vk_get_physical_device(ggml_backend_t backend);
 GGML_BACKEND_API uint32_t      ggml_backend_vk_get_queue_family(ggml_backend_t backend);
+GGML_BACKEND_API void          ggml_backend_vk_lock_queue(ggml_backend_t backend);
+GGML_BACKEND_API void          ggml_backend_vk_unlock_queue(ggml_backend_t backend);
 #endif
 
 #ifdef  __cplusplus

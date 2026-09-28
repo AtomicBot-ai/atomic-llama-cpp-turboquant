@@ -18004,6 +18004,22 @@ VkQueue ggml_backend_vk_get_queue_handle(ggml_backend_t backend) {
     return (VkQueue)ctx->device->compute_queue->handle->queue;
 }
 
+void ggml_backend_vk_lock_queue(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_vk(backend));
+    ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
+    GGML_ASSERT(ctx->device && ctx->device->compute_queue &&
+                ctx->device->compute_queue->handle);
+    ctx->device->compute_queue->handle->lock();
+}
+
+void ggml_backend_vk_unlock_queue(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_vk(backend));
+    ggml_backend_vk_context * ctx = (ggml_backend_vk_context *)backend->context;
+    GGML_ASSERT(ctx->device && ctx->device->compute_queue &&
+                ctx->device->compute_queue->handle);
+    ctx->device->compute_queue->handle->unlock();
+}
+
 VkPhysicalDevice ggml_backend_vk_get_physical_device(ggml_backend_t backend) {
     if (!ggml_backend_is_vk(backend)) {
         return VK_NULL_HANDLE;

@@ -122,6 +122,7 @@ struct moe_cache_vulkan_device : public moe_cache_device {
     VkDevice vk_device = VK_NULL_HANDLE;
     VkPhysicalDevice vk_physical = VK_NULL_HANDLE;
     VkQueue vk_queue = VK_NULL_HANDLE;
+    ggml_backend_t vk_backend = nullptr;
     uint32_t vk_queue_family = 0;
     VkCommandPool vk_cmd_pool = VK_NULL_HANDLE;
 
@@ -349,6 +350,16 @@ static bool vk_buf_reserve(moe_cache_vulkan_device & dev, vk_buf & buf,
 // Submit one one-time command buffer and wait for it.
 template <typename F>
 static bool vk_submit_and_wait(moe_cache_vulkan_device & dev, F record) {
+    // The backend can hand multiple contexts the same VkQueue. Vulkan requires
+    // host access to that queue to be externally synchronized, including
+    // vkQueueWaitIdle. Use the backend's queue lock so cache submissions also
+    // serialize with normal graph submissions and with other cache sessions.
+    ggml_backend_vk_lock_queue(dev.vk_backend);
+    struct queue_unlock {
+        ggml_backend_t backend;
+        ~queue_unlock() { ggml_backend_vk_unlock_queue(backend); }
+    } unlock{dev.vk_backend};
+
     VkCommandBufferAllocateInfo ai = {};
     ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     ai.commandPool = dev.vk_cmd_pool;
@@ -884,6 +895,7 @@ static void * vk_moe_session_create(void * const * backends, int n_backends,
         }
         dev->vk_device = vk_device;
         dev->vk_queue = vk_queue;
+        dev->vk_backend = vk_backend;
         dev->vk_physical = vk_physical;
         dev->vk_queue_family = queue_family;
 
