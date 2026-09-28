@@ -1791,14 +1791,10 @@ static ggml_backend_buffer_t ggml_backend_cuda_kv_stream_buffer_alloc(
     ggml_cuda_set_device(runtime->device);
 
     void * host_data = nullptr;
-#if defined(_WIN32)
-    // Direct decode writes to mapped write-combined host memory have been
-    // observed to fault under WDDM. Keep the storage mapped, but omit the
-    // write-combined hint on native Windows.
+    // Direct GPU writes to mapped write-combined host memory can fault under
+    // WDDM, including CUDA running through WSL. Keep the storage mapped, but
+    // do not request write-combined memory for the authoritative KV cache.
     const unsigned int host_flags = cudaHostAllocMapped;
-#else
-    const unsigned int host_flags = cudaHostAllocMapped | cudaHostAllocWriteCombined;
-#endif
     const cudaError_t error = cudaHostAlloc(&host_data, size, host_flags);
     if (error != cudaSuccess) {
         (void) cudaGetLastError();
