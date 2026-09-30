@@ -60,6 +60,12 @@ struct engine_laya : decision_engine {
         c.max_tokens       = hp.max_len > 0 ? hp.max_len : 1024;
         c.n_threads        = n_threads;
         c.device           = "cpu";
+        c.kernels          = laya_context_kernels(ctx);
+        c.n_threads_blas   = laya_context_n_threads_blas(ctx);
+        const laya_model_memory mem = laya_model_memory_info(model);
+        c.weights_loaded   = mem.loaded;
+        c.weights_mapped   = mem.mapped;
+        c.weights_repacked = mem.repacked;
         c.state_split      = split_exact;
         return c;
     }
@@ -286,12 +292,43 @@ std::unique_ptr<decision_engine> decision_engine_laya_init(const decision_spec &
         throw std::runtime_error("laya: unknown decision plan '" + plan + "' (sequential, packed)");
     }
 
+    std::string kernels = params.kernels;
+    if (kernels.empty() && spec.plan.contains("kernels") && spec.plan.at("kernels").is_string()) {
+        kernels = spec.plan.at("kernels").get<std::string>();
+    }
+    if (kernels.empty()) {
+        kernels = "auto";
+    }
+    if (kernels == "auto") {
+        // measured on Apple M4 Max over 911 items: Accelerate sgemm (F32 accumulation, no
+        // activation rounding) is closer to the PyTorch reference than the ggml F16 / Q8_0
+        // kernels and 2x faster; other BLAS libraries are not measured, so they stay opt-in
+        kernels = laya_blas_description() == "Accelerate" ? "blas" : "default";
+    }
+    if (kernels != "default" && kernels != "repack" && kernels != "blas" && kernels != "repack+blas") {
+        throw std::runtime_error("laya: unknown kernels '" + kernels + "' (auto, default, repack, blas, repack+blas)");
+    }
+
+    laya_model_params mparams;
+    mparams.use_mmap        = params.use_mmap;
+    mparams.use_mlock       = params.use_mlock;
+    mparams.use_extra_bufts = kernels == "repack" || kernels == "repack+blas";
+
+    laya_context_params cparams;
+    cparams.n_threads = std::max(1, params.n_threads);
+    cparams.poll      = params.poll;
+    cparams.use_blas  = kernels == "blas" || kernels == "repack+blas";
+    cparams.n_threads_blas = params.n_threads_blas;
+
     std::unique_ptr<engine_laya> eng(new engine_laya());
     eng->plan      = plan;
-    eng->n_threads = std::max(1, params.n_threads);
-    eng->model     = laya_model_load_from_file(params.model_path.c_str());
+    eng->n_threads = cparams.n_threads;
+    eng->model     = laya_model_load_from_file_ext(params.model_path.c_str(), mparams);
     eng->esc       = laya_escape_init(eng->model);
     eng->split_exact = laya_probe_split(eng->model, eng->esc);
-    eng->ctx       = laya_init(eng->model, eng->n_threads);
+    eng->ctx       = laya_init_ext(eng->model, cparams);
+    if (params.warmup && laya_warmup(eng->ctx, params.warmup_tokens) != 0) {
+        throw std::runtime_error("laya: warm-up forward pass failed");
+    }
     return eng;
 }

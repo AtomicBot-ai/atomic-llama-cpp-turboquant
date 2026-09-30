@@ -423,6 +423,8 @@ struct common_params_decision {
     int32_t     max_items          = 16;    // questions per systemone request, candidates per router request
     bool        allow_uncalibrated = false; // router scores without a router calibration
     bool        debug              = false; // raw logits, render endpoint, load delay for tests
+    std::string kernels            = "";    // laya matmul kernels; empty: from the spec, then "auto" // NOLINT
+    bool        threads_set        = false; // -t given: otherwise the engine runs on the performance cores
 };
 
 // reasoning API response format (not to be confused as chat template's reasoning format)

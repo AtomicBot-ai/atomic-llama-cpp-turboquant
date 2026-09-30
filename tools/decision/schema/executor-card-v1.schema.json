@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant/tools/decision/schema/executor-card-v1.schema.json",
+  "title": "atomic.executor-card/1",
+  "description": "Executor card of POST /v1/router/score (DECISION.md). The engine (decision_card_validate) and tools/decision/reference.py also check what JSON Schema cannot say: passed <= total, strings at most 4096 UTF-8 bytes (maxLength counts code points), and integral floats such as 188.0 (JSON Schema calls them integers, the engine rejects them). Unknown fields are allowed; the engine ignores them with a warning.",
+  "type": "object",
+  "required": ["schema", "name", "kind"],
+  "properties": {
+    "schema": {"const": "atomic.executor-card/1"},
+    "name": {"$ref": "#/$defs/nonblank"},
+    "kind": {"$ref": "#/$defs/nonblank"},
+    "description": {"$ref": "#/$defs/text"},
+    "checks": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/check"}
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "nonblank": {
+      "description": "A string with at least one character that is not a C0 control, DEL or space (card-v1 turns those into separators).",
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "[^\\u0000-\\u0020\\u007f]"
+    },
+    "count": {
+      "description": "An int64 count. The bound is exclusive 2^63 because 2^63 - 1 is not a double: a validator that reads numbers as doubles would round an inclusive 9223372036854775807 up to 2^63 and accept 2^63, which the engine refuses.",
+      "type": "integer",
+      "exclusiveMaximum": 9223372036854775808
+    },
+    "check": {
+      "type": "object",
+      "required": ["skill", "status"],
+      "properties": {
+        "skill": {"$ref": "#/$defs/nonblank"},
+        "status": {"enum": ["measured", "missing"]},
+        "passed": {"$ref": "#/$defs/count"},
+        "total": {"$ref": "#/$defs/count"},
+        "criterion": {"$ref": "#/$defs/text"},
+        "source": {"$ref": "#/$defs/text"},
+        "version": {"$ref": "#/$defs/text"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+          "then": {
+            "required": ["passed", "total"],
+            "properties": {"passed": {"minimum": 0}, "total": {"minimum": 1}}
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "missing"}}, "required": ["status"]},
+          "then": {
+            "not": {"anyOf": [{"required": ["passed"]}, {"required": ["total"]}]}
+          }
+        }
+      ]
+    }
+  }
+}

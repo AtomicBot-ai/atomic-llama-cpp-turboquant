@@ -1,8 +1,13 @@
+import hashlib
 import importlib.util
 import json
 import math
 import os
+import platform
+import random
+import sys
 import signal
+import subprocess
 import threading
 import time
 
@@ -48,7 +53,7 @@ def assert_error(res: ServerResponse, status: int, reason: str):
 
 def write_spec(tmp_path, spec: dict) -> str:
     path = os.path.join(tmp_path, "spec.json")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(spec, f)
     return path
 
@@ -166,6 +171,137 @@ def test_models_router_calibrated(tmp_path):
 #
 # systemone
 #
+
+def systemone_answers(srv: ServerProcess) -> dict:
+    res = srv.make_request("POST", "/v1/systemone", data={"state": "Billed twice, please refund", "questions": QUESTIONS})
+    assert res.status_code == 200, res.body
+    return res.body["answers"]
+
+
+def test_props_kernels_default():
+    # auto: the BLAS backend when it is Accelerate (macOS builds), else the ggml CPU kernels
+    server.start()
+    assert server.make_request("GET", "/props").body["decision"]["plan"]["kernels"] in ("cpu", "cpu+blas")
+    server.stop()
+    server.decision_kernels = "default"
+    server.start()
+    assert server.make_request("GET", "/props").body["decision"]["plan"]["kernels"] == "cpu"
+
+
+@pytest.mark.parametrize("kernels", ["default", "auto"])
+def test_default_threads(kernels):
+    # without -t: the performance cores (the same count for every kernels choice); BLAS: min(n, 8)
+    server.n_threads = None
+    server.decision_kernels = kernels
+    server.start()
+    plan = server.make_request("GET", "/props").body["decision"]["plan"]
+    assert plan["n_threads"] >= 1
+    if plan["kernels"].endswith("blas"):
+        assert plan["n_threads_blas"] == min(plan["n_threads"], 8), plan
+    else:
+        assert plan["n_threads_blas"] == 0, plan
+
+
+def weights_memory(srv: ServerProcess) -> dict:
+    return srv.make_request("GET", "/props").body["decision"]["memory"]
+
+
+# the token_embd mapping, --mlock (a failed lock only warns) and the warm-up pass never change a number
+@pytest.mark.parametrize("load_mode,no_warmup", [("none", False), ("mmap+mlock", False), ("mlock", False), ("mmap", True)])
+def test_load_modes_same_answers(load_mode, no_warmup):
+    server.start()
+    ref = systemone_answers(server)
+    # default load mode: token_embd (518 x 64 F16 in the tiny model) is used from the file mapping
+    mem = weights_memory(server)
+    assert mem["weights_mapped_bytes"] == 518 * 64 * 2 and mem["weights_loaded_bytes"] > 0
+    server.stop()
+    other = tiny_laya_decision_server()
+    other.load_mode = load_mode
+    other.no_warmup = no_warmup
+    other.start()
+    # no silent fallback: a mapping mode maps token_embd, the others load it
+    mem = weights_memory(other)
+    assert mem["weights_mapped_bytes"] == (518 * 64 * 2 if load_mode.startswith("mmap") else 0), mem
+    assert systemone_answers(other) == ref
+    other.stop()
+
+
+def apple_silicon() -> bool:
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def start_or_no_blas(srv: ServerProcess, tmp_path) -> bool:
+    """ start srv; False when the build has no BLAS backend and srv asked for BLAS kernels explicitly
+        (the load fails instead of computing with other kernels) """
+    srv.log_path = os.path.join(tmp_path, "server.log")
+    try:
+        srv.start()
+        return True
+    except RuntimeError:
+        with open(srv.log_path, encoding="utf-8", errors="replace") as f:
+            log = f.read()
+        assert "blas" in (srv.decision_kernels or "") and "no BLAS backend" in log, log[-2000:]
+        assert not apple_silicon(), "macOS builds have Accelerate"
+        return False
+
+
+def assert_logits_close(ref: dict, got: dict, tol: float):
+    for qid, a in ref.items():
+        za, zb = a["debug"]["logits"], got[qid]["debug"]["logits"]
+        assert len(za) == len(zb)
+        assert max(abs(x - y) for x, y in zip(za, zb)) < tol, (qid, za, zb)
+
+
+# other matmul kernels: same answers up to float rounding, and /props says which ran
+@pytest.mark.parametrize("kernels", ["auto", "repack", "blas", "repack+blas"])
+def test_kernels(kernels, tmp_path):
+    server.decision_debug = True
+    server.decision_kernels = "default"
+    server.start()
+    ref = systemone_answers(server)
+    server.stop()
+    other = tiny_laya_decision_server()
+    other.decision_debug = True
+    other.decision_kernels = kernels
+    if not start_or_no_blas(other, tmp_path):
+        return
+    plan = other.make_request("GET", "/props").body["decision"]["plan"]
+    # the tiny model is F32/F16: nothing to repack; auto is blas with Accelerate (macOS builds)
+    if kernels == "auto":
+        expected = "cpu+blas" if sys.platform == "darwin" else "cpu"
+    else:
+        expected = "cpu+blas" if "blas" in kernels else "cpu"
+    assert plan["kernels"] == expected, plan
+    # BLAS threads: min(threads, 8) (2 here); 0 without BLAS
+    assert plan["n_threads_blas"] == (2 if plan["kernels"].endswith("blas") else 0), plan
+    assert_logits_close(ref, systemone_answers(other), 1e-3)
+    other.stop()
+
+
+# Q8_0 weights: repack converts them (NEON dotprod / i8mm on Apple Silicon); same answers up to
+# rounding; with repack+blas the repacked weights are not host memory, so BLAS takes none of them
+@pytest.mark.parametrize("kernels", ["repack", "repack+blas"])
+def test_kernels_q8_repack(kernels, tmp_path):
+    server = tiny_laya_decision_server(q8=True)
+    server.decision_debug = True
+    server.decision_kernels = "default"
+    server.start()
+    ref = systemone_answers(server)
+    assert weights_memory(server)["weights_repacked_bytes"] == 0
+    server.stop()
+    other = tiny_laya_decision_server(q8=True)
+    other.decision_debug = True
+    other.decision_kernels = kernels
+    if not start_or_no_blas(other, tmp_path):
+        return
+    plan = other.make_request("GET", "/props").body["decision"]["plan"]
+    mem = weights_memory(other)
+    if apple_silicon():
+        assert "+repack" in plan["kernels"] and mem["weights_repacked_bytes"] > 0, (plan, mem)
+    assert ("+repack" in plan["kernels"]) == (mem["weights_repacked_bytes"] > 0), (plan, mem)
+    assert_logits_close(ref, systemone_answers(other), 2e-2)
+    other.stop()
+
 
 def test_systemone_answers():
     server.start()
@@ -708,6 +844,49 @@ def test_debug_render():
     assert res.body["items"][0]["state"].startswith("executor: A\nkind: local\n")
 
 
+#
+# English checkpoints (laya, laya-typed-decisions): bytelevel-bpe tokenizer and temperature_by_options
+#
+
+def english_server() -> ServerProcess:
+    global server
+    server = tiny_laya_decision_server(english=True)
+    server.decision_debug = True
+    return server
+
+
+def test_english_tokenizer():
+    english_server().start()
+    noul = {"type": "noul", "instructions": "x"}
+    # NFC: a decomposed accent tokenizes like the composed one (the tiny vocab has no merges)
+    assert render_tokens({"q": noul}, state="cafe\u0301 au lait") == render_tokens({"q": noul}, state="caf\u00e9 au lait")
+    # [CLS] noul question: x [SEP] [MASK] ... [MASK] ... [SEP] state [SEP] with the ModernBERT special ids
+    toks = render_tokens({"q": noul}, state="ab")[0]
+    cls, sep, mask = 259, 260, 262
+    assert toks[0] == cls and toks.count(mask) == 2 and toks.count(sep) == 3 and toks[-1] == sep
+    # the mask literal in user text becomes a space; a space run is the normalized added token "   "
+    assert render_tokens({"q": noul}, state="a[MASK]b") == render_tokens({"q": noul}, state="a b")
+    assert 256 in render_tokens({"q": noul}, state="a    b")[0]
+
+
+@pytest.mark.parametrize("question,temperature", [
+    ({"type": "noul", "instructions": "x"}, 1.8125),  # bucket noul:2 (the base noul temperature is 1.9834)
+    ({"type": "choice", "instructions": "x", "criteria": ["a", "b"]}, 1.9063563346862793),
+    ({"type": "choice", "instructions": "x", "criteria": ["a", "b", "c", "d"]}, 1.7601518630981445),
+    ({"type": "choice", "instructions": "x", "criteria": [str(i) for i in range(7)]}, 1.0000158548355103),
+    ({"type": "choice", "instructions": "x", "criteria": [str(i) for i in range(12)]}, 0.5),  # 0.1006 clamped to 0.5
+    ({"type": "score", "instructions": "x", "criteria": ["a", "b", "c"]}, 1.375),  # bucket score:3-5
+    ({"type": "score", "instructions": "x", "criteria": ["a", "b"]}, 1.2514300346374512),  # no score:2: base
+])
+def test_english_temperature_buckets(question, temperature):
+    # laya.agent: temperature_by_options[temp_bucket(type, k)], else temperature[type]; clamped to [0.5, 5]
+    english_server().start()
+    res = server.make_request("POST", "/v1/systemone", data={"state": "x", "questions": {"q": question}})
+    assert res.status_code == 200, res.body
+    assert res.body["answers"]["q"]["debug"]["temperature"] == pytest.approx(temperature, rel=1e-6)
+    assert server.make_request("GET", "/props").body["decision"]["calibration"]["calibrated"] is True
+
+
 def test_router_tokens_match_whole_state():
     # with or without splitting, a router state tokenizes like the same text as a systemone state
     server.decision_debug = True
@@ -746,6 +925,20 @@ def test_decision_in_router_child_fails():
         server.start(timeout_seconds=10)
 
 
+def test_unknown_kernels_fails():
+    server.decision_kernels = "fast"
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
+
+
+@pytest.mark.parametrize("english", [False, True])
+def test_marker_mismatch_fails(english):
+    # build_sequence writes the mask id where the head looks for laya.marker_token_id
+    server.model_file = tiny_laya_gguf(english, marker_mismatch=True)
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
+
+
 def test_unknown_plan_fails():
     server.decision_plan = "server-split"
     with pytest.raises(RuntimeError):
@@ -759,6 +952,7 @@ def test_unknown_plan_fails():
     {"spec_version": 1, "layout": "laya", "input_contract": "laya-router-v1"},
     {"spec_version": 1, "layout": "laya", "calibration": {"method": "temperature", "required": True, "temperature": {"choice": {"2": 1.2}}}},
     {"spec_version": 1, "layout": "laya", "router": {"question": {"type": "noul", "instructions": " "}}},
+    {"spec_version": 1, "layout": "laya", "plan": {"name": "sequential", "kernels": "fast"}},
 ])
 def test_bad_spec_fails(tmp_path, spec):
     server.decision_spec = write_spec(tmp_path, spec)
@@ -790,3 +984,203 @@ def test_spec_tool_matches_loader(case):
     else:
         with pytest.raises(ValueError):
             tool.validate_spec(case["spec"])
+
+
+#
+# training and calibration tools: tools/decision/reference.py renders what the server renders;
+# scripts/fit-router-calibration.py collects server logits and its spec loads (DECISION.md,
+# "Training and calibration tools")
+#
+
+sys.path.insert(0, os.path.join(REPO, "tools/decision"))
+import reference as dref  # noqa: E402
+
+ROUTER_Q = {"type": "noul", "instructions": "Does the executor pass?", "criteria": {"TRUE": "it passes", "false": ""},
+            "labels": {"false": " fail ", "true": "pass"}}
+
+
+def golden_router_cases() -> list:
+    with open(os.path.join(REPO, "tests/decision/golden/router_cases.jsonl"), encoding="utf-8") as f:
+        return [json.loads(line) for line in f.read().split("\n")[1:] if line]
+
+
+def escape_router_spec() -> dict:
+    return {**router_spec(question=ROUTER_Q), "special_tokens": "escape-control", "input_contract": "laya-router-v1"}
+
+
+def check_render_matches_reference(english: bool, stride: int, tmp_path):
+    spec = escape_router_spec()
+    esc = dref.control_strings_from_gguf(tiny_laya_gguf(english=english))
+    srv = tiny_laya_decision_server(english=english)
+    srv.decision_spec = write_spec(tmp_path, spec)
+    srv.decision_debug = True
+    srv.start()
+    base = f"http://{srv.server_host}:{srv.server_port}"
+    n_cases = n_states = 0
+    for case in golden_router_cases()[::stride]:
+        body = case["body_text"].encode("utf-8")
+        res = requests.post(base + "/v1/decision/render", data=body, headers={"Content-Type": "application/json"}, timeout=60)
+        n_cases += 1
+        try:
+            want = dref.render_router(body, spec, esc)
+        except dref.DecisionError as e:
+            assert res.status_code == 400, (case["name"], res.text)
+            err = res.json()["error"]
+            assert (err["reason"], err.get("param", "")) == (e.reason, e.param), case["name"]
+            continue
+        assert res.status_code == 200, (case["name"], res.text)
+        items = res.json()["items"]
+        assert [it["id"] for it in items] == [w["id"] for w in want["items"]], case["name"]
+        for it, w in zip(items, want["items"]):
+            assert it["state"] == w["state"], case["name"]
+            assert it["instructions"] == ROUTER_Q["instructions"] and it["keys"] == ["false", "true"]
+            # escape-control: the reference's model text, rendered as a plain systemone state with the
+            # same question, gives the router item's tokens
+            so = requests.post(base + "/v1/decision/render", json={"state": w["model_text"], "questions": {"q": ROUTER_Q}}, timeout=60)
+            assert so.status_code == 200, so.text
+            assert so.json()["items"][0]["tokens"] == it["tokens"], (case["name"], it["id"])
+            n_states += 1
+    srv.stop()
+    return n_cases, n_states
+
+
+def test_router_render_matches_reference(tmp_path):
+    n_cases, n_states = check_render_matches_reference(False, 1, tmp_path)
+    assert n_cases >= 500 and n_states >= 500
+
+
+def test_router_render_matches_reference_english(tmp_path):
+    # bytelevel vocabulary: [unused0] is a USER_DEFINED escape string, the "   " added token is not
+    esc = dref.control_strings_from_gguf(tiny_laya_gguf(english=True))
+    assert esc.mask == "[MASK]" and "[unused0]" in esc.control and "   " not in esc.control
+    n_cases, n_states = check_render_matches_reference(True, 5, tmp_path)
+    assert n_cases >= 100 and n_states >= 100
+
+
+def test_escape_set_of_tiny_model():
+    esc = dref.control_strings_from_gguf(tiny_laya_gguf())
+    assert esc.as_dict() == {"mask": "<mask>", "control": ["<bos>", "<eos>", "<mask>", "<pad>", "<unk>"]}
+
+
+def test_router_spec_stamped_into_gguf(tmp_path):
+    # the path fit-router-calibration.py prints: gguf_decision_spec.py set writes the spec into a
+    # GGUF copy, which then loads without a sidecar; collect --spec takes the output of
+    # "gguf_decision_spec.py get model.gguf > spec.json" (print adds a newline)
+    pytest.importorskip("tqdm")  # gguf_new_metadata, used by set
+    spec = escape_router_spec()
+    spec["router"]["calibration"] = {"method": "platt", "a": 0.75, "b": -0.25}
+    spec["plan"] = {"name": "sequential", "kernels": "default"}
+    spec_path = os.path.join(tmp_path, "spec-router.json")
+    with open(spec_path, "w", encoding="utf-8") as f:
+        json.dump(spec, f, indent=1)
+        f.write("\n")
+    spec_tool = "gguf-py/gguf/scripts/gguf_decision_spec.py"
+    stamped = os.path.join(tmp_path, "tiny-router.gguf")
+    res = run_py(spec_tool, "set", tiny_laya_gguf(), spec_path, "-o", stamped)
+    assert res.returncode == 0, res.stdout + res.stderr
+    res = run_py(spec_tool, "verify", stamped, spec_path)
+    assert res.returncode == 0 and "OK" in res.stdout, res.stdout + res.stderr
+    res = run_py(spec_tool, "get", stamped, text=False)
+    with open(spec_path, "rb") as f:
+        spec_bytes = f.read()
+    assert res.returncode == 0 and res.stdout.rstrip(b"\r\n") == spec_bytes.rstrip(b"\n"), res.stderr
+    spec_get = os.path.join(tmp_path, "spec-get.json")
+    with open(spec_get, "wb") as f:
+        f.write(res.stdout)
+    assert res.stdout != spec_bytes.rstrip(b"\n")  # the newline get adds: collect must accept it
+
+    server.model_file = stamped
+    server.start()
+    d = server.make_request("GET", "/props").body["decision"]
+    assert d["spec_sha256"] == hashlib.sha256(spec_bytes).hexdigest() and d["plan"]["kernels"] == "cpu"
+    rec = {"id": "r0", "task": "Sum 2 and 3 <eos>", "criterion": "exact",
+           "candidates": [{"id": "a", "card": CARD, "outcome": 1}, {"id": "b", "card": {**CARD, "name": "B"}, "outcome": 0}]}
+    scores = server.make_request("POST", "/v1/router/score", data={k: rec[k] for k in ("task", "criterion")} | {
+        "candidates": [{"id": c["id"], "card": c["card"]} for c in rec["candidates"]]}).body["scores"]
+    for s in scores:
+        assert s["calibrated"] is True
+        assert s["p_success"] == pytest.approx(sigmoid(0.75 * s["logit"] - 0.25), abs=1e-15)
+    data = os.path.join(tmp_path, "one.jsonl")
+    with open(data, "w", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+    url_ = f"http://{server.server_host}:{server.server_port}"
+    out = os.path.join(tmp_path, "one-logits.jsonl")
+    res = run_fit_tool("collect", data, out, "--url", url_, "--spec", spec_get)
+    assert res.returncode == 0, res.stdout + res.stderr
+    with open(out, encoding="utf-8") as f:
+        got = json.loads(f.readline())
+    assert [c["logit"] for c in got["candidates"]] == [s["logit"] for s in scores]
+    other = os.path.join(tmp_path, "other.json")
+    with open(other, "wb") as f:
+        f.write(spec_bytes.replace(b"-0.25", b"-0.5"))
+    res = run_fit_tool("collect", data, out, "--url", url_, "--spec", other)
+    assert res.returncode == 2 and "differs from the server's spec_sha256" in res.stdout
+
+
+def run_py(script: str, *args, text: bool = True) -> subprocess.CompletedProcess:
+    # UTF-8 both ways, also under a Windows ANSI code page
+    return subprocess.run([sys.executable, os.path.join(REPO, script), *map(str, args)], capture_output=True, timeout=600,
+                          env=dict(os.environ, PYTHONIOENCODING="utf-8"), **({"text": True, "encoding": "utf-8"} if text else {}))
+
+
+def run_fit_tool(*args) -> subprocess.CompletedProcess:
+    return run_py("scripts/fit-router-calibration.py", *args)
+
+
+def test_router_collect_fit_and_stamp(tmp_path):
+    spec_path = write_spec(tmp_path, escape_router_spec())
+    server.decision_spec = spec_path
+    server.decision_allow_uncalibrated = True
+    server.start()
+    # short records for the tiny model (one token per character, max_len 512)
+    rng = random.Random(3)
+    recs = []
+    for i in range(150):
+        cands = []
+        for j in range(rng.randint(1, 3)):
+            total = rng.choice([10, 200])
+            card = {**CARD, "name": f"exec {j}", "checks": [{"skill": "sum", "status": "measured", "passed": rng.randint(0, total), "total": total}]}
+            cands.append({"id": f"c{j}", "card": card, "outcome": rng.randint(0, 1)})
+        recs.append({"id": f"r{i}", "task": f"Sum {i} and {rng.randint(0, 99)} <eos>", "criterion": "exact", "candidates": cands})
+    long_card = {**CARD, "description": "x" * 400}  # CARD_TOO_LONG: collect reports it and goes on
+    data = os.path.join(tmp_path, "data.jsonl")
+    with open(data, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in recs)
+        f.write(json.dumps({"id": "long", "task": "t", "criterion": "c", "candidates": [{"id": "a", "card": long_card, "outcome": 1}]}) + "\n")
+    logits = os.path.join(tmp_path, "logits.jsonl")
+    url = f"http://{server.server_host}:{server.server_port}"
+    res = run_fit_tool("collect", data, logits, "--url", url, "--spec", spec_path)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "record long: 422 CARD_TOO_LONG" in res.stdout and "1 refused" in res.stdout, res.stdout
+    with open(logits, encoding="utf-8") as f:
+        got = [json.loads(line) for line in f]
+    assert len(recs) == 150 and len(got) == len(recs)
+    assert got[0]["engine"]["spec_sha256"] == server.make_request("GET", "/props").body["decision"]["spec_sha256"]
+    direct = server.make_request("POST", "/v1/router/score", data={"task": recs[0]["task"], "criterion": recs[0]["criterion"],
+                                 "candidates": [{"id": c["id"], "card": c["card"]} for c in recs[0]["candidates"]]}).body["scores"]
+    assert [c["logit"] for c in got[0]["candidates"]] == [s["logit"] for s in direct]
+
+    spec_out = os.path.join(tmp_path, "spec-router.json")
+    res = run_fit_tool("fit", logits, "--spec", spec_path, "--spec-out", spec_out, "--min-examples", 100, "--min-per-class", 20,
+                       "--min-eval", 20, "--resamples", 200)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "gguf_decision_spec.py set MODEL.gguf" in res.stdout
+    with open(spec_out, encoding="utf-8") as f:
+        cal = json.load(f)["router"]["calibration"]
+    res = run_fit_tool("fit", logits, "--spec", spec_path)  # default --min-examples 1000
+    assert res.returncode == 2 and "refusing to fit" in res.stdout
+    server.stop()
+
+    # the stamped spec loads: calibrated scores, same raw logits
+    server.decision_spec = spec_out
+    server.decision_allow_uncalibrated = False
+    server.start()
+    scores = server.make_request("POST", "/v1/router/score", data={"task": recs[0]["task"], "criterion": recs[0]["criterion"],
+                                 "candidates": [{"id": c["id"], "card": c["card"]} for c in recs[0]["candidates"]]}).body["scores"]
+    for s, d in zip(scores, direct):
+        assert s["calibrated"] is True and s["logit"] == d["logit"]
+        assert s["p_success"] == pytest.approx(sigmoid(cal["a"] * s["logit"] + cal["b"]), abs=1e-15)
+    # fit pinned the kernels the logits came from (auto differs between macOS and the rest)
+    kernels = {"cpu": "default", "cpu+repack": "repack", "cpu+blas": "blas", "cpu+repack+blas": "repack+blas"}
+    with open(spec_out, encoding="utf-8") as f:
+        assert json.load(f)["plan"]["kernels"] == kernels[got[0]["engine"]["plan"]["kernels"]]

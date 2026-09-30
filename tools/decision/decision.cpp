@@ -1,5 +1,16 @@
 #include "decision.h"
 #include "decision-spec.h"
+#include "laya.h"
+
+#if defined(_WIN32)
+#    define WIN32_LEAN_AND_MEAN
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+#    include <shellapi.h>
+#    include <filesystem>
+#endif
 
 static const struct {
     const char * name;
@@ -85,4 +96,55 @@ std::unique_ptr<decision_engine> decision_engine_init(const decision_spec & spec
         return decision_engine_laya_init(spec, params);
     }
     throw std::runtime_error("decision layout '" + spec.layout + "' is not supported yet (letters engine: Arbiter/JevK5 comes later)");
+}
+
+int32_t decision_cpu_perf_cores() {
+    return laya_cpu_perf_cores();
+}
+
+void decision_cpu_env_defaults() {
+    laya_cpu_env_defaults();
+}
+
+std::ifstream decision_ifstream(const std::string & path) {
+#if defined(_WIN32)
+    return std::ifstream(std::filesystem::path(laya_utf8_to_wide(path)), std::ios::binary);
+#else
+    return std::ifstream(path, std::ios::binary);
+#endif
+}
+
+std::ofstream decision_ofstream(const std::string & path) {
+#if defined(_WIN32)
+    return std::ofstream(std::filesystem::path(laya_utf8_to_wide(path)), std::ios::binary);
+#else
+    return std::ofstream(path, std::ios::binary);
+#endif
+}
+
+std::vector<std::string> decision_utf8_args(int argc, char ** argv) {
+    std::vector<std::string> args(argv, argv + argc);
+#if defined(_WIN32)
+    int wargc = 0;
+    LPWSTR * wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (!wargv) {
+        return args;
+    }
+    std::vector<std::string> wide_args;
+    for (int i = 0; i < wargc; ++i) {
+        const int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string s((size_t) (n > 0 ? n : 1), '\0');
+        if (n > 0) {
+            WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, &s[0], n, nullptr, nullptr);
+        }
+        s.resize(s.size() - 1);
+        wide_args.push_back(std::move(s));
+    }
+    LocalFree(wargv);
+    // only when it is the same command line (a launcher can pass argv that differs)
+    if ((int) wide_args.size() == argc) {
+        args = std::move(wide_args);
+    }
+#endif
+    return args;
 }

@@ -1,6 +1,7 @@
 #include "decision-spec.h"
 #include "decision-calib.h"
 #include "decision-request.h"
+#include "decision.h"
 
 #include "gguf.h"
 
@@ -13,6 +14,7 @@ extern "C" {
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <sstream>
 #include <type_traits>
@@ -382,6 +384,15 @@ bool decision_spec_from_json(const json & j, decision_spec & spec, std::string &
             err = "plan must be an object with a string name";
             return false;
         }
+        // the engine reads it (engine-laya.cpp): a spec the loader accepts must also load
+        if (p.contains("kernels")) {
+            const json & k = p.at("kernels");
+            static const char * names[] = { "auto", "default", "repack", "blas", "repack+blas" };
+            if (!k.is_string() || std::none_of(std::begin(names), std::end(names), [&](const char * n) { return k.get<std::string>() == n; })) {
+                err = "plan.kernels must be auto, default, repack, blas or repack+blas";
+                return false;
+            }
+        }
         spec.plan = p;
     }
     if (j.contains("router") && !j.at("router").is_null()) {
@@ -418,7 +429,7 @@ static json defaults_to_json(const decision_spec & spec) {
 }
 
 static bool read_file(const std::string & path, std::string & out) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f = decision_ifstream(path);
     if (!f) {
         return false;
     }
@@ -473,12 +484,32 @@ bool decision_spec_load(const std::string & model_path, const std::string & side
             for (size_t i = 0; i < n; ++i) {
                 all_one = all_one && t[i] == 1.0f;
             }
-            if (n > 0 && !all_one) {
+            // temperature_by_options: "<qtype>:<bucket>" -> T; the reference bucket "2" is k <= 2
+            std::vector<std::pair<std::string, double>> buckets;
+            const int64_t kb = gguf_find_key(g, "laya.temperature_by_options.buckets");
+            const int64_t kv = gguf_find_key(g, "laya.temperature_by_options.values");
+            if (kb >= 0 && kv >= 0 && gguf_get_kv_type(g, kb) == GGUF_TYPE_ARRAY && gguf_get_arr_type(g, kb) == GGUF_TYPE_STRING &&
+                gguf_get_kv_type(g, kv) == GGUF_TYPE_ARRAY && gguf_get_arr_type(g, kv) == GGUF_TYPE_FLOAT32 &&
+                gguf_get_arr_n(g, kb) == gguf_get_arr_n(g, kv)) {
+                const float * v = (const float *) gguf_get_arr_data(g, kv);
+                for (size_t i = 0; i < gguf_get_arr_n(g, kb); ++i) {
+                    buckets.emplace_back(gguf_get_arr_str(g, kb, i), (double) v[i]);
+                }
+            }
+            if (n > 0 && (!all_one || !buckets.empty())) {
                 // per-qtype base temperature in type-embedding order (choice, score, noul)
                 static const char * names[3] = { "choice", "score", "noul" };
                 json temps = json::object();
                 for (size_t i = 0; i < 3; ++i) {
                     temps[names[i]] = json{{"*", (double) t[i < n ? i : n - 1]}};
+                }
+                for (const auto & b : buckets) {
+                    const size_t colon = b.first.find(':');
+                    const std::string type = b.first.substr(0, colon);
+                    const std::string size = colon == std::string::npos ? "" : b.first.substr(colon + 1);
+                    if (temps.contains(type) && valid_bucket(size) && positive_number(b.second)) {
+                        temps[type][size == "2" ? "1-2" : size] = b.second;
+                    }
                 }
                 spec.calibration.method      = "temperature";
                 spec.calibration.temperature = temps;

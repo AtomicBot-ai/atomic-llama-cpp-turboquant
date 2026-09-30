@@ -34,18 +34,82 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
   Inputs follow the laya 0.3.21 PyTorch reference. On a 2605-question parity set
   the F32 GGUF matches the reference to 6.6e-4 in scorer logits with identical
   answers; F16 changes 2 answers, both near-ties.
+- **English Laya checkpoints** `convaiinnovations/laya` (512 ctx) and
+  `laya-typed-decisions` (1024 ctx), ModernBERT-large encoder: the converter
+  handles them, `tools/laya` gets a second tokenizer (ModernBERT / OLMo
+  byte-level BPE with NFC, 0 mismatches against the HF tokenizer on 13.6k strings,
+  10.7k of them English-heavy), the special ids come from the tokenizer (`[CLS]`
+  50281, `[MASK]` 50284 with lstrip; a GGUF whose mask id is not
+  `laya.marker_token_id` no longer loads), and the checkpoint's
+  `temperature_by_options` buckets are stored in the GGUF and applied like the
+  reference. On 1491 English questions the F32 GGUFs match the PyTorch reference
+  with identical answers (max |dlogit| 4.2e-4 and 6.8e-5). F16 through the server
+  keeps every answer with the `blas` kernels, the macOS default (1.3e-2 and
+  4.6e-3); with the `default` ggml kernels, the Linux and Windows default, it
+  reaches 0.24 and 3.8e-2 with one near-tie answer change on `laya`
+  (`llama-laya-cli`, which packs the questions of an item: 0.44, two changes). About 2.2x the compute of `laya-multilingual` per token on an
+  M4 Max (router N=1 221 vs 111 ms at `-t 12`) and 944 vs 519 MiB footprint in
+  F16 (see `DECISION.md`, "English checkpoints").
+  `laya-multilingual` results are unchanged bit for bit with the `default`
+  kernels (`llama-laya-cli`, and the server with `--decision-kernels default`).
 - **Model metadata `decision.spec`**, stamped into a GGUF without reconversion
   with `gguf-py/gguf/scripts/gguf_decision_spec.py`. A calibration marked
   required must cover every question type and option count, or the model does not
   load.
+- **`llama-decision-bench`** and `scripts/bench-decision.sh`: in-process latency
+  (p50/p95/p99 per phase), CPU seconds, memory and logits-hash determinism of
+  decision requests, plus server time-to-ready and first request after idle, with
+  the machine's power source and load recorded next to the numbers.
+- **Router training and calibration tools** (`DECISION.md`, "Training and
+  calibration tools"): `tools/decision/reference.py`, a stdlib Python reference of
+  the router input (strict JSON, executor cards, `card-v1`, router state,
+  `escape-control` from the GGUF vocabulary), checked against the engine byte for
+  byte on 540 golden requests (`test-decision-reference`) and through the server's
+  render route; the card as JSON Schema; `scripts/fit-router-calibration.py`
+  (collects the server's raw router logits, fits the Platt `router.calibration`
+  block with bootstrap-interval ECE / Brier before and after, and prints the
+  `gguf_decision_spec.py` command instead of touching the GGUF); and
+  `scripts/router-baselines.py` (pass-rate heuristic and logistic regression on
+  card metrics, same data format and metrics).
+- **Decision CPU levers** (laya engine): `token_embd` stays in a read-only file
+  mapping and the GGUF metadata is freed after the load (Q8_0 with the `default`
+  kernels: RSS 637 -> 262 MiB and footprint 764 -> 389 MiB after load; the macOS
+  default `auto` adds the BLAS backend, 408 MiB; results bitwise unchanged); one persistent ggml
+  threadpool; a warm-up pass at load (`--no-warmup` skips it); `--load-mode mlock`
+  / `mmap+mlock` lock the model; the default thread count is the performance cores
+  (Windows: highest `EfficiencyClass`); `KMP_BLOCKTIME=0` / `OMP_WAIT_POLICY=passive`
+  unless set. New `--decision-kernels auto|default|repack|blas|repack+blas` (also
+  spec `plan.kernels`, shown in `/props.decision.plan.kernels`): `auto`, the new
+  default, uses the Accelerate BLAS backend on macOS, which is 2-2.3x faster, uses
+  3-4x fewer CPU seconds and is closer to the PyTorch reference than the ggml kernels
+  for F16 and Q8_0 (F16: 2604/2604 argmax agreement); `repack` enables
+  the CPU repack buffers for quantized weights. The BLAS backend runs with
+  min(`-t`, 8) threads (it starts new threads for every weight conversion; at
+  `-t 12`, 12 threads were up to 10% slower than 4 or 8 on `laya-multilingual`, and
+  4 was 3-5% slower than 8 on the larger English encoder). `llama-laya-cli` gets `--kernels`,
+  `--no-mmap` and `--mlock` and keeps the `default` kernels. `/props.decision`
+  also shows the BLAS threads and the weight bytes loaded / mapped / repacked.
 
 ### Notes
 
 - Decision mode runs on the CPU backend only; start it with `--device none` next
   to a GPU chat server.
 - A laya GGUF started without `--decision` fails fast with a hint.
+- **Decision server numerics on macOS change**: the default kernels there are now
+  `cpu+blas` (Accelerate), so macOS server logits differ slightly from Phase 1 and
+  from Linux and Windows, where `auto` stays on the ggml kernels and nothing
+  changes. `--decision-kernels default` restores the Phase 1 numerics bit for bit on
+  every platform. An explicit `--decision-kernels blas` fails at load on a
+  build without a BLAS backend.
 - Recommended laya precision is F16: Q8_0 is about 1.5x faster but changes about
   2% of answers on the parity set.
+- Windows: decision model, spec and input paths may contain non-ASCII characters
+  (for example a Cyrillic user folder), and `llama-laya-cli` prints LF line ends on
+  every platform, so its output compares byte for byte with the golden files.
+- A router calibration fitted with `scripts/fit-router-calibration.py` pins the
+  kernels its logits came from (`plan.kernels`): one fitted on a Mac pins `blas`
+  and needs a BLAS build elsewhere. Collect on the target platform, or start the
+  collecting server with `--decision-kernels default`.
 
 ### Changed
 

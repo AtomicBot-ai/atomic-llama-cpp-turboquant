@@ -284,6 +284,15 @@ struct server_decision {
         eparams.model_path = params.model.path;
         eparams.plan       = params.decision.plan;
         eparams.n_threads  = params.cpuparams.n_threads;
+        if (!params.decision.threads_set && decision_cpu_perf_cores() > 0) {
+            // performance cores only: macOS perflevel0 (as the common default), Windows the
+            // highest EfficiencyClass (the common default counts the efficiency cores too)
+            eparams.n_threads = decision_cpu_perf_cores();
+        }
+        eparams.kernels    = params.decision.kernels;
+        eparams.use_mmap   = params.load_mode == LLAMA_LOAD_MODE_MMAP || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
+        eparams.use_mlock  = params.load_mode == LLAMA_LOAD_MODE_MLOCK || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
+        eparams.warmup     = params.warmup;
         try {
             engine = decision_engine_init(spec, eparams);
         } catch (const std::exception & e) {
@@ -332,9 +341,11 @@ struct server_decision {
                     (long long) spec.plan.at("n_threads").get<int64_t>(), caps.n_threads);
         }
 
-        SRV_INF("decision: model '%s' layout %s, format %s, plan %s, %d threads, spec %s (%s), calibration %s\n",
-                spec.model_id.c_str(), spec.layout.c_str(), caps.format.c_str(), caps.plan.c_str(), caps.n_threads,
+        SRV_INF("decision: model '%s' layout %s, format %s, plan %s, kernels %s, %d threads, spec %s (%s), calibration %s\n",
+                spec.model_id.c_str(), spec.layout.c_str(), caps.format.c_str(), caps.plan.c_str(), caps.kernels.c_str(), caps.n_threads,
                 spec.source.c_str(), spec.sha256.substr(0, 12).c_str(), calibration_id.c_str());
+        SRV_INF("decision: weights %.1f MiB loaded, %.1f MiB mapped (read-only, resident as used), %.1f MiB repacked, blas threads %d\n",
+                caps.weights_loaded / 1048576.0, caps.weights_mapped / 1048576.0, caps.weights_repacked / 1048576.0, caps.n_threads_blas);
         if (!spec.calibration.calibrated) {
             SRV_WRN("%s", "decision: the model has no calibration, probabilities are softmax(logits) with T = 1\n");
         }
@@ -434,11 +445,18 @@ struct server_decision {
                 {"router",    caps.plan_independent},
                 {"plans",     caps.plans},
                 {"n_threads", caps.n_threads},
+                {"kernels",   caps.kernels},
+                {"n_threads_blas", caps.n_threads_blas},
                 {"state_split", caps.state_split},
                 {"recipe",    spec.plan.contains("recipe") ? spec.plan.at("recipe") : json()},
                 {"fa",        nullptr},
                 {"n_batch",   nullptr},
                 {"n_ubatch",  nullptr},
+            }},
+            {"memory", {
+                {"weights_loaded_bytes",   caps.weights_loaded},
+                {"weights_mapped_bytes",   caps.weights_mapped},
+                {"weights_repacked_bytes", caps.weights_repacked},
             }},
             {"device",         caps.device},
             {"kv_type",        nullptr},
@@ -824,11 +842,14 @@ bool server_decision_prepare(common_params & params) {
     params.ui_mcp_proxy = false;
     params.embedding    = false;
     params.public_path.clear();
+
+    // setenv: here, before ctx_http.start() creates the HTTP threads (getenv in them would race)
+    decision_cpu_env_defaults();
     return true;
 }
 
 std::string server_decision_gguf_arch(const std::string & path) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f = decision_ifstream(path);
     char     magic[4];
     uint32_t version = 0;
     uint64_t n_tensors = 0, n_kv = 0, n_key = 0;

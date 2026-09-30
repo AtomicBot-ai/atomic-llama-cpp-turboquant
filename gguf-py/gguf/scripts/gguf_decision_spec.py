@@ -44,6 +44,7 @@ LAYOUTS = ("laya", "semif-letters")
 
 INT32_MAX = 2**31 - 1
 QTYPES = ("noul", "choice", "score")
+KERNELS = ("auto", "default", "repack", "blas", "repack+blas")  # plan.kernels, as engine-laya.cpp reads it
 LAYOUT_MAX_OPTIONS = {"laya": 20, "semif-letters": 16}
 CONTRACTS = {  # layout -> (input contracts, special-token contracts)
     "laya": (("laya-v1", "laya-router-v1"), ("mask-to-space", "escape-control")),
@@ -239,6 +240,8 @@ def validate_spec(spec) -> None:
     plan = spec.get("plan")
     if plan is not None and (not isinstance(plan, dict) or ("name" in plan and not isinstance(plan["name"], str))):
         raise ValueError("plan must be an object with a string name")
+    if plan is not None and "kernels" in plan and plan["kernels"] not in KERNELS:
+        raise ValueError("plan.kernels must be auto, default, repack, blas or repack+blas")
     if spec.get("router") is not None:
         _check_router(spec["router"])
 

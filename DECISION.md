@@ -9,7 +9,7 @@ Engines (layouts):
 
 | layout | models | runtime | status |
 |---|---|---|---|
-| `laya` | Laya family (`laya-multilingual`, mmBERT encoder + marker head) | `tools/laya`, own ggml graph, CPU only | done |
+| `laya` | Laya family: `laya-multilingual` (mmBERT-base encoder), `laya` and `laya-typed-decisions` (English, ModernBERT-large encoder), each with the marker head | `tools/laya`, own ggml graph, CPU only | done |
 | `semif-letters` | Arbiter-4B, JevK5 (Qwen3.5 + letter readout) | libllama | not supported yet: load fails with a clear error |
 
 Code map:
@@ -22,6 +22,7 @@ Code map:
 | `gguf-py/gguf/scripts/gguf_decision_spec.py` | get / set / verify `decision.spec` in a GGUF |
 | `tests/test-decision-*.cpp`, `tests/decision/` | C++ unit tests, golden files, tiny model generator |
 | `tools/server/tests/unit/test_decision.py` | server contract tests (offline) |
+| `tools/decision/decision-bench.cpp`, `tests/decision/bench/`, `scripts/bench-decision*` | `llama-decision-bench`, its request suite, the KPI script and report (see Benchmark) |
 
 ## Quick start
 
@@ -48,13 +49,18 @@ Environment variables use the `LLAMA_ARG_DECISION_*` names.
 | `--decision` | off | decision mode. Requires `-m FILE`; `-hf`, `-dr` and `-mu` are rejected (without `-m` the server would start in router mode). Explicit only: a stamped GGUF never switches mode on its own. |
 | `--decision-spec FILE` | from the GGUF | JSON that replaces the embedded `decision.spec` as a whole. A bare Arbiter `calibration.json` (`{"temperature": x}` or `{"temperature": {...}}`) is accepted too: it is a required calibration, keeps the layout clamp (laya [0.5, 5]) and replaces the `laya.temperature` calibration; its `calibration.version` is its own `version` field (else `cal-<hash>`), never `gguf:laya.temperature`. |
 | `--decision-plan NAME` | from the spec | compute plan, laya: `sequential`, `packed` (systemone only; the router always runs `sequential`) |
+| `--decision-kernels NAME` | from the spec, then `auto` | matmul kernels, laya: `auto` (`blas` when the BLAS backend is Accelerate, i.e. on macOS; else `default`), `default` (ggml CPU kernels, the Phase 1 numerics), `repack` (CPU repack buffers for quantized weights), `blas` (BLAS backend in the scheduler), `repack+blas`. Kernels change the logits slightly, so the default logits on macOS differ from those on Linux and Windows; `default` gives the same numerics everywhere. An explicit `blas` / `repack+blas` fails at load on a build without a BLAS backend. See "CPU kernels and memory" |
 | `--decision-queue N` | 4 | requests that may wait while one runs; more get 429 |
 | `--decision-max-items N` | 16 | questions per `/v1/systemone` request, candidates per `/v1/router/score` request (router is also capped at 16) |
 | `--decision-allow-uncalibrated` | off | serve `/v1/router/score` without a router calibration |
 | `--decision-debug` | off | raw logits and token ids in answers, `POST /v1/decision/render`, request logging, test delays (below) |
 
 Reused: `-m`, `-a/--alias` (default: the model file name without its directories and a trailing `.gguf`, the same name as the default spec `model_id`), `--host`, `--port`, `--api-key` / `LLAMA_API_KEY`, `-t`
-(engine threads, fixed at load), `--metrics`, `--timeout`, SSL flags. `--device` is
+(engine threads, fixed at load; default: the performance cores, see below), `--load-mode`
+(`mmap`, the default, keeps `token_embd` in a read-only file mapping; `none` / `dio` load it;
+`mlock` / `mmap+mlock` also lock the model in RAM, and a failed lock only warns),
+`--mlock` / `--no-mmap` (deprecated spellings of `--load-mode`), `--no-warmup` (skip the
+warm-up forward pass at load), `--metrics`, `--timeout`, SSL flags. `--device` is
 ignored by the laya engine (CPU only).
 
 Ignored with a warning: `--parallel`, `-ctk/-ctv`, `--ctx-checkpoints`, `--spec-*` / `-md`,
@@ -192,6 +198,8 @@ Card rules (`atomic.executor-card/1`): `name` and `kind` are required strings,
 and `total` with 0 <= passed <= total and total >= 1. A `missing` check has no numbers.
 Floats are rejected, so Python and C++ render the same text. Unknown fields are ignored
 and reported in `warnings`. Candidate ids match `[A-Za-z0-9._:/@+-]{1,128}` and are unique.
+`tools/decision/schema/executor-card-v1.schema.json` has the card as JSON Schema, and
+`tools/decision/reference.py` has the Python rules and rendering (see "Training and calibration tools").
 
 laya mapping: one `noul` sequence per candidate (cost: N encoder passes). The question comes
 from `spec.router.question`. Without one (no `router` block, or no `question` in it) it is
@@ -229,7 +237,9 @@ vocabulary (`tokenizer.ggml.token_type` 3) and every `<unusedN>` added token rep
 space, so user text cannot inject structure. For `laya-multilingual` that set is `<pad>`,
 `<eos>`, `<bos>`, `<unk>`, `<mask>`, `<2mass>`, `[@BOS@]`, `<start_of_turn>`,
 `<end_of_turn>` and `<unused0>` ... `<unused99>`; other added tokens (newline and tab runs,
-HTML tags) stay tokens. The strings cannot overlap and a space cannot form a new one, so
+HTML tags) stay tokens. For the English checkpoints it is `[UNK]`, `[CLS]`, `[SEP]`, `[PAD]`,
+`[MASK]`, `<|padding|>`, `<|endoftext|>` and `[unused0]` ... `[unused82]`; the space runs and
+`|||IP_ADDRESS|||`, `|||EMAIL_ADDRESS|||`, `|||PHONE_NUMBER|||` stay tokens. The strings cannot overlap and a space cannot form a new one, so
 replacing them one after another in any order gives the same text (`reference.py` can use
 `str.replace`). Token counts for `CARD_TOO_LONG` and `CRITERION_TOO_LONG` use the same
 replacement. Systemone questions and states always use `mask-to-space`.
@@ -254,9 +264,12 @@ candidates' scores (bitwise).
   `question_types`, `limits` (`max_questions`, `max_candidates`, `max_options`,
   `max_checks`, `max_tokens`, `max_card_tokens`, `max_card_field_bytes`, `max_body_bytes`), `confidence`,
   `calibration {method, calibrated, version}`, `router {available, calibrated, method, card_schema, card_renderer}`,
-  `plan {name, router, plans, n_threads, state_split, recipe, fa, n_batch, n_ubatch}` (`router`: the plan
-  of `/v1/router/score`; `state_split`: router state pieces are tokenized separately, see
-  Scheduling), `device`, `kv_type`,
+  `plan {name, router, plans, n_threads, kernels, n_threads_blas, state_split, recipe, fa, n_batch, n_ubatch}`
+  (`router`: the plan of `/v1/router/score`; `kernels`: `cpu`, `cpu+repack`, `cpu+blas` or
+  `cpu+repack+blas`; `n_threads_blas`: threads of the BLAS backend, 0 without it; `state_split`:
+  router state pieces are tokenized separately, see Scheduling),
+  `memory {weights_loaded_bytes, weights_mapped_bytes, weights_repacked_bytes}` (where the
+  weights went, see "CPU kernels and memory"), `device`, `kv_type`,
   `queue_capacity`, `input_contract`, `special_tokens`, `debug`.
 - `GET /metrics` (only with `--metrics`): Prometheus counters `llamacpp:decision_requests_total`,
   `_errors_total`, `_rejected_total`, `_items_total`, `_tokens_total`,
@@ -303,13 +316,32 @@ same way, all under the worker lock, so no request slips in after the cancel and
 does not wait for the queue. The worker never touches the HTTP request object.
 
 Tokenization matches the HF tokenizer of the checkpoint (`tests/laya/verify_tokenizer.py`)
-and costs O(n log n) in the text length, so long words without spaces (CJK, base64, URLs)
-stay cheap: a 1 MB input takes well under a second. Each request tokenizes its state once:
+and costs O(n log n) in the text length. `tools/laya` ports both tokenizers of the family; the
+GGUF key `decision.laya.tokenizer` picks one (a GGUF without it is `metaspace-bpe`):
+
+| `decision.laya.tokenizer` | checkpoints | steps (HF `tokenizer(text, add_special_tokens=False)`) |
+|---|---|---|
+| `metaspace-bpe` | `laya-multilingual` | added tokens on the raw text, `" "` -> U+2581, Metaspace words, BPE with byte fallback |
+| `bytelevel-bpe` | `laya`, `laya-typed-decisions` | special added tokens on the raw text; NFC (`decision.laya.normalizer`); normalized added tokens (space runs, `[unusedN]`); GPT-2 regex; byte-to-unicode; BPE |
+
+The converter also stores the HF flags of the added tokens (`decision.laya.added_tokens`: id,
+flags pairs; lstrip, normalized) and refuses a tokenizer that needs anything else (rstrip,
+single_word, another normalizer or pre-tokenizer). NFC and the regex classes use the Unicode
+tables of HF tokenizers itself (`tools/laya/laya-unicode-data.inc`, probed from `tokenizers`
+by `tools/laya/gen-unicode-data.py`, which checks them against HF NFC on every codepoint):
+Python's `unicodedata` is newer and would differ on marks added after Unicode 10.
+libllama's vocab (vocab-only load) was not reused: on the English GGUF `llama-tokenize` skips NFC
+(`cafe` + U+0301 ` is here` gives 6 tokens where HF gives 5) and ignores the lstrip of `[MASK]`
+(`a [MASK] b` gives 66 209 50284 270 where HF gives 66 50284 270), and `tools/laya` would have to
+link libllama instead of ggml alone.
+For both, long words without spaces (CJK, base64, URLs) stay cheap (a 1 MB input takes well
+under a second). Each request tokenizes its state once:
 all questions of a systemone request share the state tokens, and router candidates share
 the tokens of the criterion and the task. For that the router state splits after the card
 and after `task:`, and each piece is tokenized on its own. That gives the tokens of the
 whole text only where both points are token boundaries of the vocabulary (for
-`laya-multilingual`: `\n\n` is an added token and a space starts a Metaspace word), so at
+`laya-multilingual`: `\n\n` is an added token and a space starts a Metaspace word; for the
+English checkpoints the GPT-2 regex already cuts there), so at
 load the engine checks tokenize(A + B) == tokenize(A) + tokenize(B) on card endings and
 task starts of every kind (letters, digits, CJK, punctuation, spaces, newlines, special-token
 text, with and without `escape-control`). If any probe differs, router states are tokenized
@@ -328,7 +360,61 @@ Plans (laya):
   Never used for `/v1/router/score`, where a candidate's score must not depend on the others.
 
 There is no batching across requests and no inexact prefix reuse. Settings that change
-numerics (plan, threads, recipe) are shown in `/props.decision.plan`.
+numerics (plan, threads, kernels, recipe) are shown in `/props.decision.plan`.
+
+### CPU kernels and memory
+
+- Threads: without `-t` the engine runs on the performance cores (macOS
+  `hw.perflevel0.physicalcpu`, which is also the common default there; Windows the cores of
+  the highest `EfficiencyClass`, while the common default counts the efficiency cores too;
+  other systems keep the common default), for every kernels choice (measured below). The CPU
+  backend gets one persistent ggml
+  threadpool, created at load (polling level 0 between graphs: idle workers sleep; within a
+  graph they spin on the barrier), so the CPU backend creates no threads per graph. The BLAS
+  backend is different: without OpenMP, ggml-blas converts the weights of every matmul it
+  takes to F32 on `n - 1` new `std::async` threads (about 90 conversions per forward pass of
+  mmBERT-base). The engine therefore gives the BLAS backend min(`-t`, 8) threads
+  (`/props.decision.plan.n_threads_blas`; measured below); Accelerate runs the sgemm itself
+  on its own threads. On macOS the worker thread that runs the graphs is raised to QoS
+  `USER_INITIATED`. OpenMP builds get `KMP_BLOCKTIME=0` and `OMP_WAIT_POLICY=passive` unless
+  set, at process start before the HTTP threads exist (LLVM libomp reads them at its first
+  parallel region; GNU libgomp only at program start, so set them in the environment there).
+- Memory: `token_embd` (393 MB F16 / 209 MB Q8_0 for mmBERT-base, read only by `get_rows`)
+  stays in a read-only mapping of the GGUF, so only the rows of the tokens seen become
+  resident; every other weight is loaded. The GGUF header, vocabulary strings and merges are
+  freed after the load. `--load-mode none` loads everything; results are bitwise the same.
+  `/props.decision.memory` shows the weight bytes loaded, mapped and repacked.
+- Warm-up: one 64-token forward pass at load (starts the threads, faults in the weights
+  that every pass reads, and sizes the compute buffer for 64 tokens); `--no-warmup` skips it.
+  It changes no result. It does not bound the compute memory: the scheduler grows the buffer
+  again on the first longer request (measured below).
+- Kernels (`--decision-kernels`, spec `plan.kernels`, `/props.decision.plan.kernels` shows
+  what runs: `cpu`, `cpu+repack`, `cpu+blas`, `cpu+repack+blas`):
+  - `default`: the ggml CPU kernels. F16 matmuls round the activations to F16, Q8_0 matmuls
+    quantize them to Q8_0. `llama-laya-cli`, the golden files and
+    `tests/laya/verify_precision.py` use it.
+  - `blas`: the BLAS backend takes the matmuls it supports (weights converted to F32, F32
+    sgemm); on macOS that is Accelerate (AMX). Closer to the PyTorch reference and faster
+    than `default` on both F16 and Q8_0 (table below). `auto` picks it when the BLAS backend
+    is Accelerate; other BLAS libraries are not measured and stay opt-in. ggml-blas takes a
+    matmul only when all its dimensions are at least 32, so sequences shorter than 32 tokens
+    and the head matmuls over the marker rows still run on the ggml CPU kernels, while
+    `/props` says `cpu+blas`. An explicit `blas` on a build without a BLAS backend fails at
+    load (it does not quietly compute with other kernels).
+  - `repack`: CPU repack buffers (`ggml_backend_dev_get_extra_bufts`) for quantized matmul
+    weights that have a repacked kernel (Q8_0 / Q4_0 / Q4_K on NEON dotprod / i8mm, Q4_0 /
+    Q4_K on AVX2, ...). F16 weights are never repacked. Same accuracy class as `default`,
+    different rounding.
+  - `repack+blas`: repacked weights are not host memory, so BLAS never takes them. With Q8_0
+    (where every encoder matmul is repacked) it computes exactly like `repack`; BLAS only
+    takes the weights that have no repacked kernel (F16, or types without one).
+  - Platforms: the default `auto` means `cpu+blas` on macOS and `cpu` on Linux and Windows, so
+    the same GGUF gives slightly different logits there. Through the server, `laya-multilingual`
+    F16 is within max |dlogit| 0.014 of the reference with `auto` on macOS and 1.09 with
+    `default` (the kernels Linux and Windows run; measured on this Mac, the x86 kernels round
+    differently and are not measured); parity tables below. `--decision-kernels default` (or spec
+    `plan.kernels: "default"`) restores the Phase 1 numerics bit for bit on every platform.
+  - Results are bitwise stable for a fixed model, `-t` and kernels on one machine.
 
 ## Model metadata: `decision.spec`
 
@@ -342,9 +428,14 @@ Where the spec comes from, in order:
 1. `--decision-spec FILE` replaces it as a whole (`spec_source: file`).
 2. The GGUF `decision.spec` (`spec_source: gguf`).
 3. Defaults for an unstamped laya GGUF (`spec_source: default`): calibration from
-   `laya.temperature` unless all values are 1.0 (then `calibrated: false`, which is the
-   case for `laya-multilingual`), no router calibration. A non-laya GGUF without a spec
-   does not load.
+   `laya.temperature` and `laya.temperature_by_options.{buckets,values}` unless all
+   temperatures are 1.0 and there are no buckets (then `calibrated: false`, which is the case
+   for `laya-multilingual`), no router calibration. A non-laya GGUF without a spec does not
+   load. The checkpoint's `temperature_by_options` (`"choice:3-5": 1.76`, ...) becomes the
+   bucket of that type and the per-type temperature the `"*"` bucket, which is the lookup of
+   the Laya reference (`laya.agent._decode_answers`); its bucket `2` means K <= 2 and is
+   stored as `"1-2"`. The English `laya` ships `choice:11+` = 0.1006, which the [0.5, 5]
+   clamp turns into 0.5, as the reference does.
 
 A laya spec (file or GGUF) without a `calibration` key keeps the calibration from
 `laya.temperature` of case 3 (`calibration.version` `gguf:laya.temperature`). To turn it
@@ -381,7 +472,10 @@ Calibration rules:
   "choice with 6 options"). A calibration without `required` can fall back to T = 1 for the
   cases it does not cover. A bare `calibration.json` sidecar is always `required`.
 - Temperatures and Platt parameters are fitted on the raw logits of this engine, for this
-  GGUF, recipe and plan.
+  GGUF, recipe, plan and kernels. `plan.kernels` (`auto`, `default`, `repack`, `blas`,
+  `repack+blas`) pins the kernels the calibration was fitted with; `--decision-kernels`
+  overrides it. Any other value (also a non-string) is a load error, and `gguf_decision_spec.py`
+  refuses it too.
 
 A router question (`router.question`) follows the laya question rules above: criteria keyed
 only `true` / `false` in any case, and `labels`, when given, valid noul labels; the loader and
@@ -405,19 +499,175 @@ also loads. Both implementations run the cases in `tests/decision/spec_cases.jso
 (`test-decision-calib` and `test_decision.py`): a new rule goes into both and gets a case.
 `set` takes a full spec only, not a bare `calibration.json`.
 
+## Training and calibration tools
+
+Python tools for the model team, so that training data, calibration and baselines use the text
+and the logits of this engine. They are offline and write no GGUF.
+
+**`tools/decision/reference.py`** (stdlib only) is the Python reference of the router input.
+The training pipeline imports it instead of re-implementing the prompt:
+
+- `py_dumps` / `loads_strict` / `parse_body`: `json.dumps(v, ensure_ascii=False)` and the
+  engine's strict JSON parse (NaN and Infinity, integers outside int64/uint64 and float
+  overflow are `UNSUPPORTED_NUMBER`; lone surrogates and more than 128 levels are
+  `MALFORMED_JSON`; a duplicate key keeps its first position and its last value; one leading
+  UTF-8 BOM is skipped).
+- `card_validate` / `card_render`: the `atomic.executor-card/1` rules and the `card-v1` text,
+  with the engine's reason, param and warnings.
+- `parse_router` / `router_state` / `state_splits`: the `/v1/router/score` checks and the
+  candidate state (card, then criterion, then task).
+- `router_question` / `noul_options`: the spec router question (built-in default, default
+  criteria) and its laya option texts.
+- `Escape` / `control_strings_from_gguf`: `mask-to-space` and `escape-control`. The escape set
+  comes from the GGUF (a stdlib GGUF metadata reader) exactly as `laya_escape_init` builds it.
+- `render_router(body, spec, esc)`: all of the above for one request. `model_text` is the
+  state the tokenizer reads. `laya_router_examples` gives one Laya noul example per candidate.
+
+```bash
+python3 tools/decision/reference.py control-tokens laya-multilingual-q8_0.gguf > control.json
+python3 tools/decision/reference.py router request.json --spec spec.json --control control.json
+python3 tools/decision/reference.py router request.json --spec spec.json --gguf model.gguf --candidate ID --text model
+python3 tools/decision/reference.py card card.json        # validate + card-v1 text
+```
+
+Token counts (`CARD_TOO_LONG`, `CRITERION_TOO_LONG`, truncation) need the tokenizer and are
+not in the reference; the render route shows them (`POST /v1/decision/render` with
+`--decision-debug`).
+
+How the reference is tied to the engine:
+
+- `tests/decision/gen_router_golden.py` writes `tests/decision/golden/router_cases.jsonl`:
+  540 exact request bodies (fixed parser cases such as a leading BOM, `-NaN`, duplicate keys,
+  128 nesting levels, and two failures in one body, where the first in document order decides
+  the reason as in the engine's SAX parser; 3 cases per card and request rule; random requests
+  with unicode, C0/C1 controls, control-token text, 4096-byte fields, missing checks and unknown
+  fields; 421 accepted, 1132 candidate states), each with the 400 reason and param from
+  `reference.py`, or a SHA-256 over its warnings, the question's type and instructions, options,
+  states, split offsets and escaped model texts. The escape sets in the file are those of
+  `laya-multilingual` and of the English checkpoints, written into it: ctest does not read
+  GGUFs, and the check against the real vocabularies (last point) runs only on a machine with
+  the models.
+- `test-decision-reference` (`ctest -R decision`) runs every body through
+  `decision_parse_body`, `decision_parse_router`, `decision_router_items` and
+  `laya_escape_text` and requires the same result for every case (`--dump NAME` prints the
+  engine's side of one case). `test_reference.py` requires the file to be what the generator
+  writes now, so a change on either side fails a test.
+- `test_decision.py` sends every golden body to the server's render route on the tiny model and
+  compares the states byte for byte and the 400 reason and param. For the escaping it renders the
+  reference's `model_text` as a plain systemone state with the same question: the tokens must be
+  those of the router item. The English tiny model repeats this on every 5th case.
+- The escape sets of `laya-f16`, `laya-ml-f16`, `laya-en-f16` and `laya-td-f16` from
+  `control_strings_from_gguf` equal the engine's (`test-decision-reference --control MODEL`;
+  `test_reference.py` checks this when `TEST_DECISION_REFERENCE_BIN` is set and the models are
+  there).
+
+**`tools/decision/schema/executor-card-v1.schema.json`** is the card as JSON Schema (draft
+2020-12), for tools that want a standard validator. Three rules cannot be written in JSON Schema:
+`passed <= total`, the 4096-byte limit (`maxLength` counts code points) and integral floats
+(`188.0` is an integer for JSON Schema; the engine refuses it). So the schema accepts a little
+more than the engine. `test_reference.py` runs the schema and `reference.card_validate` on 1427
+cards (hand-written cases and every card of the golden requests). They agree on every card
+outside those three gaps (13 cards inside: 9 over 4096 bytes, 2 integral floats, 2 with passed >
+total), and the reference refuses every card inside them. The same cards also go through the
+`jsonschema` package (`Draft202012Validator`) when it is installed, as in CI. Counts carry
+`exclusiveMaximum` 2^63, not `maximum` 2^63 - 1: that number is not a double, and a validator
+that reads numbers as doubles would round it up and accept 2^63.
+
+**Data format** (`tools/decision/router_eval.py`, shared by the two scripts): JSONL, one record
+per task, `{"id", "task", "criterion", "candidates": [{"id", "card", "outcome": 0|1,
+"logit"?}], "split"?: "fit"|"eval"}`. Every record must be a valid router request. Without
+`split` a record goes to eval when `sha256("router:<id>")` falls below `--heldout-frac`
+(default 0.3), so both scripts use the same split. Metrics:
+
+- ECE: 10 equal-width bins of `p_success`, positive class. JevBench's top-label ECE bins
+  `max(p, 1-p)` instead.
+- Brier: mean `(p - y)^2`, the one-class form (half the 2-class convention).
+- NLL, AUC, and accuracy at 0.5.
+
+Intervals are 95 % percentile intervals of a cluster bootstrap over records: candidates of one
+task share the task. Deltas are paired. An interval that contains zero means no convincing
+difference. The bootstrap ECE is biased upward, so its interval can sit at or above the point
+value.
+
+**`scripts/fit-router-calibration.py`** fits `spec.router.calibration` (Platt, p = sigmoid(a z + b))
+on this engine's raw logits:
+
+```bash
+# the server as it will run (GGUF, plan, kernels), uncalibrated for now
+llama-server --decision -m router.gguf --decision-spec spec.json --decision-allow-uncalibrated --port 8090
+python3 scripts/fit-router-calibration.py collect data.jsonl logits.jsonl --url http://127.0.0.1:8090 --spec spec.json
+python3 scripts/fit-router-calibration.py fit logits.jsonl --spec spec.json --spec-out spec-router.json -o fit.json
+python3 gguf-py/gguf/scripts/gguf_decision_spec.py set router.gguf spec-router.json -o router-cal.gguf
+```
+
+- `collect` posts each record to `/v1/router/score`. It stores the raw `logit` of every
+  candidate and an `engine` block from `/props`: model, `spec_sha256`, plan, kernels, recipe.
+  With `--spec` it checks that the server runs that exact spec: the `--decision-spec` file, or
+  the output of `gguf_decision_spec.py get router.gguf > spec.json` (the GGUF text plus the
+  newline `get` prints). It reports and skips requests the server refuses (for example
+  `CARD_TOO_LONG`).
+- `fit` refuses logits from more than one engine identity; a record without an `engine` block
+  (logits from elsewhere) counts as its own. It refuses fewer than `--min-examples` (1000) fit
+  examples or `--min-per-class` (50) of either outcome, and fewer than `--min-eval` (200) eval
+  examples. It fits with Platt's prior-corrected targets (Newton, backtracking) and reports
+  ECE, Brier, NLL and accuracy before and after, on the eval split, with the paired delta.
+  "Before" is what ships now: `--before A,B`, else the `router.calibration` of `--spec`, else
+  sigmoid(z). The in-sample fit-split numbers are marked as such.
+- `fit` prints the `router.calibration` block. With `--spec` / `--spec-out` it writes the spec
+  with that block and with `plan.kernels` set to the kernels the logits came from
+  (`/props` `cpu`, `cpu+blas`, `cpu+repack`, `cpu+repack+blas` -> `default`, `blas`,
+  `repack`, `repack+blas`), checks it with the `gguf_decision_spec.py` loader rules and prints
+  the `set` command. `auto` is `blas` on macOS and `default` elsewhere, and the two give
+  different z, so a calibration fitted on a Mac pins `blas`: such a GGUF fails to load on a
+  build without a BLAS backend unless `--decision-kernels` overrides it (and then the
+  calibration does not fit its logits). Collect on the platform the model will run on, or with
+  the server started with `--decision-kernels default`. Without an `engine` block in the logits
+  `fit` warns and leaves `plan.kernels` as it is. The router question's criteria are part of
+  the prompt, so the block is valid only for the question in the spec the logits were
+  collected with.
+
+**`scripts/router-baselines.py`** scores simple baselines on the same data and split, with the
+same metrics:
+
+- `base-rate`: the fit-split positive rate.
+- `pass-rate`: the pooled card pass rate (passed + 1) / (total + 2), with no fit.
+- `pass-rate-platt`: `pass-rate` with a Platt fit.
+- `logreg`: L2 logistic regression on card metrics (pooled and per-check pass rates, totals,
+  measured and missing counts, kind).
+- `engine-raw` and `engine-platt`: when the file has logits, all from one engine identity.
+
+Deltas are taken against `--reference` (default `engine-platt`, else `pass-rate-platt`).
+
+```bash
+python3 scripts/router-baselines.py logits.jsonl -o baselines.json
+python3 -m pytest -q tests/decision/test_reference.py        # offline tests of all of the above
+```
+
 ## Tests
 
 ```bash
-ctest --test-dir build -R decision        # py-json (golden + splitmix64 hashes), request, calib + spec cases, router
+ctest --test-dir build -R decision        # py-json (golden + splitmix64 hashes), request, calib + spec cases, router, reference goldens
+python3 -m pytest -q tests/decision/test_reference.py   # reference.py, card schema, calibration and baseline scripts
 cd tools/server/tests
 LLAMA_SERVER_BIN_PATH=../../../build/bin/llama-server python -m pytest -q unit/test_decision.py
 # tokenizer parity with the checkpoint's HF tokenizer (needs transformers and the real GGUF)
 python tests/laya/verify_tokenizer.py build/bin/llama-laya-cli laya-multilingual-f16.gguf <hf-snapshot>/tokenizer
+python tests/laya/verify_tokenizer.py build/bin/llama-laya-cli laya-en-f16.gguf <hf-snapshot>/tokenizer
+# logits against the PyTorch reference (needs the laya package; see tests/laya/README.md)
+$LAYA_PY tests/laya/verify_reference.py ref <hf-snapshot> items.jsonl ref.jsonl --english
+python3 tests/laya/verify_reference.py cli build/bin/llama-laya-cli laya-en-f32.gguf ref.jsonl cli.jsonl
+# the same items through llama-server --decision over HTTP (plan sequential, the server's threads and kernels)
+python3 tests/laya/verify_reference.py server build/bin/llama-server laya-en-f16.gguf ref.jsonl server.jsonl
+python3 tests/laya/verify_reference.py compare ref.jsonl cli.jsonl server.jsonl
 ```
 
 The server tests are offline. The first `tiny_laya_decision_server()` call generates a random
 tiny laya GGUF (`tests/decision/make_tiny_laya.py`, numpy + gguf-py) into `tools/server/tests/tmp`;
-it is not a `ServerPreset`, so other test modules never build it. `tests/decision/gen_golden.py`
+it is not a `ServerPreset`, so other test modules never build it. `tiny_laya_decision_server(english=True)`
+uses a second one (`--english`: the `bytelevel-bpe` tokenizer and the temperature buckets of the
+English checkpoints) and `tiny_laya_decision_server(q8=True)` a third (`--q8`: Q8_0 encoder
+weights, which the repack buffers convert). The cache folder name carries a hash of the
+generator, so a changed generator never reuses a stale file. `tests/decision/gen_golden.py`
 writes the py-json golden files: `repr` of every power of two, 150 objects, and the SHA-256 of
 30000 doubles and 1000 nested objects drawn from a splitmix64 stream that
 `test-decision-json` draws the same way. CI runs both suites in the `decision-tests` job of
@@ -428,11 +678,346 @@ environment variables make timing tests deterministic:
 `LLAMA_DECISION_DEBUG_LOAD_DELAY_MS` (delay before the engine loads, for the 503 test) and
 `LLAMA_DECISION_DEBUG_JOB_DELAY_MS` (delay before each job, for the 429 and shutdown tests).
 
+## Benchmark
+
+`llama-decision-bench` runs a suite of request bodies through the server code path in
+process (request checks, engine, calibration, response text; no HTTP, no queue) and reports,
+per request, the phases parse / tokenize / render / compute / post / total, p50 / p95 / p99,
+CPU seconds (process user + system over the request), and the SHA-256 of the raw logits.
+It also reports load time, RSS and memory footprint (macOS `phys_footprint`, Linux
+`RssAnon`, Windows private bytes) after load and at the peak.
+
+```bash
+cmake --build build -j --target llama-decision-bench llama-server
+python3 tests/decision/bench/gen_suite.py          # writes tests/decision/bench/suite.jsonl
+./build/bin/llama-decision-bench -m laya-q8_0.gguf -f tests/decision/bench/suite.jsonl -t 4 --repeat 10 -o q8_0-t4.json
+
+# every KPI on one machine: bench per model and thread count, then llama-server --decision
+BIN_DIR=./build/bin MODELS="laya-f16.gguf laya-q8_0.gguf" bash scripts/bench-decision.sh
+python3 scripts/bench-decision-report.py build/bench-decision
+```
+
+Flags: `-m`, `-f` (suite), `-t` (default: the performance cores), `--repeat` (measured runs
+per request, default 10), `--warmup` (default 1), `--plan`, `--spec`, `--kernels`,
+`--max-items`, `--idle-ms N` (after the runs, sleep N ms and run the suite once more: first
+request after idle), `--filter`, `--poll N` (threadpool polling level), `--no-mmap`,
+`--mlock`, `--no-warmup` (no warm-up pass inside the load; `load` includes it otherwise),
+`--warmup-tokens N` (size of that pass, default 64), `--blas-threads N` (BLAS backend threads,
+default 0 = min(`-t`, 8)), `-o` (JSON). `scripts/bench-decision.sh` takes `KERNELS` for both tools.
+Requests run interleaved (every repeat runs every request once), so slow drift such as heat
+hits all requests alike. `tokenize` is a separate pass after each request that tokenizes its
+distinct state pieces once; it is a part of `render`. Router requests run with or without a
+router calibration. A request whose logits hash differs between runs is marked `det: NO`;
+the report also compares the suite hash across thread counts.
+
+Suite lines: `{"id", "endpoint": "systemone" | "router", "group", "body"}`. The suite in
+`tests/decision/bench` has the groups `systemone 1q` and `systemone 5q` (a ~170-token support
+ticket), `router N=1/4/8` (executor cards of ~100 tokens, ~250-token tasks) and
+`router N=1 t128` / `t512` (task length).
+
+`scripts/bench-decision.sh` writes into `OUT_DIR` (default `build/bench-decision`) one
+`__machine.txt` (CPU, cores, OS, power source from `pmset` / `upower` / `powercfg`, low
+power mode, load average and top CPU users before every run), one bench JSON per model and
+thread count, and one `__server.json` per server run: time from spawn to `/health` 200 (K5),
+RSS and footprint of the server, warm latency, and the first request after `IDLE_S` seconds
+idle over HTTP (K6). `scripts/bench-decision-report.py` prints the tables (K1, K4, K5, K6,
+K7, K9). Close other applications first: a busy machine makes p95 meaningless.
+
+Baseline before the Phase 4 work (2026-09-30, Apple M4 Max 12P + 4E, 48 GB, macOS 26.6.2, AC
+power, low power mode off; one background process at 100% of one core; static Release build
+with Metal, `laya-multilingual`, plan `sequential`, repeat 10, warmup 1). Latency in ms,
+p50 / p95 over the requests of a group and their repeats:
+
+| group | f16 -t 4 | f16 -t 8 | q8_0 -t 4 | q8_0 -t 8 |
+|---|---|---|---|---|
+| systemone 1q (~220 tokens) | 214 / 231 | 112 / 122 | 143 / 156 | 78 / 84 |
+| systemone 5q | 1178 / 1289 | 624 / 687 | 900 / 1030 | 486 / 563 |
+| router N=1 (~480 tokens) | 540 / 559 | 286 / 299 | 459 / 473 | 247 / 259 |
+| router N=4 | 2025 / 2103 | 1073 / 1123 | 1609 / 1706 | 870 / 931 |
+| router N=8 | 4111 / 4429 | 2182 / 2367 | 3205 / 3543 | 1744 / 1937 |
+| RSS / footprint after load, MiB | 748 / 875 | 748 / 875 | 637 / 764 | 637 / 764 |
+| server spawn -> ready, ms | 389 | 370 | 342 | 340 |
+| first so-1q after 60 s idle (HTTP) vs warm p50 | 1.07x | 1.11x | 1.11x | 1.19x |
+
+Compute is over 99.8% of every request (parse, render and post together stay under 0.5 ms;
+tokenizing a request's state takes under 0.25 ms). CPU seconds per request are n_threads x wall time (worker threads spin), about 0.57 s
+for q8_0 systemone 1q and 6.4 s for router N=4 at `-t 4`. Logits are bitwise identical across
+all runs, across `-t 4` / `-t 8`, and between this build and a `GGML_BACKEND_DL` +
+`GGML_CPU_ALL_VARIANTS` build without Metal (`apple_m4` variant, same latency); the DL build
+uses 53 MiB less RSS and about 190 MiB less footprint after load.
+
+### Phase 4 CPU levers (same machine, 2026-09-30)
+
+Each lever was A/B-measured with `llama-decision-bench` against the baseline binary (suite
+above, repeat 5, warmup 1) and kept only when it helped without breaking a gate. Numbers are
+p50 in ms at `-t 8` unless noted.
+
+| lever | effect | logits | kept |
+|---|---|---|---|
+| persistent threadpool (registry proc-addresses, created once, poll 0) | no measurable change: latency, CPU seconds and the first request after idle within noise (poll 50: 1% slower) | bitwise same | yes: neutral; the CPU backend creates no threads per graph (the BLAS backend still does, two rows down) |
+| QoS `USER_INITIATED` for the thread that runs the graphs (macOS) | not measurable on an idle machine (meant for a busy one, K8) | bitwise same | yes |
+| default threads = performance cores (12 on M4 Max) | `-t 12` vs `-t 8`: 1.35x faster with the ggml kernels | bitwise same (thread-invariant) | yes |
+| ... also with BLAS kernels (after the BLAS thread fix below) | `-t 12` vs `-t 8`, F16 / Q8_0, final bench (idle machine, repeat 10): router N=1 112 / 106 vs 124 / 122 ms, N=4 429 / 398 vs 465 / 465, systemone 1q 55 / 49 vs 53 / 50, systemone 5q 298 / 269 vs 290 / 282; in the thread grid (repeat 5 x 2, load average about 9) router between 2% slower and 8% faster, systemone 5-14% slower. CPU seconds +20-30% at `-t 12` | bitwise same | yes: faster where it matters (router); a client next to a chat model can pass a smaller `-t` (atomic-chat-core passes at most 8) |
+| BLAS backend threads = min(`-t`, 8) instead of `-t` | ggml-blas (no OpenMP) converts each F16 / Q8_0 weight to F32 on `n - 1` new `std::async` threads, about 90 times per pass. `laya-multilingual` F16 at `-t 12`: 4 threads vs 12 router N=4 446 vs 494 ms, systemone 5q 312 vs 330, CPU s per N=4 request 2.86 vs 3.33; 8 threads = 4 threads within noise (router N=4 410-444 vs 412-449 over 3 rounds); at `-t 8`, 4 = 8; 1 thread is 1.2-1.5x slower (the conversion then runs on one core). The English checkpoint (4x larger weights) wants more: F16 at `-t 12`, 8 or 12 threads vs 4 router N=4 927-943 vs 963-975 ms, systemone 5q 629-648 vs 670-696. Q8_0: 1 to 12 threads within noise (`build-p4/bench/m1/`) | bitwise same (thread-invariant) | yes: 8 is the best measured for both encoders |
+| `token_embd` in a read-only mapping + free the GGUF metadata after load | `default` kernels: Q8_0 RSS after load 637 -> 262 MiB, footprint 764 -> 389 MiB; F16 748 -> 373 / 875 -> 500 (`auto` adds the BLAS backend, about 18 MiB) | bitwise same (911 items, F16 and Q8_0) | yes, default |
+| warm-up pass at load (64 tokens) | no measurable effect on the first request: it was already within 2% of warm (server so-1q first / warm 71.8 / 70.3 ms before, 71.2 / 70.6 after, `-t 8`), and a 752-token first request (`router N=1 t512`, `-t 12`, `auto`) takes 202 / 205 ms (F16) and 208 / 199 ms (Q8_0) with / without it (p50 193 / 188); load +25-30 ms, footprint after load +19 MiB. A 512-token warm-up costs another +26 MiB and +90 ms of load for the same first request (201 / 197 ms): not taken | none | yes, default (`--no-warmup`): starts the threads and faults in the weights; the compute buffer is sized for 64 tokens and grows on the first longer request |
+| `repack` (CPU extra buffer types), Q8_0 | 1.6-1.7x faster: router N=1 243 -> 143, systemone 1q 76 -> 47 | changed: 1395 of 2604 questions bitwise same, max \|dlogit\| 5.4 vs `default` | opt-in |
+| `repack`, F16 | no F16 repack kernel: unchanged | bitwise same | (no-op) |
+| `blas` (Accelerate in the scheduler), F16 | 2.3x faster: router N=1 283 -> 123, systemone 1q 111 -> 52; CPU seconds 3.6-4x lower | closer to the reference (below) | yes, default via `auto` |
+| `blas`, Q8_0 | 2.0x faster: router N=1 243 -> 119, systemone 1q 76 -> 49; CPU seconds 3x lower | closer to the reference (below) | yes, default via `auto` |
+| `malloc_zone_pressure_relief` after load | no change in footprint | - | no (reverted) |
+
+Parity against the PyTorch reference (`laya-multilingual`, the 911 laya-eval items / 2604
+questions, every one with identical input ids; one expected refusal: the null state of
+`scalar_state_0890`), on two code paths:
+
+- CLI: `llama-laya-cli -t 1` (the `build-parity/laya-eval` harness), which packs all
+  questions of an item into one graph (block-diagonal mask).
+- server: `llama-server --decision` over HTTP (`tests/laya/verify_reference.py server`), plan
+  `sequential` (one graph per question), the default threads (the 12 performance cores; the
+  `auto` rows ran with 8, and a 12-thread rerun of F16 `auto` is bitwise identical on all 911
+  items) and 4 BLAS threads (before the default became 8; the logits do not depend on the
+  BLAS threads either, K7). This is what a client of the server gets. Packing changes the
+  rounding (see "Plans"), so the two paths differ.
+
+| path, kernels | argmax agree | mean \|dlogit\| | max \|dlogit\| | mean TVD | max TVD | noul p>=0.5 agree |
+|---|---|---|---|---|---|---|
+| CLI, F16 `default` (Phase 1) | 2602 / 2604 | 0.0048 | 1.17 | 0.0012 | 0.21 | 715 / 715 |
+| CLI, F16 `blas` | **2604 / 2604** | **0.0006** | **0.014** | 0.0001 | 0.001 | 715 / 715 |
+| CLI, Q8_0 `default` (Phase 1) | 2529 / 2604 | 0.078 | 8.37 | 0.020 | 0.73 | 706 / 715 |
+| CLI, Q8_0 `blas` | **2554 / 2604** | **0.047** | 8.09 | 0.011 | 0.51 | 708 / 715 |
+| CLI, Q8_0 `repack` | 2538 / 2604 | 0.079 | 9.21 | 0.020 | 0.82 | 709 / 715 |
+| server, F16 `default` (Linux / Windows default) | 2602 / 2604 | 0.0048 | 1.09 | 0.0012 | 0.21 | 715 / 715 |
+| server, F16 `auto` = `blas` (macOS default) | **2604 / 2604** | **0.00055** | **0.0137** | 0.00014 | 0.0009 | 715 / 715 |
+| server, Q8_0 `default` | 2530 / 2604 | 0.077 | 8.04 | 0.019 | 0.46 | 709 / 715 |
+| server, Q8_0 `auto` = `blas` | **2554 / 2604** | **0.047** | 8.09 | 0.011 | 0.51 | 708 / 715 |
+
+The server F16 `auto` run of the DL build (CPU variants, no Metal) is bitwise identical to the
+static one on all 911 items. Outputs: `build-p4/parity/final/` (server) and
+`build-p4/parity/cli-*` (CLI).
+
+The ggml F16 matmul rounds the activations to F16 and the Q8_0 matmul quantizes them to
+Q8_0; the BLAS path converts the weights to F32 and runs F32 sgemm, which is what the
+reference does. That removes the F16 gap to the reference almost entirely (the two F16 flips
+of Phase 1 are gone) and a third of the Q8_0 gap. `default` stays bitwise equal to Phase 1:
+on the final tree the CLI raw logits of all 911 items (F16 and Q8_0) and the 7 CLI golden
+cases (F16 and Q8_0 at `-t 1` / `-t 8`, 28 outputs, static and DL builds) are byte for byte the
+Phase 1 ones.
+
+KPIs after Phase 4 (static Release build with Metal and Accelerate, `--decision-kernels
+auto` = `cpu+blas`, repeat 10, warmup 1; `default` = the ggml kernels with every other lever;
+p50 / p95 ms). The `auto` columns are from the run after the BLAS thread fix
+(`build-p4/bench/final2-auto-report.md`), made with 4 BLAS threads before the default became
+min(`-t`, 8) (4 and 8 measured equal for this encoder, table above). A rerun with the final
+binary and 8 BLAS threads (`final3-auto`) hit intermittent background load (load average up
+to 16): same logits hashes, p50 within 6% at `-t 8`, but its `-t 12` and server numbers are
+disturbed (p95 up to 2.9x), so it is not used. `default` and `repack` are from the run before
+the fix (`final-default` / `final-repack`), whose code paths it does not touch. Memory
+is in MiB (2^20 bytes): RSS counts the resident pages of the mapped `token_embd`; footprint is
+macOS `phys_footprint`, which does not count clean file-backed pages.
+
+| group | baseline f16 t8 | baseline q8_0 t8 | default q8_0 t12 | auto f16 t8 | auto f16 t12 | auto q8_0 t8 | auto q8_0 t12 | repack q8_0 t12 |
+|---|---|---|---|---|---|---|---|---|
+| systemone 1q | 112 / 122 | 78 / 84 | 58 / 62 | 53 / 58 | 55 / 59 | 50 / 54 | 49 / 55 | 39 / 51 |
+| systemone 5q | 624 / 687 | 486 / 563 | 367 / 418 | 290 / 310 | 298 / 308 | 282 / 305 | 269 / 281 | 204 / 224 |
+| router N=1 | 286 / 299 | 247 / 259 | 179 / 194 | 124 / 128 | 112 / 127 | 122 / 125 | 106 / 110 | 106 / 112 |
+| router N=4 | 1073 / 1123 | 870 / 931 | 627 / 688 | 465 / 484 | 429 / 480 | 465 / 485 | 398 / 415 | 407 / 427 |
+| router N=8 | 2182 / 2367 | 1744 / 1937 | 1264 / 1447 | 976 / 1018 | 895 / 918 | 917 / 1006 | 809 / 878 | 803 / 889 |
+| router N=1 t128 / t512 | 196 / 509 | 139 / 388 | 102 / 283 | 86 / 229 | 80 / 193 | 82 / 228 | 75 / 188 | 67 / 208 |
+| K4 bench after load, RSS / footprint | 748 / 875 | 637 / 764 | 264 / 390 | 393 / 519 | 393 / 519 | 281 / 408 | 282 / 408 | 264 / 390 |
+| K4 bench after the first suite run, RSS / footprint | 809 / 775 | 698 / 664 | 335 / 292 | 457 / 414 | 459 / 416 | 345 / 302 | 347 / 304 | 332 / 289 |
+| K4 bench peak, RSS / footprint | 810 / 890 | 699 / 788 | 347 / 437 | 459 / 550 | 462 / 566 | 347 / 438 | 350 / 438 | 333 / 436 |
+| K4 server ready, RSS / footprint | 754 / 878 | 643 / 766 | 268 / 391 | 397 / 520 | 397 / 520 | 286 / 409 | 286 / 409 | - |
+| K4 server after the requests and 2 x 60 s idle (one sample), RSS / footprint | 784 / 747 | 672 / 635 | 300 / 258 | 432 / 390 | 430 / 389 | 321 / 279 | 321 / 280 | - |
+| K5 server spawn -> ready, ms | 370 | 340 | 290 | 324 | 322 | 295 | 306 | - |
+| K5 server first so-1q / warm p50, ms | 104 / 103 | 72 / 70 | 50 / 49 | 53 / 50 | 52 / 51 | 49 / 46 | 47 / 47 | - |
+| K6 so-1q after 60 s idle (HTTP) | 1.11x | 1.19x | 1.29x | 1.26x | 1.24x | 1.25x | 1.32x | - |
+| K6 router N=4 after 60 s idle (HTTP) | 1.01x | 1.02x | 1.01x | 1.03x | 1.04x | 1.02x | 1.02x | - |
+| K9 CPU s, systemone 1q | 0.90 | 0.61 | 0.68 | 0.22 | 0.30 | 0.20 | 0.27 | - |
+| K9 CPU s, router N=4 | 8.58 | 6.98 | 7.66 | 2.29 | 2.77 | 2.25 | 2.53 | - |
+
+- K1 / D3: with `auto` at `-t 8` or `-t 12`, router N=1 p95 is 110-128 ms, N=2 about 250 ms
+  (two N=1 passes) and N=4 p95 415-485 ms, for F16 and Q8_0: inside the D3 goal (p95 <= 300
+  ms for N=1-2, <= 1 s for N=4). At `-t 4` N=1 p95 is 173-176 ms and N=4 648-665 ms
+  (`final-auto`), so N=2 (about 340 ms) misses 300 ms there.
+- K4: the target is <= 400 MB = 381 MiB for Q8_0. Measured as footprint it holds in the DL
+  build without Metal at every sample (below: 221 after load, 276 after the first run, 281
+  peak). In the static build with Metal it does not hold after the load (`default` 390 MiB =
+  409 MB, `auto` 408 MiB = 428 MB; the BLAS backend adds 18) nor at the peak (437-438 MiB),
+  and holds after the first requests (289-304 MiB in the bench). In every build with Metal
+  (the baseline too) the footprint falls by about 100 MiB during the first requests while RSS
+  rises: the Metal device the backend registry initializes costs 187 MiB of footprint right
+  after the load and about 26 MiB after the first requests (static 302-304 vs DL 276 MiB,
+  Q8_0 `auto`). The server's last sample (279-280 MiB) came after two idle minutes, one sample
+  each: not a steady state. RSS additionally counts the `token_embd` rows seen so far: +64 MiB
+  after one suite run here, and up to the whole 209 MiB (Q8_0; 393 MiB F16) as more of the
+  vocabulary appears (a 16 KB page holds about 20 Q8_0 rows). Those pages are clean and the
+  OS can drop them under pressure; footprint never counts them.
+- K6: the first request after an idle minute pays a fixed 7-16 ms over HTTP (1.24-1.32x on
+  the 50 ms systemone 1q, 1.02-1.04x on router N=4), independent of the threadpool, the polling
+  level and the warm-up: the cores and caches waking up.
+- K7: logits are bitwise identical across warmup, repeats, the run after idle, `-t 4` / `-t
+  8` / `-t 12`, BLAS threads 1 / 2 / 4 / 8 / 12, and the static and DL builds, for every
+  kernel choice.
+- K9: with BLAS the CPU time per request drops 3-4x (Accelerate runs the matmuls on the AMX
+  units instead of 8-12 spinning cores).
+- Not measured: K2 (HTTP overhead), K3 (GFLOPS), K8 (p95 next to a generating chat model),
+  battery power, PyTorch / ONNX on the same machine. `llama-server` spawn -> ready was
+  1.8 s once per freshly linked binary (macOS scans a new executable at its first launch);
+  those first runs are left out above.
+
+### D7: macOS acceleration (recommendation)
+
+Measured options, Q8_0 / F16 at `-t 12` (DL = `GGML_BACKEND_DL=ON GGML_CPU_ALL_VARIANTS=ON
+BUILD_SHARED_LIBS=ON GGML_METAL=OFF GGML_NATIVE=OFF`, `apple_m4` variant picked at runtime):
+
+| build / kernels | router N=1 p50 / p95 | router N=4 p50 / p95 | footprint after load | footprint after the first suite run | footprint peak | logits |
+|---|---|---|---|---|---|---|
+| release-like static + Metal, `default` | 179 / 194 | 627 / 688 | 390 / 501 MiB | 292 / 398 MiB | 437 / 530 MiB | Phase 1 |
+| static + Metal, `auto` (Accelerate) | 106 / 110 | 398 / 415 | 408 / 519 MiB | 304 / 416 MiB | 438 / 566 MiB | closer to reference |
+| DL CPU variants, `auto` (Accelerate) | 107 / 113 | 406 / 417 | **221 / 333 MiB** | **276 / 389 MiB** | **281 / 393 MiB** | bitwise = static `auto` |
+| static + Metal, `repack` (Q8_0) | 106 / 112 | 407 / 427 | 390 MiB | 289 MiB | 436 MiB | Q8_0-class |
+
+Latency is Q8_0; footprint is macOS `phys_footprint` in MiB, Q8_0 / F16. The `auto` rows are
+the `final2` runs (4 BLAS threads, see the KPI note); DL F16 is from the run before the BLAS
+thread fix, which does not change memory.
+
+Recommendation:
+
+1. **Accelerate first (done, no new binary).** The BLAS backend is part of every macOS
+   build (`GGML_BLAS` defaults to on for Apple), so `--decision-kernels auto` gives the
+   2-2.3x speedup, 3-4x fewer CPU seconds and the better parity with the current release
+   binaries. It is the default of the decision engine; `llama-laya-cli` and the golden files
+   keep `default`.
+2. **DL CPU variants for the decision process next**, when the app ships a dedicated
+   decision binary: same latency and bitwise the same logits as the static build, 187 MiB
+   less footprint right after the load and 157 MiB less at the peak (no Metal device; after
+   the first requests the gap shrinks to about 26 MiB), the Q8_0 <= 400 MB (381 MiB) footprint target met after the
+   load and at the peak, and an i8mm variant for M2+ without the SIGILL risk of a native build (risk 7). This
+   needs the extra `libggml-cpu-*.so` / `libggml-blas.so` in the bundle and signed, so it is
+   not wired into release CI here. Build note (opt-in, not in CI):
+
+   ```bash
+   # decision-only macOS build: CPU variants loaded at runtime, Accelerate, no Metal
+   cmake -B build-decision-cpu -DCMAKE_BUILD_TYPE=Release -DGGML_BACKEND_DL=ON \
+     -DGGML_CPU_ALL_VARIANTS=ON -DBUILD_SHARED_LIBS=ON -DGGML_METAL=OFF -DGGML_NATIVE=OFF
+   cmake --build build-decision-cpu -j --target llama-server
+   # bin/: llama-server, libggml*.dylib, libggml-cpu-apple_m1/m2_m3/m4.so, libggml-blas.so
+   ```
+3. **A separate static CPU build is not needed**: it would save the same Metal memory as
+   the DL build but loses the per-CPU variant choice.
+
+`repack` stays opt-in: on Q8_0 it is about as fast as Accelerate at `-t 12` (faster on short
+systemone requests, 39 vs 49 ms) but keeps the Q8_0 activation rounding (Q8_0-class parity)
+and spins all threads (about 12x wall time in CPU seconds). It is the lever for quantized
+models where no Accelerate exists (Q4_0 / Q4_K on AVX2 and NEON); those platforms are not
+measured here.
+
+## English checkpoints (`laya`, `laya-typed-decisions`)
+
+| checkpoint | encoder | ctx / head budget | tokenizer | calibration in the GGUF |
+|---|---|---|---|---|
+| `convaiinnovations/laya` | ModernBERT-large, 28 layers, d 1024, 421M | 512 / 192 | `bytelevel-bpe` (NFC) | `laya.temperature` + 6 `temperature_by_options` buckets |
+| `convaiinnovations/laya-typed-decisions` | same | 1024 / 256 | same | same buckets, other base temperatures |
+| `convaiinnovations/laya-multilingual` (default, D1) | mmBERT-base, 22 layers, d 768, 322M | 1024 / 256 | `metaspace-bpe` | none (`calibrated: false`) |
+
+```bash
+python convert_hf_to_gguf.py <snapshot of convaiinnovations/laya> --outfile laya-en-f16.gguf --outtype f16
+./build/bin/llama-server --decision -m laya-en-f16.gguf --device none --port 8090
+```
+
+The converter takes the special ids from the tokenizer (`[CLS]` 50281, `[SEP]` 50282,
+`[MASK]` 50284, which is also `laya.marker_token_id`). A GGUF loads only if the mask id equals
+`laya.marker_token_id` and every special id is inside the vocabulary; a `bytelevel-bpe` GGUF must
+name `[CLS]`, `[SEP]` and `[MASK]` (the fallback ids 2 / 1 / 4 are the mmBERT ones).
+
+With 512 tokens, `laya` leaves about 316 tokens for a router state, and the default
+`max_card_tokens` is 192 (3/8 of 512); the router probe finds the state split exact for this
+vocabulary (`state_split: true`).
+
+Parity (Apple M4 Max, 2026-09-30, final tree). Tokenizer: 0 mismatches in 13647 strings, 10763
+of them English-heavy (`verify_tokenizer.py`), for both checkpoints, and 0 of 2000 router
+head/tail splits (`laya-multilingual`: 0 in 13675). Logits: the 503 English items (1491
+questions; the letters of state and questions all ASCII) of the 911-item laya-eval set, PyTorch
+reference fp32 (laya 0.3.21) against two paths (`verify_reference.py`): CLI = `llama-laya-cli
+-t 1`, all questions of an item packed into one graph; server = `llama-server --decision` over
+HTTP, plan `sequential` (the server runs used `-t 4`; logits are thread-invariant). Every
+question had identical input ids and marker positions; the one refused item (null state) is
+refused by both. `calibrated |dP|` compares the answers (temperatures and buckets applied;
+reference rounded to 4 digits) with the reference `system_one` answers on 311 questions.
+
+| path, GGUF, kernels | argmax | max \|dlogit\| | mean \|dlogit\| | max TVD | calibrated max \|dP\| |
+|---|---|---|---|---|---|
+| CLI, `laya` F32, default | 1491/1491 | 4.2e-4 | 5.8e-6 | 2.0e-5 | 1e-4 |
+| CLI, `laya` F16, default | 1489/1491 | 0.44 | 5.2e-3 | 1.7e-2 | 6e-3 |
+| CLI, `laya` F16, blas | 1491/1491 | 1.3e-2 | 5.3e-4 | 1.1e-3 | 5e-4 |
+| server, `laya` F16, default (the Linux / Windows default) | 1490/1491 | 0.24 | 5.2e-3 | 1.7e-2 | 5.8e-3 |
+| server, `laya` F16, auto = blas (the macOS default) | 1491/1491 | 1.3e-2 | 5.3e-4 | 1.1e-3 | 4.6e-4 |
+| CLI, `laya-typed-decisions` F32, default | 1491/1491 | 6.8e-5 | 1.3e-6 | 1.8e-5 | 1e-4 |
+| CLI, `laya-typed-decisions` F16, default | 1491/1491 | 3.6e-2 | 1.3e-3 | 1.0e-2 | 6e-3 |
+| CLI, `laya-typed-decisions` F16, blas | 1491/1491 | 3.9e-3 | 4.9e-4 | 1.1e-3 | 7e-4 |
+| server, `laya-typed-decisions` F16, default | 1491/1491 | 3.8e-2 | 1.3e-3 | 1.1e-2 | 5.4e-3 |
+| server, `laya-typed-decisions` F16, auto = blas | 1491/1491 | 4.6e-3 | 5.0e-4 | 1.2e-3 | 7.1e-4 |
+
+Every CLI run of the final tree (F32, F16 `default`, F16 `blas`, both checkpoints) is bitwise
+identical to the run made before the last changes to the Unicode tables and `laya.cpp`. The F16 `default` flips are near-ties (reference
+top-2 gaps 0.009 and 0.005; the server path keeps one of them). The act-head logits of these
+checkpoints are 169 to several thousand in magnitude; the relative difference is at most 8e-5
+(F32), 8e-4 (F16 blas) and 6e-2 (F16 default), and the act probability (0 or 1 at these
+magnitudes) never changes. Outputs: `build-p4/parity/final/` (`compare_en.json`,
+`compare_td.json`).
+
+Latency (`llama-decision-bench`, same suite and machine, F16, kernels `auto` = Accelerate BLAS,
+p50 / p95 ms; `build-p4/bench/english-report.md`). Measured with BLAS threads = `-t`, before
+the default became min(`-t`, 8); for this encoder an interleaved A/B at `-t 12` found 8 and 12
+BLAS threads equal (router N=4 941 / 943 vs 940 / 927 ms, `build-p4/bench/m1/table-ab.md`), and
+the logits do not depend on them. A rerun with the final binary under background load
+(`build-p4/bench/english3`) was 5-10% slower at the p50, with identical logits hashes:
+
+| group | multilingual t8 | multilingual t12 | `laya` t8 | `laya` t12 | `laya-typed-decisions` t12 |
+|---|---|---|---|---|---|
+| systemone 1q | 52 / 55 | 54 / 59 | 120 / 129 | 116 / 125 | 119 / 122 |
+| systemone 5q | 280 / 301 | 292 / 321 | 635 / 688 | 619 / 656 | 605 / 654 |
+| router N=1 | 123 / 127 | 111 / 115 | 245 / 250 | 221 / 229 | 216 / 220 |
+| router N=4 | 460 / 479 | 426 / 436 | 998 / 1030 | 907 / 939 | 893 / 915 |
+| router N=8 | 930 / 1001 | 862 / 922 | 1874 / 1991 | 1693 / 1835 | 1670 / 1789 |
+| compute per 1k tokens | 230-255 | 228-246 | 543-571 | 507-553 | 493-547 |
+| footprint after load / peak, MiB | 519 / 546 | 519 / 550 | 943 / 959 | 944 / 962 | 943 / 959 |
+| server ready, ms | - | 342 | 288 | 306 | 306 |
+
+- Per token the English encoder costs about 2.2x the multilingual one. The English BPE needs
+  about 10% fewer tokens for the same English text (router N=1: 418 vs 467), so a request
+  costs about 2x. Logits are identical at `-t 8` and `-t 12` for every model.
+- D3 (p95 <= 300 ms for N=1-2, <= 1 s for N=4): the English checkpoints meet N=1 (229 ms)
+  and N=4 (939 ms) at `-t 12`; N=2 (about 450 ms) does not.
+- Memory: F16 needs about 950 MiB of footprint; the 400 MB target would need a quantized recipe, and its
+  parity is not measured for these checkpoints.
+
 ## Status and known gaps
 
+- Router calibration: the tools exist (`fit-router-calibration.py`, `router-baselines.py`),
+  but no Platt block has been fitted on real outcome data yet. That needs the model team's
+  labelled router data and a router checkpoint. The Phase 2 acceptance numbers (decision
+  agreement at p = 0.95 against PyTorch, mean |dp|, ECE shift on >= 2000 held-out) are not
+  measured.
+
 - `semif-letters` (Arbiter-4B, JevK5) is not implemented; such a spec fails at load.
+- English checkpoints: only F32 and F16 are measured; no quantized recipe, no router calibration
+  and no x86 run yet.
 - laya: the reference's per-language temperatures and `answer_confidence` are not
   implemented in the server; the act head (`action`) is not exposed. `llama-laya-cli` prints
   both, in the reference answer shape.
-- The laya engine loads weights with `ifstream` into RAM, with no mmap and no persistent
-  threadpool (Phase 4).
+- The ggml threadpool workers keep QoS `DEFAULT` on macOS (ggml sets no QoS on the threads it
+  creates; only the calling worker thread is raised). The first request after a long idle
+  pays a fixed ~20 ms (cores and caches waking up), independent of the threadpool.
+- ggml-blas (without OpenMP) still starts `n_threads_blas - 1` threads for every weight
+  conversion and converts the same weights on every pass; caching the F32 weights or reusing
+  threads would need a change inside ggml (not done: ggml is left untouched).
+- Windows: MSVC 2022 and 2026 (without `/WX`: upstream code has warnings) built the tree
+  *before* the Windows fixes on a Windows x64 runner and passed the decision gates there
+  (ctest, pytest, `verify_precision.py` with `PYTHONUTF8=1`, CLI t1 = t8). The fixes: model,
+  spec and input paths are opened as UTF-8 through UTF-16 (`CreateFileW`,
+  `std::filesystem::path`, `ggml_fopen`), `llama-laya-cli` takes its arguments from
+  `GetCommandLineW` and writes LF, and the Python helpers read child output as UTF-8. They
+  compile with MinGW-w64 GCC 15.2 (`-fsyntax-only -Wall -Wextra -Werror`, `_WIN32_WINNT`
+  0x0601 and 0x0A00) and pass on macOS, but have not been run on Windows yet.

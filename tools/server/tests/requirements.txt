@@ -5,4 +5,5 @@ openai~=2.14.0
 prometheus-client~=0.20.0
 PyYAML~=6.0
 requests~=2.32.3
+tqdm~=4.66
 wget~=3.2

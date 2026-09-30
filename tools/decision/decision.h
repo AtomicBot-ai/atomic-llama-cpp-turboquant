@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -121,6 +122,12 @@ struct decision_caps {
     int32_t                  max_tokens  = 0;  // sequence limit of the model
     int32_t                  n_threads   = 0;
     std::string              device;
+    std::string              kernels;       // laya: "cpu", "cpu+repack", "cpu+blas", "cpu+repack+blas"
+    int32_t                  n_threads_blas = 0; // threads of the BLAS backend; 0 without BLAS
+    // weight bytes: loaded into RAM, used in place from the read-only file mapping, repacked
+    size_t                   weights_loaded   = 0;
+    size_t                   weights_mapped   = 0;
+    size_t                   weights_repacked = 0;
     bool                     state_split = false; // router state pieces are tokenized once per request (exact for this vocabulary)
 };
 
@@ -156,7 +163,37 @@ struct decision_engine_params {
     std::string model_path;
     std::string plan;           // empty: spec plan, then engine default
     int32_t     n_threads = 4;
+    // matmul kernels: "auto", "default", "repack", "blas", "repack+blas"; empty: spec plan
+    // "kernels", then "auto". "auto" is "blas" when the BLAS backend is Accelerate (closer to the
+    // PyTorch reference than the ggml kernels, F16 and Q8_0, and faster; DECISION.md), else
+    // "default". Kernels change the logits slightly.
+    std::string kernels;
+    bool        use_mmap  = true;   // laya: token_embd stays in a read-only file mapping
+    bool        use_mlock = false;  // lock the model memory in RAM
+    bool        warmup    = true;   // one forward pass of warmup_tokens at init
+    int32_t     warmup_tokens  = 64;
+    int32_t     n_threads_blas = 0; // BLAS backend threads; 0: auto (laya_context_params)
+    int32_t     poll      = 0;      // threadpool polling level between graphs (0..100)
 };
+
+// default engine threads: the performance cores (macOS hw.perflevel0.physicalcpu, Windows the
+// cores of the highest EfficiencyClass); 0 when unknown (keep the caller's default)
+int32_t decision_cpu_perf_cores();
+
+// OpenMP builds: KMP_BLOCKTIME=0 / OMP_WAIT_POLICY=passive unless set (laya_cpu_env_defaults).
+// It calls setenv, which races with getenv in other threads: call it at process start, before
+// any thread (the HTTP threads of llama-server) exists. The engine does not call it.
+void decision_cpu_env_defaults();
+
+// File names and command lines are UTF-8, as in gguf and common/arg.cpp. Windows: argv and the
+// narrow file calls use the ANSI code page, so these go through UTF-16 there; elsewhere they are
+// the plain calls.
+//   decision_ifstream / decision_ofstream: binary streams on a UTF-8 file name
+//   decision_utf8_args: the arguments from GetCommandLineW when it has argc entries (as
+//     common_params_parse does), else argv as given
+std::ifstream            decision_ifstream(const std::string & path);
+std::ofstream            decision_ofstream(const std::string & path);
+std::vector<std::string> decision_utf8_args(int argc, char ** argv);
 
 // engine for spec.layout; throws std::runtime_error when the model cannot be used
 std::unique_ptr<decision_engine> decision_engine_init(const decision_spec & spec, const decision_engine_params & params);
