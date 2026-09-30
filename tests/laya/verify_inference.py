@@ -23,19 +23,19 @@ def main():
     cli = sys.argv[1]
     model = sys.argv[2]
 
-    manifest = json.load(open(os.path.join(GOLDEN, "manifest.json")))
+    manifest = json.load(open(os.path.join(GOLDEN, "manifest.json"), encoding="utf-8"))
     print("%-18s %-8s %-8s %-16s %-16s %s" % (
         "case", "ids", "markers", "golden", "mine", "max_atol"))
     ok = True
     for name, fn in manifest.items():
-        g = json.load(open(os.path.join(GOLDEN, fn)))
+        g = json.load(open(os.path.join(GOLDEN, fn), encoding="utf-8"))
         inp = {"state": g["state"], "questions": g["questions"]}
         inp_path = os.path.join(ROOT, "build", "laya_input.json")
         with open(inp_path, "w", encoding="utf-8") as f:
             json.dump(inp, f, ensure_ascii=False)
         r = subprocess.run(
             [cli, "-m", model, "-f", inp_path, "-t", "8"],
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             print("%-18s FAILED: %s" % (name, r.stderr[-200:]))
             ok = False

@@ -38,7 +38,7 @@ def run_cli(cli, model, case):
     with open(inp_path, "w", encoding="utf-8") as f:
         json.dump(inp, f, ensure_ascii=False)
     r = subprocess.run([cli, "-m", model, "-f", inp_path, "-t", "8"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise RuntimeError("cli failed on %s/%s: %s" % (model, case, r.stderr[-300:]))
     return g, json.loads(r.stdout)
@@ -123,7 +123,7 @@ def main():
     models = sys.argv[2:] or DEFAULT_MODELS
     models = [os.path.join(ROOT, m) if not os.path.isabs(m) else m for m in models]
 
-    manifest = json.load(open(os.path.join(GOLDEN, "manifest.json")))
+    manifest = json.load(open(os.path.join(GOLDEN, "manifest.json"), encoding="utf-8"))
     cases = list(manifest.keys())
 
     # outputs[model][case] -> normalized decision dict
