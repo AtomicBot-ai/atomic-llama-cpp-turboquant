@@ -457,6 +457,9 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_PLM) {
         return false; // TODO tensor shapes
     }
+    if (arch == LLM_ARCH_LAYA) {
+        return false; // graph lives in tools/laya, libllama only loads it for llama-quantize
+    }
     if (arch == LLM_ARCH_DEEPSEEK2OCR) {
         return false;
     }

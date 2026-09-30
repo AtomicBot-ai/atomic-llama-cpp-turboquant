@@ -1,0 +1,29 @@
+# decision
+
+# Decision API v1 library: py-json, decision.spec, request checks, calibration,
+# executor cards and the engines (laya for now). Static and PIC: the tools and
+# tests link it, and so does llama-server-impl, which is SHARED in DL builds.
+
+add_library(decision STATIC
+            decision.cpp
+            decision.h
+            decision-json.cpp
+            decision-json.h
+            decision-spec.cpp
+            decision-spec.h
+            decision-request.cpp
+            decision-request.h
+            decision-calib.cpp
+            decision-calib.h
+            decision-router.cpp
+            decision-router.h
+            engine-laya.cpp
+            laya-decide.cpp
+            laya-decide.h
+            ${PROJECT_SOURCE_DIR}/examples/gguf-hash/deps/sha256/sha256.c)
+
+target_link_libraries     (decision PUBLIC laya ggml)
+target_include_directories(decision PUBLIC . ${PROJECT_SOURCE_DIR}/vendor)
+target_include_directories(decision PRIVATE ${PROJECT_SOURCE_DIR}/examples/gguf-hash/deps) # sha256, also used by llama-gguf-hash
+target_compile_features   (decision PUBLIC cxx_std_17)
+set_target_properties     (decision PROPERTIES POSITION_INDEPENDENT_CODE ON)

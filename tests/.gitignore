@@ -1,6 +1,10 @@
 *
 !*.*
 !snapshots/
+!laya/
+!laya/golden/
+!decision/
+!decision/golden/
 *.o
 ggml-common.h
 **/*.swp

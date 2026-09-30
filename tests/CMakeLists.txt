@@ -227,6 +227,18 @@ llama_test(test-jinja NAME test-jinja-py ARGS -py LABEL python)
 llama_build_and_test(test-chat-auto-parser.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 llama_build_and_test(test-chat-template.cpp)
 llama_build_and_test(test-log.cpp)
+
+if (LLAMA_BUILD_TOOLS AND NOT EMSCRIPTEN)
+    # decision API library (tools/decision); kept outside the WIN32 shared block on purpose
+    llama_build_and_test(test-decision-json.cpp ARGS ${PROJECT_SOURCE_DIR}/tests/decision/golden)
+    llama_build_and_test(test-decision-request.cpp)
+    llama_build_and_test(test-decision-calib.cpp ARGS ${PROJECT_SOURCE_DIR}/tests/decision)
+    llama_build_and_test(test-decision-router.cpp)
+    foreach (test_target test-decision-json test-decision-request test-decision-calib test-decision-router)
+        target_link_libraries(${test_target} PRIVATE decision)
+    endforeach()
+endif()
+
 llama_build_and_test(
     test-peg-parser.cpp
     peg-parser/simple-tokenize.cpp
