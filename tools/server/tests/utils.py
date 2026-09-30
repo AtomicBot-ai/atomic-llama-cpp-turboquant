@@ -118,6 +118,14 @@ class ServerProcess:
     mcp_servers_config: str | None = None
     mcp_servers_json: str | None = None
     cors_origins: str | None = None
+    decision: bool = False
+    decision_spec: str | None = None
+    decision_plan: str | None = None
+    decision_queue: int | None = None
+    decision_max_items: int | None = None
+    decision_allow_uncalibrated: bool = False
+    decision_debug: bool = False
+    extra_env: dict | None = None
 
     # session variables
     process: subprocess.Popen | None = None
@@ -275,6 +283,22 @@ class ServerProcess:
             server_args.append("--backend_sampling")
         if self.gcp_compat:
             env["AIP_MODE"] = "PREDICTION"
+        if self.decision:
+            server_args.append("--decision")
+        if self.decision_spec:
+            server_args.extend(["--decision-spec", self.decision_spec])
+        if self.decision_plan:
+            server_args.extend(["--decision-plan", self.decision_plan])
+        if self.decision_queue is not None:
+            server_args.extend(["--decision-queue", self.decision_queue])
+        if self.decision_max_items is not None:
+            server_args.extend(["--decision-max-items", self.decision_max_items])
+        if self.decision_allow_uncalibrated:
+            server_args.append("--decision-allow-uncalibrated")
+        if self.decision_debug:
+            server_args.append("--decision-debug")
+        if self.extra_env:
+            env.update(self.extra_env)
 
         args = [str(arg) for arg in [server_path, *server_args]]
         print(f"tests: starting server with: {' '.join(args)}")
@@ -494,6 +518,30 @@ class ServerProcess:
 
 
 server_instances: Set[ServerProcess] = set()
+
+
+def tiny_laya_gguf() -> str:
+    """ Random tiny laya GGUF for the decision tests, generated offline (numpy + gguf-py). """
+    path = os.path.join(TMP_DIR, "tiny-laya-decision.gguf")
+    if not os.path.exists(path):
+        os.makedirs(TMP_DIR, exist_ok=True)
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../tests/decision/make_tiny_laya.py")
+        subprocess.run([sys.executable, script, path + ".tmp", "512", "256"], check=True)
+        os.replace(path + ".tmp", path)
+    return path
+
+
+def tiny_laya_decision_server() -> ServerProcess:
+    """ llama-server --decision on the tiny laya GGUF. Not a ServerPreset: load_all() would build it for every test module. """
+    server = ServerProcess()
+    server.offline = True
+    server.model_hf_repo = None
+    server.model_hf_file = None
+    server.model_file = tiny_laya_gguf()
+    server.model_alias = "tiny-laya"
+    server.n_threads = 2
+    server.decision = True
+    return server
 
 
 class ServerPreset:

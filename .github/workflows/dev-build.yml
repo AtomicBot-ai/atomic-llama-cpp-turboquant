@@ -1024,6 +1024,77 @@ jobs:
             llama-turboquant-macos-arm64.tar.gz
           retention-days: 14
 
+  # Decision mode (DECISION.md): C++ unit tests and the offline server contract
+  # tests. Warnings are errors on the Linux leg only. Builds only what the
+  # tests need and no archive, so publish-dev-latest does not wait for it.
+  decision-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-decision-tests-${{ matrix.os }}
+          evict-old-files: 1d
+
+      - name: Build (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_TESTS=ON \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_FATAL_WARNINGS=ON
+          cmake --build build --config Release -j $(nproc) \
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router llama-server llama-laya-cli
+
+      # same toolchain as the server.yml Windows job
+      - name: Build (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: cmd
+        run: |
+          cmake -B build -G "Ninja Multi-Config" ^
+            -DCMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake ^
+            -DGGML_NATIVE=OFF ^
+            -DLLAMA_CURL=OFF ^
+            -DLLAMA_OPENSSL=OFF ^
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DLLAMA_BUILD_TOOLS=ON ^
+            -DLLAMA_BUILD_TESTS=ON ^
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release -j %NUMBER_OF_PROCESSORS% ^
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router llama-server llama-laya-cli
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release -R decision --output-on-failure
+
+      - name: Python setup
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          pip-install: -r tools/server/tests/requirements.txt
+
+      # offline: the tests generate a tiny random laya GGUF
+      - name: Server tests
+        shell: bash
+        env:
+          PYTHONIOENCODING: ':replace'
+        run: |
+          cd tools/server/tests
+          python -m pytest -v unit/test_decision.py
+
   # Republishes the rolling `dev-latest` prerelease with whatever archives the
   # build jobs produced. Runs even when some jobs fail (if: always()) so a
   # broken backend never blocks the others from shipping to testers — the

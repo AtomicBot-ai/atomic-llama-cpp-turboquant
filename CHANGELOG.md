@@ -10,6 +10,50 @@ commit list underneath.
 
 Releases before `b10269-1.5.0` predate this file; see the git history.
 
+## Unreleased
+
+### Added
+
+- **Decision models in `llama-server`** (`--decision`, see `DECISION.md`). A
+  separate server mode for Jev-class decision models: no chat routes, one CPU
+  worker, calibrated probabilities instead of generated text.
+  - `POST /v1/systemone`: TypeSafe-compatible typed questions (noul, choice,
+    score) over a state.
+  - `POST /v1/router/score`: executor cards in, an independent calibrated
+    `p_success` per candidate out (Platt calibration from the model's spec; 501
+    unless calibrated or `--decision-allow-uncalibrated`).
+  - `/health`, `/props` (`decision` block with limits, plan and calibration),
+    `/v1/models` capabilities, an error envelope with stable reason codes, and a
+    bounded queue (429 + `Retry-After`).
+  - New flags: `--decision`, `--decision-spec`, `--decision-plan`,
+    `--decision-queue`, `--decision-max-items`, `--decision-allow-uncalibrated`,
+    `--decision-debug`.
+- **Laya decision model support** (`tools/laya`, `llama-laya-cli`), based on
+  upstream PR #29363: converter for `laya-multilingual`, GGUF arch `laya`, a
+  self-contained CPU graph, and a tokenizer that matches the HF tokenizer exactly.
+  Inputs follow the laya 0.3.21 PyTorch reference. On a 2605-question parity set
+  the F32 GGUF matches the reference to 6.6e-4 in scorer logits with identical
+  answers; F16 changes 2 answers, both near-ties.
+- **Model metadata `decision.spec`**, stamped into a GGUF without reconversion
+  with `gguf-py/gguf/scripts/gguf_decision_spec.py`. A calibration marked
+  required must cover every question type and option count, or the model does not
+  load.
+
+### Notes
+
+- Decision mode runs on the CPU backend only; start it with `--device none` next
+  to a GPU chat server.
+- A laya GGUF started without `--decision` fails fast with a hint.
+- Recommended laya precision is F16: Q8_0 is about 1.5x faster but changes about
+  2% of answers on the parity set.
+
+### Changed
+
+- **Qwen3.5 / Qwen3-Next / Kimi-Linear / Kimi-K3 / BailingMoeV3 numerics:** the
+  Gated DeltaNet q/k normalization now uses upstream's `rsqrt(sum(x^2) + eps)`
+  form (upstream 5fdfa6282). Logits of these models shift slightly; results
+  measured on earlier builds are not bit-identical.
+
 ## b10269-1.6.0
 
 ### Added

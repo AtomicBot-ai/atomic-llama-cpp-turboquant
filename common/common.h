@@ -417,6 +417,17 @@ struct common_params_diffusion {
     bool    add_gumbel_noise = false; // add gumbel noise to the logits if temp > 0.0
 };
 
+// llama-server --decision (see DECISION.md)
+struct common_params_decision {
+    bool        enabled            = false;
+    std::string spec_path          = "";    // sidecar decision.spec, replaces the one in the GGUF // NOLINT
+    std::string plan               = "";    // empty: plan from the spec                            // NOLINT
+    int32_t     queue              = 4;     // waiting requests before 429
+    int32_t     max_items          = 16;    // questions per systemone request, candidates per router request
+    bool        allow_uncalibrated = false; // router scores without a router calibration
+    bool        debug              = false; // raw logits, render endpoint, load delay for tests
+};
+
 // reasoning API response format (not to be confused as chat template's reasoning format)
 // only used by server
 enum common_reasoning_format {
@@ -519,6 +530,7 @@ struct common_params {
     struct common_params_sampling    sampling;
     struct common_params_speculative speculative;
     struct common_params_diffusion   diffusion;
+    struct common_params_decision    decision;
 
     struct common_params_model model;
 
