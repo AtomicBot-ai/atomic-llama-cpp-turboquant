@@ -319,10 +319,24 @@ static void overflow_arithmetic_self_test() {
     const uint64_t nb3 = 131072*nb2;
     const uint64_t dist = 1023, head = 63, query = 131071, batch = 3;
     const uint64_t offset = dist*nb0 + head*nb1 + query*nb2 + batch*nb3;
+#if defined(__SIZEOF_INT128__)
     __extension__ typedef unsigned __int128 uint128_t;
     const uint128_t exact = uint128_t(dist)*nb0 + uint128_t(head)*nb1 +
         uint128_t(query)*nb2 + uint128_t(batch)*nb3;
     GGML_ASSERT(exact <= UINT64_MAX && offset == (uint64_t) exact && offset > INT32_MAX);
+#else
+    // no 128-bit integer (MSVC): the same check with overflow-checked 64-bit steps
+    const uint64_t terms[4][2] = { { dist, nb0 }, { head, nb1 }, { query, nb2 }, { batch, nb3 } };
+    uint64_t exact = 0;
+    bool overflow = false;
+    for (const auto & t : terms) {
+        overflow = overflow || (t[1] != 0 && t[0] > UINT64_MAX/t[1]);
+        const uint64_t term = t[0]*t[1];
+        overflow = overflow || exact > UINT64_MAX - term;
+        exact += term;
+    }
+    GGML_ASSERT(!overflow && offset == exact && offset > INT32_MAX);
+#endif
 
     const int64_t nq = int64_t(1) << 40;
     const int64_t nkv = nq + 8192;
