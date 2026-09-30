@@ -3396,6 +3396,61 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_RERANKING"));
     add_opt(common_arg(
+        {"--decision"},
+        "serve a decision model (Decision API v1, see DECISION.md) instead of chat; requires -m (default: disabled)",
+        [](common_params & params) {
+            params.decision.enabled = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION"));
+    add_opt(common_arg(
+        {"--decision-spec"}, "FNAME",
+        "decision spec JSON that replaces the decision.spec of the GGUF (default: from the GGUF)",
+        [](common_params & params, const std::string & value) {
+            params.decision.spec_path = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_SPEC"));
+    add_opt(common_arg(
+        {"--decision-plan"}, "NAME",
+        "decision compute plan; laya: sequential, packed (default: from the spec)",
+        [](common_params & params, const std::string & value) {
+            params.decision.plan = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_PLAN"));
+    add_opt(common_arg(
+        {"--decision-queue"}, "N",
+        string_format("decision requests that may wait before new ones get 429 (default: %d)", params.decision.queue),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--decision-queue must be >= 0");
+            }
+            params.decision.queue = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_QUEUE"));
+    add_opt(common_arg(
+        {"--decision-max-items"}, "N",
+        string_format("max questions per /v1/systemone request and candidates per /v1/router/score request (default: %d)", params.decision.max_items),
+        [](common_params & params, int value) {
+            if (value < 1) {
+                throw std::invalid_argument("--decision-max-items must be >= 1");
+            }
+            params.decision.max_items = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_MAX_ITEMS"));
+    add_opt(common_arg(
+        {"--decision-allow-uncalibrated"},
+        "serve /v1/router/score without a router calibration: calibrated=false, p = sigmoid(logit) (default: disabled)",
+        [](common_params & params) {
+            params.decision.allow_uncalibrated = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_ALLOW_UNCALIBRATED"));
+    add_opt(common_arg(
+        {"--decision-debug"},
+        "decision debug mode: raw logits and token ids in answers, POST /v1/decision/render, request logging (default: disabled)",
+        [](common_params & params) {
+            params.decision.debug = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_DEBUG"));
+    add_opt(common_arg(
         {"--api-key"}, "KEY",
         "API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)",
         [](common_params & params, const std::string & value) {
