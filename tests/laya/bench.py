@@ -53,7 +53,7 @@ def run(cli, model, inp, threads=8, bench=0):
     cmd = [cli, "-m", model, "-f", inp, "-t", str(threads)]
     if bench:
         cmd += ["-b", str(bench)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise RuntimeError("cli failed: %s" % r.stderr[-300:])
     return json.loads(r.stdout), r.stderr
@@ -75,8 +75,8 @@ def main():
     batch_in = write_input(["choice_single_zh", "choice_multi_zh", "score_zh", "noul_zh"],
                            os.path.join(TMP, "laya_bench_batch.json"), 4)
 
-    n_single = json.load(open(single_in))["questions"]
-    n_batch = json.load(open(batch_in))["questions"]
+    n_single = json.load(open(single_in, encoding="utf-8"))["questions"]
+    n_batch = json.load(open(batch_in, encoding="utf-8"))["questions"]
     print("inputs: single=%d question, batch=%d questions" % (len(n_single), len(n_batch)))
 
     print("\n== forward latency (threads=8, in-process) ==")
