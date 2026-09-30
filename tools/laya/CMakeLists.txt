@@ -7,7 +7,9 @@
 
 add_library(laya STATIC
             laya.cpp
-            laya.h)
+            laya.h
+            laya-unicode.cpp
+            laya-unicode.h)
 
 target_link_libraries     (laya PUBLIC ggml)
 target_include_directories(laya PUBLIC .)

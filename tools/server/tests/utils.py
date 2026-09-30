@@ -3,6 +3,7 @@
 
 # type: ignore[reportUnusedImport]
 
+import hashlib
 import subprocess
 import os
 
@@ -125,6 +126,9 @@ class ServerProcess:
     decision_max_items: int | None = None
     decision_allow_uncalibrated: bool = False
     decision_debug: bool = False
+    decision_kernels: str | None = None
+    load_mode: str | None = None
+    no_warmup: bool = False
     extra_env: dict | None = None
 
     # session variables
@@ -297,6 +301,12 @@ class ServerProcess:
             server_args.append("--decision-allow-uncalibrated")
         if self.decision_debug:
             server_args.append("--decision-debug")
+        if self.decision_kernels:
+            server_args.extend(["--decision-kernels", self.decision_kernels])
+        if self.load_mode:
+            server_args.extend(["--load-mode", self.load_mode])
+        if self.no_warmup:
+            server_args.append("--no-warmup")
         if self.extra_env:
             env.update(self.extra_env)
 
@@ -520,24 +530,36 @@ class ServerProcess:
 server_instances: Set[ServerProcess] = set()
 
 
-def tiny_laya_gguf() -> str:
-    """ Random tiny laya GGUF for the decision tests, generated offline (numpy + gguf-py). """
-    path = os.path.join(TMP_DIR, "tiny-laya-decision.gguf")
+def tiny_laya_gguf(english: bool = False, marker_mismatch: bool = False, q8: bool = False) -> str:
+    """ Random tiny laya GGUF for the decision tests, generated offline (numpy + gguf-py).
+        english: the bytelevel-bpe tokenizer and temperature buckets of the English checkpoints.
+        marker_mismatch: laya.marker_token_id != the mask token id (must not load).
+        q8: Q8_0 encoder matmul weights (something for the CPU repack buffers).
+        The cache folder carries a hash of the generator, so a changed generator makes a new file
+        (the file name itself stays: the server derives the default model name from it). """
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../tests/decision/make_tiny_laya.py")
+    with open(script, "rb") as f:
+        gen_hash = hashlib.sha256(f.read()).hexdigest()[:12]
+    name = "tiny-laya-decision" + ("-en" if english else "") + ("-badmarker" if marker_mismatch else "") + \
+           ("-q8" if q8 else "") + ".gguf"
+    folder = os.path.join(TMP_DIR, "tiny-laya-" + gen_hash)
+    path = os.path.join(folder, name)
     if not os.path.exists(path):
-        os.makedirs(TMP_DIR, exist_ok=True)
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../tests/decision/make_tiny_laya.py")
-        subprocess.run([sys.executable, script, path + ".tmp", "512", "256"], check=True)
+        os.makedirs(folder, exist_ok=True)
+        flags = (["--english"] if english else []) + (["--marker-mismatch"] if marker_mismatch else []) + \
+                (["--q8"] if q8 else [])
+        subprocess.run([sys.executable, script, path + ".tmp", "512", "256"] + flags, check=True)
         os.replace(path + ".tmp", path)
     return path
 
 
-def tiny_laya_decision_server() -> ServerProcess:
+def tiny_laya_decision_server(english: bool = False, q8: bool = False) -> ServerProcess:
     """ llama-server --decision on the tiny laya GGUF. Not a ServerPreset: load_all() would build it for every test module. """
     server = ServerProcess()
     server.offline = True
     server.model_hf_repo = None
     server.model_hf_file = None
-    server.model_file = tiny_laya_gguf()
+    server.model_file = tiny_laya_gguf(english, q8=q8)
     server.model_alias = "tiny-laya"
     server.n_threads = 2
     server.decision = True

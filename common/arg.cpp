@@ -1487,6 +1487,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             if (params.cpuparams.n_threads <= 0) {
                 params.cpuparams.n_threads = std::thread::hardware_concurrency();
             }
+            params.decision.threads_set = true;
         }
     ).set_env("LLAMA_ARG_THREADS"));
     add_opt(common_arg(
@@ -3471,6 +3472,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.decision.plan = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_PLAN"));
+    add_opt(common_arg(
+        {"--decision-kernels"}, "NAME",
+        "decision matmul kernels; laya: auto (blas when the BLAS backend is Accelerate, else default), default (ggml CPU),\n"
+        "repack (CPU repack buffers), blas (BLAS backend), repack+blas; kernels change the logits slightly\n"
+        "(default: from the spec, then auto)",
+        [](common_params & params, const std::string & value) {
+            if (value != "auto" && value != "default" && value != "repack" && value != "blas" && value != "repack+blas") {
+                throw std::invalid_argument("--decision-kernels must be auto, default, repack, blas or repack+blas");
+            }
+            params.decision.kernels = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_KERNELS"));
     add_opt(common_arg(
         {"--decision-queue"}, "N",
         string_format("decision requests that may wait before new ones get 429 (default: %d)", params.decision.queue),

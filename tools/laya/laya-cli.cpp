@@ -9,7 +9,11 @@
 // per-question outputs used to compare against tests/laya/golden.
 //
 // Usage:
-//   llama-laya-cli -m laya-f16.gguf -f input.json
+//   llama-laya-cli -m laya-f16.gguf -f input.json [-t N] [-b RUNS] [--kernels NAME] [--no-mmap] [--mlock]
+//       --kernels: default (ggml CPU kernels; the golden files and tests/laya/verify_precision.py
+//       use it), auto (what llama-server --decision runs: blas when the BLAS backend is
+//       Accelerate, else default), repack (CPU repack buffers), blas (BLAS backend), repack+blas.
+//       Kernels change the logits slightly.
 //   llama-laya-cli -m laya-f16.gguf --tokenize strings.jsonl   (one JSON string per line;
 //       prints the token ids of each, add_special_tokens=False, for tests/laya/verify_tokenizer.py)
 //
@@ -29,6 +33,7 @@
 
 #include "laya.h"
 #include "laya-decide.h"
+#include "decision.h"
 #include "decision-json.h"
 
 #include <algorithm>
@@ -40,9 +45,14 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#    include <fcntl.h>
+#    include <io.h>
+#endif
+
 // --tokenize: token ids of each JSON string line, timings on stderr
 static int laya_cli_tokenize(const laya_model * model, const std::string & path) {
-    FILE * f = fopen(path.c_str(), "rb");
+    FILE * f = ggml_fopen(path.c_str(), "rb"); // UTF-8 name, also on Windows
     if (!f) {
         fprintf(stderr, "laya: failed to open '%s'\n", path.c_str());
         return 1;
@@ -88,26 +98,44 @@ static int laya_cli_tokenize(const laya_model * model, const std::string & path)
 }
 
 int main(int argc, char ** argv) {
+#if defined(_WIN32)
+    // "\n", not "\r\n": the output matches the golden files byte for byte on every platform
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
     std::string model_path;
     std::string input_path;
     std::string tokenize_path;
     int n_threads = 1;
     int n_bench   = 0; // >0: repeat the forward pass in-process for timing/stability
+    std::string kernels = "default";
+    laya_model_params mparams;
 
+    // Windows: argv is in the ANSI code page; paths go on as UTF-8 (ggml_fopen, gguf, laya)
+    const std::vector<std::string> args = decision_utf8_args(argc, argv);
     for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
+        const std::string & arg = args[i];
         if (arg == "-m" || arg == "--model") {
-            if (i + 1 < argc) model_path = argv[++i];
+            if (i + 1 < argc) model_path = args[++i];
         } else if (arg == "-f" || arg == "--file") {
-            if (i + 1 < argc) input_path = argv[++i];
+            if (i + 1 < argc) input_path = args[++i];
         } else if (arg == "--tokenize") {
-            if (i + 1 < argc) tokenize_path = argv[++i];
+            if (i + 1 < argc) tokenize_path = args[++i];
         } else if (arg == "-t" || arg == "--threads") {
-            if (i + 1 < argc) n_threads = std::max(1, std::atoi(argv[++i]));
+            if (i + 1 < argc) n_threads = std::max(1, std::atoi(args[++i].c_str()));
         } else if (arg == "-b" || arg == "--bench") {
-            if (i + 1 < argc) n_bench = std::max(0, std::atoi(argv[++i]));
+            if (i + 1 < argc) n_bench = std::max(0, std::atoi(args[++i].c_str()));
+        } else if (arg == "--kernels") {
+            if (i + 1 < argc) kernels = args[++i];
+            if (kernels != "auto" && kernels != "default" && kernels != "repack" && kernels != "blas" && kernels != "repack+blas") {
+                fprintf(stderr, "laya: --kernels must be auto, default, repack, blas or repack+blas\n");
+                return 1;
+            }
+        } else if (arg == "--no-mmap") {
+            mparams.use_mmap = false;
+        } else if (arg == "--mlock") {
+            mparams.use_mlock = true;
         } else if (arg == "-h" || arg == "--help") {
-            printf("Usage: %s -m <laya-f16.gguf> -f <input.json> [-t threads] [-b bench_runs]\n"
+            printf("Usage: %s -m <laya-f16.gguf> -f <input.json> [-t threads] [-b bench_runs] [--kernels default|auto|repack|blas|repack+blas] [--no-mmap] [--mlock]\n"
                    "       %s -m <laya-f16.gguf> --tokenize <strings.jsonl>\n", argv[0], argv[0]);
             return 0;
         } else {
@@ -127,7 +155,11 @@ int main(int argc, char ** argv) {
     // load the self-contained model
     laya_model * model = nullptr;
     try {
-        model = laya_model_load_from_file(model_path.c_str());
+        if (kernels == "auto") {
+            kernels = laya_blas_description() == "Accelerate" ? "blas" : "default";
+        }
+        mparams.use_extra_bufts = kernels == "repack" || kernels == "repack+blas";
+        model = laya_model_load_from_file_ext(model_path.c_str(), mparams);
     } catch (const std::exception & e) {
         fprintf(stderr, "laya: failed to load model: %s\n", e.what());
         return 1;
@@ -141,7 +173,7 @@ int main(int argc, char ** argv) {
     }
 
     // read input JSON
-    FILE * fin = fopen(input_path.c_str(), "rb");
+    FILE * fin = ggml_fopen(input_path.c_str(), "rb");
     if (!fin) {
         fprintf(stderr, "laya: failed to open input file '%s'\n", input_path.c_str());
         laya_model_free(model);
@@ -249,7 +281,10 @@ int main(int argc, char ** argv) {
 
     laya_context * ctx = nullptr;
     try {
-        ctx = laya_init(model, n_threads);
+        laya_context_params cparams;
+        cparams.n_threads = n_threads;
+        cparams.use_blas  = kernels == "blas" || kernels == "repack+blas";
+        ctx = laya_init_ext(model, cparams);
     } catch (const std::exception & e) {
         fprintf(stderr, "laya: failed to init context: %s\n", e.what());
         laya_model_free(model);
@@ -292,9 +327,9 @@ int main(int argc, char ** argv) {
 
     if (n_bench > 0) {
         fprintf(stderr,
-                "laya bench: tokens=%d seqs=%d runs=%d threads=%d  "
+                "laya bench: tokens=%d seqs=%d runs=%d threads=%d kernels=%s  "
                 "mean=%.2fms median=%.2fms min=%.2fms max=%.2fms std=%.2fms  deterministic=%s\n",
-                n_tokens, n_seqs, n_runs, n_threads,
+                n_tokens, n_seqs, n_runs, n_threads, laya_context_kernels(ctx).c_str(),
                 mean_ms, median_ms, min_ms, max_ms, std_ms, deterministic ? "yes" : "no");
     }
 
@@ -307,7 +342,7 @@ int main(int argc, char ** argv) {
     for (auto it = questions.begin(); it != questions.end(); ++it, ++qid) {
         json ans;
         json pq;
-        laya_postprocess(parsed[qid], seqs[qid], result, qid, hp.temperature, ans, pq);
+        laya_postprocess(parsed[qid], seqs[qid], result, qid, hp, ans, pq);
         answers[it.key()]      = ans;
         per_question[it.key()] = pq;
         // reference usage["options"]: questions whose options lost their own token span to the head budget

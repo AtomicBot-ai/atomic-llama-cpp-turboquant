@@ -276,8 +276,10 @@ static std::string replace_all(std::string s, const std::string & from, const st
     return s;
 }
 
+// <unusedN> (mmBERT) or [unusedN] (ModernBERT)
 static bool is_unused_token(const std::string & s) {
-    if (s.size() < 9 || s.compare(0, 7, "<unused") != 0 || s.back() != '>') {
+    if (s.size() < 9 || s.compare(1, 6, "unused") != 0 ||
+        !((s[0] == '<' && s.back() == '>') || (s[0] == '[' && s.back() == ']'))) {
         return false;
     }
     for (size_t i = 7; i + 1 < s.size(); ++i) {
@@ -289,16 +291,23 @@ static bool is_unused_token(const std::string & s) {
 }
 
 laya_escape laya_escape_init(const laya_model * model) {
-    laya_escape esc;
-    esc.mask = laya_vocab_mask_token(model);
     std::vector<std::string> text;
     std::vector<bool>        control;
+    std::vector<std::string> strs;
     laya_vocab_added_tokens(model, text, control);
     for (size_t i = 0; i < text.size(); ++i) {
         if (!text[i].empty() && (control[i] || is_unused_token(text[i]))) {
-            esc.control.push_back(text[i]);
+            strs.push_back(text[i]);
         }
     }
+    return laya_escape_make(laya_vocab_mask_token(model), std::move(strs));
+}
+
+laya_escape laya_escape_make(const std::string & mask, std::vector<std::string> control) {
+    laya_escape esc;
+    esc.mask    = mask;
+    esc.control = std::move(control);
+    esc.control.erase(std::remove(esc.control.begin(), esc.control.end(), std::string()), esc.control.end());
     if (!esc.mask.empty()) {
         esc.control.push_back(esc.mask); // escape-control includes mask-to-space
     }
@@ -538,13 +547,21 @@ static float clamp_temperature(float t) {
     return std::min(5.0f, std::max(0.5f, t));
 }
 
-// temperature_by_options is not persisted in the GGUF, so only the base
-// per-qtype temperature applies (like the reference when the map is empty).
-static float temperature_for_qtype(const std::vector<float> & temperature, int32_t qtype) {
-    if (temperature.empty()) {
+// reference: temperature_by_options[temp_bucket(qtype, k)], else temperature[qtype]; each clamped
+static float temperature_for_qtype(const laya_hparams & hp, int32_t qtype, int32_t k) {
+    if (qtype >= 0 && qtype < 3 && !hp.temperature_buckets.empty()) {
+        const char * size = k <= 2 ? "2" : k <= 5 ? "3-5" : k <= 10 ? "6-10" : "11+";
+        const std::string bucket = std::string(LAYA_QTYPE_NAMES[qtype]) + ":" + size;
+        for (size_t i = 0; i < hp.temperature_buckets.size(); ++i) {
+            if (hp.temperature_buckets[i] == bucket) {
+                return clamp_temperature(hp.temperature_bucket_values[i]);
+            }
+        }
+    }
+    if (hp.temperature.empty()) {
         return 1.0f;
     }
-    return clamp_temperature(temperature[qtype % (int32_t) temperature.size()]);
+    return clamp_temperature(hp.temperature[qtype % (int32_t) hp.temperature.size()]);
 }
 
 static float confidence_from_probs(const std::vector<float> & p) {
@@ -573,7 +590,7 @@ void laya_postprocess(
         const laya_seq & seq,
         const laya_result & result,
         int32_t qid,
-        const std::vector<float> & temperature,
+        const laya_hparams & hp,
         json & ans,
         json & pq) {
     const int32_t n_markers_max = result.n_markers_max;
@@ -583,7 +600,7 @@ void laya_postprocess(
     const int32_t k  = (int32_t) seq.markers.size();
     const int32_t qt = seq.qtype;
 
-    const float t_scale = temperature_for_qtype(temperature, qt);
+    const float t_scale = temperature_for_qtype(hp, qt, k);
     std::vector<float> logits_k(k);
     for (int32_t j = 0; j < k; ++j) {
         logits_k[j] = result.logits[qid*n_markers_max + j] / t_scale;

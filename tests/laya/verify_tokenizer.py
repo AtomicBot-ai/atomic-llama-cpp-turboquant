@@ -1,9 +1,11 @@
 """Tokenizer parity: llama-laya-cli --tokenize against the HF tokenizer of the checkpoint.
 
-Builds a deterministic corpus (newline and tab runs, HTML tags, <unusedN> and
-other control tokens, the mask literal after all kinds of whitespace, CJK,
-emoji, NFC/NFD, rare codepoints that need byte fallback, long space-free words
-such as base64, URLs and CJK runs, and random mixes), tokenizes it with
+Works for both laya tokenizers (metaspace-bpe: laya-multilingual; bytelevel-bpe: laya and
+laya-typed-decisions). Builds a deterministic corpus (newline and tab runs, HTML tags, <unusedN> and
+other control tokens, the added tokens of the checkpoint itself and near misses, the mask literal
+after all kinds of whitespace, CJK, emoji, NFC/NFD, rare codepoints that need byte fallback, long
+space-free words such as base64, URLs and CJK runs, an English-heavy section (prose, contractions,
+numbers, code, JSON, markdown, whitespace runs, accents in NFC and NFD) and random mixes), tokenizes it with
 `tokenizer(text, add_special_tokens=False)` and with the C++ tokenizer, and
 requires 0 mismatches. It also checks, on the HF tokenizer alone, that a router
 state tokenizes as its head (card + criterion, ending in "task:") followed by
@@ -13,8 +15,8 @@ times 1 MB space-free inputs through the C++ tokenizer.
 Usage:
     python tests/laya/verify_tokenizer.py <llama-laya-cli> <laya.gguf> <hf-tokenizer-dir> [n_random]
 
-<hf-tokenizer-dir> holds tokenizer.json (e.g. the `tokenizer/` folder of
-convaiinnovations/laya-multilingual). Needs `transformers`.
+<hf-tokenizer-dir> holds tokenizer.json (the `tokenizer/` folder of a laya checkpoint, e.g.
+convaiinnovations/laya-multilingual or convaiinnovations/laya). Needs `transformers`.
 """
 
 import json
@@ -29,7 +31,90 @@ import unicodedata
 from transformers import AutoTokenizer
 
 
-def corpus(n_random: int) -> list:
+WORDS = ("the quick brown fox jumps over lazy dog invoice refund customer support ticket billing account "
+         "password reset shipping delayed order cancel subscription error timeout server request response "
+         "model agent executor criterion passed failed measured results task summary extract field date total "
+         "please thanks hello world yes no maybe it is was were be been being have has had do does did will "
+         "would should could can may might must shall AI API JSON HTTP URL CPU GPU LLM Q4_K_M v1.2.3").split()
+
+
+def english(rng: random.Random, n: int) -> list:
+    """English-heavy strings: the text the English checkpoints are for."""
+    out = []
+    contractions = ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d", "'S", "'T", "'RE", "'VE", "'M", "'LL", "'D",
+                    "\u2019s", "\u2019t", "''s", "'", "' s", "'x"]
+    for c in contractions:
+        out += ["it" + c, "It" + c + " fine", "don" + c, " " + c, c, c + c, "a" + c + "b", "I" + c + "\n", "(" + c + ")"]
+    nums = ["0", "7", "42", "123", "1234", "12345", "3.14159", "1,234,567.89", "-5", "+1", "1e-9", "0x1F", "2026-09-30",
+            "10:30", "188/200", "99.5%", "$1,234.56", "\u20ac12", "1st", "2nd", "3rd", "4th", "1/2", "\u00bd", "\u0663\u0664"]
+    for x in nums:
+        out += [x, " " + x, "a" + x, x + "a", x + " items", "(" + x + ")", x + x]
+    code = ["def f(x):\n    return x ** 2\n", "for (int i = 0; i < n; ++i) {\n\tsum += a[i];\n}",
+            "SELECT * FROM users WHERE id = 42;", "if (a && b || !c) { return; }", "x = {'a': 1, \"b\": [2, 3]}",
+            "<div class=\"row\"><span>Hi</span></div>", "#include <stdio.h>", "git commit -m \"fix: bug\"",
+            "https://example.com/path/to/page?query=1&b=two#frag", "user.name+tag@example.co.uk", "C:\\Users\\me\\file.txt",
+            "## Heading\n\n- item one\n- item two\n\n**bold** _it_ `code`", "| a | b |\n|---|---|\n| 1 | 2 |",
+            "\"quoted\" 'single' `back` \u201ccurly\u201d \u2018curly\u2019", "... -- --- !!! ??? ;;; ::", "a\u2014b a\u2013b a\u2026b"]
+    for c in code:
+        out += [c, " " + c, c + "\n", c.upper(), c.replace(" ", "  ")]
+    accents = ["caf\u00e9", "na\u00efve", "r\u00e9sum\u00e9", "fa\u00e7ade", "co\u00f6perate", "Z\u00fcrich", "Ma\u00f1ana",
+               "\u00c5ngstr\u00f6m", "\u212bngstr\u00f6m", "\u2126 ohm", "K\u212a kelvin", "\ufb01ne \ufb02ow"]
+    for a in accents:
+        for form in ("NFC", "NFD", "NFKC", "NFKD"):
+            t = unicodedata.normalize(form, a)
+            out += [t, "The " + t + " is here.", t.upper()]
+    ws = [" ", "  ", "   ", "\t", "\n", "\n\n", " \n", "\n ", "\r\n", "\u00a0", "\u2009", "\u3000"]
+    for _ in range(n):
+        k = rng.randint(1, 30)
+        words = []
+        for _ in range(k):
+            w = rng.choice(WORDS)
+            r = rng.random()
+            if r < 0.08:
+                w = w.capitalize()
+            elif r < 0.12:
+                w = w.upper()
+            elif r < 0.18:
+                w += rng.choice(contractions[:7])
+            elif r < 0.24:
+                w += rng.choice([",", ".", "!", "?", ":", ";", ")", "\"", "'"])
+            elif r < 0.28:
+                w = rng.choice(nums)
+            elif r < 0.30:
+                w = rng.choice(accents)
+            words.append(w)
+        s = ""
+        for w in words:
+            s += w + (rng.choice(ws) if rng.random() < 0.15 else " ")
+        if rng.random() < 0.3:
+            s = s.strip()
+        if rng.random() < 0.2:
+            s = unicodedata.normalize(rng.choice(["NFD", "NFKD"]), s)
+        out.append(s)
+    return out
+
+
+def vocab_tokens(hf, rng: random.Random) -> list:
+    """The added tokens of this checkpoint (special or not), alone, glued, near misses, after whitespace."""
+    out = []
+    added = sorted(hf.get_added_vocab().keys())
+    specials = sorted(set(hf.all_special_tokens))
+    pick = specials + rng.sample(added, min(len(added), 60))
+    for t in pick:
+        if not t:
+            continue
+        out += [t, "a" + t + "b", " " + t + " ", t + t, "x " + t + "y", t + "\n" + t, "\t" + t, t[:-1], t[1:],
+                t.lower(), t.upper(), t[:1] + " " + t[1:], "<" + t + ">", "[" + t + "]"]
+    mask = hf.mask_token
+    for ws in ["", " ", "  ", "\t", "\n", "\n\n", " \n ", "\u3000", "\u00a0", "\u2028", "\u2581", " \t ", "\r\n", "   "]:
+        out += ["a" + ws + mask, ws + mask, "a" + ws + mask + "b", "a" + ws + mask + ws + mask, mask + ws,
+                specials[0] + ws + mask, "x" + ws + mask + " y", "e\u0301" + ws + mask]
+    for _ in range(400):
+        out.append("".join(rng.choice(pick + WORDS + [" ", "  ", "\n", mask, "e\u0301", "\u00e9"]) for _ in range(rng.randint(2, 12))))
+    return out
+
+
+def corpus(n_random: int, hf=None) -> list:
     rng = random.Random(1234)
     out = []
 
@@ -102,6 +187,10 @@ def corpus(n_random: int) -> list:
         if rng.random() < 0.3:
             s = unicodedata.normalize(rng.choice(["NFC", "NFD", "NFKC", "NFKD"]), s)
         out.append(s)
+    if hf is not None:
+        out += vocab_tokens(hf, random.Random(4321))
+    out += english(random.Random(5678), max(5000, n_random))
+
     # random unicode (no surrogates)
     for _ in range(n_random // 4):
         s = "".join(chr(rng.choice([rng.randint(0x20, 0x7E), rng.randint(0xA0, 0x2FFF), rng.randint(0x3000, 0xD7FF),
@@ -117,7 +206,7 @@ def cli_tokenize(cli: str, model: str, texts: list) -> tuple:
             f.write(json.dumps(t, ensure_ascii=True) + "\n")
         path = f.name
     try:
-        r = subprocess.run([cli, "-m", model, "--tokenize", path], capture_output=True, text=True)
+        r = subprocess.run([cli, "-m", model, "--tokenize", path], capture_output=True, text=True, encoding="utf-8", errors="replace")
     finally:
         os.unlink(path)
     if r.returncode != 0:
@@ -163,8 +252,10 @@ def main():
             sys.exit(1)
 
     hf = AutoTokenizer.from_pretrained(tok_dir)
-    texts = corpus(n_random)
-    print("corpus: %d strings, %d chars" % (len(texts), sum(len(t) for t in texts)), flush=True)
+    texts = corpus(n_random, hf)
+    n_en = sum(1 for t in texts if t and sum(c.isascii() for c in t) >= 0.9 * len(t) and any(c.isalpha() for c in t))
+    print("corpus: %d strings, %d chars, %d English-heavy (>= 90%% ASCII, has letters)" % (
+        len(texts), sum(len(t) for t in texts), n_en), flush=True)
 
     t0 = time.time()
     want = [hf(t, add_special_tokens=False)["input_ids"] for t in texts]

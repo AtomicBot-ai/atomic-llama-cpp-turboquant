@@ -1,4 +1,5 @@
 #include "laya.h"
+#include "laya-unicode.h"
 
 #include "ggml.h"
 #include "ggml-cpp.h"
@@ -9,9 +10,11 @@
 #include <algorithm>
 #include <array>
 #include <cfloat>
+#include <climits>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -20,6 +23,26 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+
+#if defined(_WIN32)
+#    define WIN32_LEAN_AND_MEAN
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+#    include <filesystem>
+#else
+#    include <fcntl.h>
+#    include <sys/mman.h>
+#    include <sys/stat.h>
+#    include <unistd.h>
+#endif
+
+#if defined(__APPLE__)
+#    include <pthread.h>
+#    include <pthread/qos.h>
+#    include <sys/sysctl.h>
+#endif
 
 // ======================================================================
 // Reference (PyTorch): laya/common.py -> DecisionModel
@@ -117,39 +140,191 @@ struct laya_merge_map {
     }
 };
 
+// read-only mapping of one byte range of a file (POSIX mmap / Win32 MapViewOfFile)
+struct laya_mmap {
+    void * base   = nullptr;  // start of the mapping (granularity aligned)
+    size_t size   = 0;        // bytes mapped from base
+    size_t skip   = 0;        // requested offset - mapped offset
+    bool   locked = false;
+#if defined(_WIN32)
+    HANDLE hfile = INVALID_HANDLE_VALUE;
+    HANDLE hmap  = nullptr;
+#endif
+
+    laya_mmap() = default;
+    laya_mmap(const laya_mmap &) = delete;
+    laya_mmap & operator=(const laya_mmap &) = delete;
+
+    void * data() const { return base ? (char *) base + skip : nullptr; }
+
+    // map [offset, offset + len); false (and nothing mapped) on any failure
+    bool map(const char * fname, size_t offset, size_t len) {
+#if defined(_WIN32)
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        const size_t gran = si.dwAllocationGranularity;
+        const size_t off0 = offset / gran * gran;
+        const std::wstring wname = laya_utf8_to_wide(fname);
+        if (wname.empty()) {
+            return false;
+        }
+        hfile = CreateFileW(wname.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hfile == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        LARGE_INTEGER fsize;
+        if (!GetFileSizeEx(hfile, &fsize) || (uint64_t) fsize.QuadPart < (uint64_t) (offset + len)) {
+            unmap();
+            return false;
+        }
+        hmap = CreateFileMappingW(hfile, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (!hmap) {
+            unmap();
+            return false;
+        }
+        base = MapViewOfFile(hmap, FILE_MAP_READ, (DWORD) ((uint64_t) off0 >> 32), (DWORD) (off0 & 0xffffffffu), offset + len - off0);
+        if (!base) {
+            unmap();
+            return false;
+        }
+        size = offset + len - off0;
+        skip = offset - off0;
+        return true;
+#else
+        const long   page = sysconf(_SC_PAGESIZE);
+        const size_t gran = page > 0 ? (size_t) page : 4096;
+        const size_t off0 = offset / gran * gran;
+        const int fd = open(fname, O_RDONLY);
+        if (fd < 0) {
+            return false;
+        }
+        // a mapping past the end of the file faults (SIGBUS) on access
+        struct stat st;
+        if (fstat(fd, &st) != 0 || (uint64_t) st.st_size < (uint64_t) (offset + len)) {
+            close(fd);
+            return false;
+        }
+        void * addr = mmap(nullptr, offset + len - off0, PROT_READ, MAP_SHARED, fd, (off_t) off0);
+        close(fd);
+        if (addr == MAP_FAILED) {
+            return false;
+        }
+        base = addr;
+        size = offset + len - off0;
+        skip = offset - off0;
+        // get_rows reads scattered rows: no read-ahead around each fault
+        posix_madvise(base, size, POSIX_MADV_RANDOM);
+        return true;
+#endif
+    }
+
+    void unmap() {
+#if defined(_WIN32)
+        if (base) {
+            if (locked) {
+                VirtualUnlock(base, size);
+            }
+            UnmapViewOfFile(base);
+        }
+        if (hmap) {
+            CloseHandle(hmap);
+        }
+        if (hfile != INVALID_HANDLE_VALUE) {
+            CloseHandle(hfile);
+        }
+        hmap  = nullptr;
+        hfile = INVALID_HANDLE_VALUE;
+#else
+        if (base) {
+            if (locked) {
+                munlock(base, size);
+            }
+            munmap(base, size);
+        }
+#endif
+        base   = nullptr;
+        size   = 0;
+        skip   = 0;
+        locked = false;
+    }
+
+    ~laya_mmap() { unmap(); }
+};
+
+// lock [addr, addr + size) in RAM; false on failure (limits, permissions)
+static bool laya_mlock(void * addr, size_t size) {
+    if (!addr || size == 0) {
+        return true;
+    }
+#if defined(_WIN32)
+    if (VirtualLock(addr, size)) {
+        return true;
+    }
+    // the working set minimum bounds what can be locked: grow it by this range and retry
+    SIZE_T wmin = 0, wmax = 0;
+    if (!GetProcessWorkingSetSize(GetCurrentProcess(), &wmin, &wmax)) {
+        return false;
+    }
+    wmin += size;
+    wmax = std::max(wmax, wmin);
+    if (!SetProcessWorkingSetSize(GetCurrentProcess(), wmin, wmax)) {
+        return false;
+    }
+    return VirtualLock(addr, size) != 0;
+#else
+    return mlock(addr, size) == 0;
+#endif
+}
+
 struct laya_model {
     laya_hparams hparams;
 
-    ggml_context_ptr ctx_meta;   // tensor definitions from the gguf header
-    gguf_context_ptr ctx_gguf;
-    ggml_context_ptr ctx_data;   // data context holding the real tensors
+    ggml_context_ptr ctx_meta;   // tensor definitions from the gguf header (freed after the load)
+    gguf_context_ptr ctx_gguf;   // (freed after the load)
+
+    // data contexts holding the real tensors, one per buffer: loaded (default CPU buffer),
+    // repacked (one per extra buffer type), mapped (token_embd in the file mapping)
+    laya_mmap                            mapping;   // token_embd, when mapped (outlives bufs)
+    std::vector<ggml_context_ptr>        ctxs;
+    std::vector<ggml_backend_buffer_ptr> bufs;
 
     ggml_backend_t         backend = nullptr;
-    ggml_backend_buffer_ptr buf;
 
-    // self-contained tokenizer data (mmBERT BPE, HF tokenizers semantics)
-    std::vector<int32_t>                  cpt_bmp;   // single-codepoint tokens below U+10000, -1 if none
-    std::unordered_map<uint32_t, int32_t> cpt_high;  // single-codepoint tokens from U+10000
+    // what the load did, for the log and laya_context_kernels
+    size_t  n_bytes_loaded   = 0;
+    size_t  n_bytes_mapped   = 0;
+    size_t  n_bytes_repacked = 0;
+    int32_t n_repacked       = 0;
+
+    // self-contained tokenizer data (HF tokenizers semantics)
+    bool bytelevel = false;                          // decision.laya.tokenizer: bytelevel-bpe, else metaspace-bpe
+    bool nfc       = false;                          // bytelevel: decision.laya.normalizer "nfc"
+    std::vector<int32_t>                  cpt_bmp;   // metaspace: single-codepoint tokens below U+10000, -1 if none
+    std::unordered_map<uint32_t, int32_t> cpt_high;  // metaspace: single-codepoint tokens from U+10000
     laya_merge_map                        merges;    // (left id, right id) -> rank, merged id
-    int32_t byte_id[256];                            // <0xXX> byte-fallback tokens, -1 if missing
+    int32_t byte_id[256];                            // metaspace: <0xXX> byte-fallback tokens, -1 if missing
+    int32_t byte_sym[256];                           // bytelevel: token of the byte-to-unicode char of each byte
 
-    // added tokens (HF fast-tokenizer AddedVocabulary): matched on the raw text
-    // before the Metaspace normalizer, each match breaking the word boundary.
+    // added tokens (HF fast-tokenizer AddedVocabulary), each match breaking the word boundary.
+    // metaspace: all matched on the raw text; bytelevel: see added_trie_norm.
     // Identified from tokenizer.ggml.token_type (CONTROL / USER_DEFINED).
     struct added_token {
         std::string s;
-        int32_t     id      = 0;
-        bool        lstrip  = false; // consume preceding whitespace on match
-        bool        control = false; // CONTROL type (special in HF)
+        int32_t     id         = 0;
+        bool        lstrip     = false; // consume preceding whitespace on match
+        bool        control    = false; // CONTROL type (special in HF)
+        bool        normalized = false; // bytelevel: matched on the normalized text (HF normalized=True)
     };
     std::vector<added_token> added_tokens;
 
-    // byte trie over added_tokens for leftmost-longest matching
+    // byte tries over added_tokens for leftmost-longest matching. metaspace: every added token in
+    // added_trie; bytelevel: added_trie has the tokens matched on the raw text, added_trie_norm the rest
     struct trie_node {
         std::vector<std::pair<uint8_t, int32_t>> next; // byte -> node
         int32_t token = -1;                            // index into added_tokens
     };
     std::vector<trie_node> added_trie;
+    std::vector<trie_node> added_trie_norm;
     int32_t bos_id  = 2;
     int32_t eos_id  = 1;
     int32_t sep_id  = 1;
@@ -172,14 +347,26 @@ struct laya_model {
     ggml_tensor * act_head_2 = nullptr; ggml_tensor * act_head_2_b = nullptr;
 };
 
+typedef ggml_threadpool_t (*laya_threadpool_new_t)(ggml_threadpool_params * params);
+typedef void (*laya_threadpool_free_t)(ggml_threadpool_t threadpool);
+typedef void (*laya_set_threadpool_t)(ggml_backend_t backend, ggml_threadpool_t threadpool);
+
 struct laya_context {
     const laya_model * model = nullptr;
 
-    ggml_backend_t         backend     = nullptr;
-    ggml_backend_t         backend_cpu = nullptr;
+    ggml_backend_t         backend      = nullptr;
+    ggml_backend_t         backend_cpu  = nullptr;
+    ggml_backend_t         backend_blas = nullptr;
     ggml_backend_sched_ptr sched;
 
-    int n_threads = 1;
+    // persistent threadpool: without OpenMP ggml otherwise creates and joins the worker
+    // threads on every graph compute
+    ggml_threadpool_t      threadpool      = nullptr;
+    laya_threadpool_free_t threadpool_free = nullptr;
+
+    int  n_threads      = 1;
+    int  n_threads_blas = 0;
+    bool qos            = true;
 };
 
 static void laya_log(const char * fmt, ...) {
@@ -250,6 +437,30 @@ static std::vector<float> gguf_get_arr_f32(const gguf_context * ctx, const char 
     return std::vector<float>(data, data + n);
 }
 
+static std::vector<int32_t> gguf_get_arr_i32(const gguf_context * ctx, const char * key, bool & found) {
+    const int64_t id = gguf_find_key(ctx, key);
+    found = id >= 0;
+    if (!found) {
+        return {};
+    }
+    if (gguf_get_kv_type(ctx, id) != GGUF_TYPE_ARRAY || gguf_get_arr_type(ctx, id) != GGUF_TYPE_INT32) {
+        throw std::runtime_error(std::string("unexpected type for GGUF key: ") + key);
+    }
+    const int32_t * data = (const int32_t *) gguf_get_arr_data(ctx, id);
+    return std::vector<int32_t>(data, data + gguf_get_arr_n(ctx, id));
+}
+
+static std::string gguf_get_str(const gguf_context * ctx, const char * key, const std::string & def) {
+    const int64_t id = gguf_find_key(ctx, key);
+    if (id < 0) {
+        return def;
+    }
+    if (gguf_get_kv_type(ctx, id) != GGUF_TYPE_STRING) {
+        throw std::runtime_error(std::string("unexpected type for GGUF key: ") + key);
+    }
+    return gguf_get_val_str(ctx, id);
+}
+
 // ---- model loading ------------------------------------------------------
 
 // decode one UTF-8 codepoint; ok = false (len 1) on an invalid sequence
@@ -287,6 +498,10 @@ static uint32_t laya_cpt_from_utf8(const char * s, size_t n, size_t & len, bool 
 }
 
 laya_model * laya_model_load_from_file(const char * fname) {
+    return laya_model_load_from_file_ext(fname, laya_model_params());
+}
+
+laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_params & mparams) {
     std::unique_ptr<laya_model> model(new laya_model());
 
     struct ggml_context * meta = nullptr;
@@ -348,9 +563,44 @@ laya_model * laya_model_load_from_file(const char * fname) {
     while ((int32_t) hp.temperature.size() < hp.n_qtype) {
         hp.temperature.push_back(hp.temperature.back());
     }
-
-    // ---- tokenizer data (mmBERT BPE) ----
     {
+        const int64_t id = gguf_find_key(ctx_gguf, "laya.temperature_by_options.buckets");
+        const std::vector<float> values = gguf_get_arr_f32(ctx_gguf, "laya.temperature_by_options.values");
+        if (id >= 0) {
+            if (gguf_get_kv_type(ctx_gguf, id) != GGUF_TYPE_ARRAY || gguf_get_arr_type(ctx_gguf, id) != GGUF_TYPE_STRING ||
+                gguf_get_arr_n(ctx_gguf, id) != values.size()) {
+                throw std::runtime_error("laya.temperature_by_options: buckets and values do not match");
+            }
+            for (size_t i = 0; i < values.size(); ++i) {
+                hp.temperature_buckets.push_back(gguf_get_arr_str(ctx_gguf, id, i));
+            }
+            hp.temperature_bucket_values = values;
+        }
+    }
+
+    // ---- tokenizer data ----
+    {
+        const std::string kind = gguf_get_str(ctx_gguf, "decision.laya.tokenizer", "metaspace-bpe");
+        if (kind != "metaspace-bpe" && kind != "bytelevel-bpe") {
+            throw std::runtime_error("unknown decision.laya.tokenizer '" + kind + "' (metaspace-bpe, bytelevel-bpe)");
+        }
+        model->bytelevel = kind == "bytelevel-bpe";
+        const std::string normalizer = gguf_get_str(ctx_gguf, "decision.laya.normalizer", "none");
+        if (normalizer != "none" && !(normalizer == "nfc" && model->bytelevel)) {
+            throw std::runtime_error("unsupported decision.laya.normalizer '" + normalizer + "' for " + kind);
+        }
+        model->nfc = normalizer == "nfc";
+        // HF AddedToken flags: [id, flags, id, flags, ...], flags bit 0 lstrip, bit 1 normalized
+        bool have_flags = false;
+        const std::vector<int32_t> flag_pairs = gguf_get_arr_i32(ctx_gguf, "decision.laya.added_tokens", have_flags);
+        if (flag_pairs.size() % 2 != 0) {
+            throw std::runtime_error("decision.laya.added_tokens must hold (id, flags) pairs");
+        }
+        std::unordered_map<int32_t, int32_t> added_flags;
+        for (size_t i = 0; i < flag_pairs.size(); i += 2) {
+            added_flags[flag_pairs[i]] = flag_pairs[i + 1];
+        }
+
         auto get_special = [&](const char * key, int32_t def) {
             const int64_t id = gguf_find_key(ctx_gguf, key);
             return id < 0 ? def : (int32_t) gguf_get_val_u32(ctx_gguf, id);
@@ -369,6 +619,25 @@ laya_model * laya_model_load_from_file(const char * fname) {
         }
         const int64_t n_tokens = gguf_get_arr_n(ctx_gguf, tid);
 
+        // the fallbacks above are the mmBERT ids; a byte-level vocab (OLMo: [CLS] 50281) must name its own
+        if (model->bytelevel) {
+            for (const char * key : { "tokenizer.ggml.bos_token_id", "tokenizer.ggml.seperator_token_id", "tokenizer.ggml.mask_token_id" }) {
+                if (gguf_find_key(ctx_gguf, key) < 0) {
+                    throw std::runtime_error(std::string("bytelevel-bpe GGUF without ") + key + " (reconvert with conversion/laya.py)");
+                }
+            }
+        }
+        for (const int32_t id : { model->bos_id, model->eos_id, model->sep_id, model->mask_id }) {
+            if (id < 0 || id >= n_tokens) {
+                throw std::runtime_error("special token id " + std::to_string(id) + " is outside the vocabulary");
+            }
+        }
+        // build_sequence writes mask_id where the head looks for marker_token_id
+        if (model->mask_id != hp.marker_token_id) {
+            throw std::runtime_error("tokenizer.ggml.mask_token_id " + std::to_string(model->mask_id) +
+                                     " != laya.marker_token_id " + std::to_string(hp.marker_token_id));
+        }
+
         const int64_t tid_type = gguf_find_key(ctx_gguf, "tokenizer.ggml.token_type");
         const uint32_t * tt = tid_type >= 0 ? (const uint32_t *) gguf_get_arr_data(ctx_gguf, tid_type) : nullptr;
         const int64_t n_tt  = tt ? (int64_t) gguf_get_arr_n(ctx_gguf, tid_type) : 0;
@@ -381,7 +650,7 @@ laya_model * laya_model_load_from_file(const char * fname) {
         for (int64_t i = 0; i < n_tokens; ++i) {
             std::string tok = gguf_get_arr_str(ctx_gguf, tid, i);
             const uint32_t type = i < n_tt ? tt[i] : 1;
-            if (type == 4 /* USER_DEFINED */) {
+            if (type == 4 /* USER_DEFINED */ && !model->bytelevel) {
                 std::string restored;
                 restored.reserve(tok.size() + 3);
                 for (char c : tok) {
@@ -393,27 +662,44 @@ laya_model * laya_model_load_from_file(const char * fname) {
             vocab[(size_t) i] = std::move(tok);
         }
 
-        // single-codepoint tokens and byte-fallback tokens (initial BPE symbols)
-        model->cpt_bmp.assign(0x10000, -1);
-        for (int64_t i = n_tokens - 1; i >= 0; --i) {
-            const std::string & s = vocab[(size_t) i];
-            size_t len = 0;
-            bool   ok  = false;
-            const uint32_t cpt = laya_cpt_from_utf8(s.c_str(), s.size(), len, ok);
-            if (ok && len == s.size()) {
-                // lowest id wins on duplicates (iterating downwards)
-                if (cpt < 0x10000) {
-                    model->cpt_bmp[cpt] = (int32_t) i;
-                } else {
-                    model->cpt_high[cpt] = (int32_t) i;
-                }
+        // bytelevel: the GPT-2 byte-to-unicode chars are the initial BPE symbols
+        if (model->bytelevel) {
+            uint32_t n_shift = 0;
+            for (int b = 0; b < 256; ++b) {
+                const bool printable = (b >= 0x21 && b <= 0x7E) || (b >= 0xA1 && b <= 0xAC) || (b >= 0xAE && b <= 0xFF);
+                const uint32_t cpt = printable ? (uint32_t) b : 256 + n_shift++;
+                // cpt < 0x144: one or two UTF-8 bytes
+                const std::string ch = cpt < 0x80 ? std::string(1, (char) cpt)
+                                                  : std::string{ (char) (0xC0 | (cpt >> 6)), (char) (0x80 | (cpt & 0x3F)) };
+                // OLMo has no token for bytes that UTF-8 never uses (0xC0, 0xC1, 0xF5..): HF drops them (unk_token null)
+                const auto it = token_to_id.find(ch);
+                model->byte_sym[b] = it == token_to_id.end() ? -1 : it->second;
             }
         }
-        for (int b = 0; b < 256; ++b) {
-            char buf[8];
-            snprintf(buf, sizeof(buf), "<0x%02X>", b);
-            const auto it = token_to_id.find(buf);
-            model->byte_id[b] = it == token_to_id.end() ? -1 : it->second;
+
+        // metaspace: single-codepoint tokens and byte-fallback tokens (initial BPE symbols)
+        if (!model->bytelevel) {
+            model->cpt_bmp.assign(0x10000, -1);
+            for (int64_t i = n_tokens - 1; i >= 0; --i) {
+                const std::string & s = vocab[(size_t) i];
+                size_t len = 0;
+                bool   ok  = false;
+                const uint32_t cpt = laya_cpt_from_utf8(s.c_str(), s.size(), len, ok);
+                if (ok && len == s.size()) {
+                    // lowest id wins on duplicates (iterating downwards)
+                    if (cpt < 0x10000) {
+                        model->cpt_bmp[cpt] = (int32_t) i;
+                    } else {
+                        model->cpt_high[cpt] = (int32_t) i;
+                    }
+                }
+            }
+            for (int b = 0; b < 256; ++b) {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "<0x%02X>", b);
+                const auto it = token_to_id.find(buf);
+                model->byte_id[b] = it == token_to_id.end() ? -1 : it->second;
+            }
         }
 
         // merges "a b" -> (id(a), id(b)) : (rank, id(a + b))
@@ -443,7 +729,32 @@ laya_model * laya_model_load_from_file(const char * fname) {
         // HF AddedVocabulary entries (newline runs, tab runs, HTML tags, <unusedN>,
         // <mask>, ...). They are matched on the raw text before Metaspace.
         // Empty strings are skipped: they would match without consuming input.
+        // bytelevel: the tokens with HF normalized=True are matched after the normalizer, on the
+        // normalized text; the others (the special tokens) on the raw text. lstrip and normalized come
+        // from decision.laya.added_tokens, else the HF defaults (mask lstrip, USER_DEFINED normalized)
+        auto insert = [](std::vector<laya_model::trie_node> & trie, const std::string & key, int32_t idx) {
+            int32_t node = 0;
+            for (unsigned char c : key) {
+                int32_t child = -1;
+                for (const auto & e : trie[node].next) {
+                    if (e.first == c) {
+                        child = e.second;
+                        break;
+                    }
+                }
+                if (child < 0) {
+                    child = (int32_t) trie.size();
+                    trie[node].next.emplace_back(c, child);
+                    trie.emplace_back();
+                }
+                node = child;
+            }
+            if (trie[node].token < 0) {
+                trie[node].token = idx;
+            }
+        };
         model->added_trie.emplace_back();
+        model->added_trie_norm.emplace_back();
         for (int64_t i = 0; i < n_tt && i < n_tokens; ++i) {
             const uint32_t type = tt[i];
             if ((type != 3 /* CONTROL */ && type != 4 /* USER_DEFINED */) || vocab[(size_t) i].empty()) {
@@ -452,44 +763,32 @@ laya_model * laya_model_load_from_file(const char * fname) {
             laya_model::added_token at;
             at.s       = vocab[(size_t) i];
             at.id      = (int32_t) i;
-            at.lstrip  = at.s == "<mask>"; // the only added token with lstrip in this family
             at.control = type == 3;
+            if (model->bytelevel) {
+                const auto it = added_flags.find(at.id);
+                at.lstrip     = have_flags ? it != added_flags.end() && (it->second & 1) : at.id == model->mask_id;
+                at.normalized = have_flags ? it != added_flags.end() && (it->second & 2) : type == 4;
+            } else {
+                at.lstrip = at.s == "<mask>"; // the only added token with lstrip in this family
+            }
 
-            int32_t node = 0;
-            for (unsigned char c : at.s) {
-                int32_t child = -1;
-                for (const auto & e : model->added_trie[node].next) {
-                    if (e.first == c) {
-                        child = e.second;
-                        break;
-                    }
-                }
-                if (child < 0) {
-                    child = (int32_t) model->added_trie.size();
-                    model->added_trie[node].next.emplace_back(c, child);
-                    model->added_trie.emplace_back();
-                }
-                node = child;
+            std::string key = at.s;
+            std::string key_nfc;
+            if (at.normalized && model->nfc && laya_nfc(key, key_nfc)) {
+                key = key_nfc;
             }
-            if (model->added_trie[node].token < 0) {
-                model->added_trie[node].token = (int32_t) model->added_tokens.size();
-            }
+            insert(at.normalized ? model->added_trie_norm : model->added_trie, key, (int32_t) model->added_tokens.size());
             model->added_tokens.push_back(std::move(at));
         }
     }
 
-    // ---- create data context and duplicate tensors ----
-    {
-        struct ggml_init_params p = {
-            /*.mem_size =*/ static_cast<size_t>(gguf_get_n_tensors(ctx_gguf) + 1) * ggml_tensor_overhead(),
-            /*.mem_buffer =*/ nullptr,
-            /*.no_alloc =*/ true,
-        };
-        model->ctx_data.reset(ggml_init(p));
-        if (!model->ctx_data.get()) {
-            throw std::runtime_error("failed to init ggml data context");
-        }
+    // ---- backend, buffer types and tensor placement ----
+    model->backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    if (!model->backend) {
+        throw std::runtime_error("failed to initialize CPU backend");
     }
+    ggml_backend_dev_t dev = ggml_backend_get_device(model->backend);
+    ggml_backend_buffer_type_t buft_default = ggml_backend_get_default_buffer_type(model->backend);
 
     std::map<std::string, size_t> tensor_offset;
     for (int64_t i = 0; i < gguf_get_n_tensors(ctx_gguf); ++i) {
@@ -497,12 +796,77 @@ laya_model * laya_model_load_from_file(const char * fname) {
             gguf_get_data_offset(ctx_gguf) + gguf_get_tensor_offset(ctx_gguf, i);
     }
 
+    // one data context per destination; every context can hold every tensor
+    const size_t ctx_size = static_cast<size_t>(gguf_get_n_tensors(ctx_gguf) + 1) * ggml_tensor_overhead();
+    auto new_ctx = [&]() -> ggml_context * {
+        struct ggml_init_params p = {
+            /*.mem_size =*/ ctx_size,
+            /*.mem_buffer =*/ nullptr,
+            /*.no_alloc =*/ true,
+        };
+        ggml_context * c = ggml_init(p);
+        if (!c) {
+            throw std::runtime_error("failed to init ggml data context");
+        }
+        model->ctxs.emplace_back(c);
+        return c;
+    };
+    ggml_context * ctx_loaded = new_ctx();
+    ggml_context * ctx_mapped = nullptr;
+    std::vector<std::pair<ggml_backend_buffer_type_t, ggml_context *>> ctx_extra; // repack destinations
+
+    // token_embd in place: map just its byte range
+    {
+        const ggml_tensor * embd = ggml_get_tensor(meta, "token_embd.weight");
+        ggml_backend_dev_props props;
+        ggml_backend_dev_get_props(dev, &props);
+        if (mparams.use_mmap && embd && props.caps.buffer_from_host_ptr) {
+            const size_t off = tensor_offset.at("token_embd.weight");
+            if (model->mapping.map(fname, off, ggml_nbytes(embd)) && (uintptr_t) model->mapping.data() % 32 == 0) {
+                ctx_mapped = new_ctx();
+            } else {
+                model->mapping.unmap();
+                laya_log("%s: cannot map token_embd, loading it instead\n", __func__);
+            }
+        }
+    }
+
+    std::vector<ggml_backend_buffer_type_t> extra_bufts;
+    if (mparams.use_extra_bufts) {
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+        auto get_extra = reg ? (ggml_backend_dev_get_extra_bufts_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_get_extra_bufts") : nullptr;
+        ggml_backend_buffer_type_t * p = get_extra ? get_extra(dev) : nullptr;
+        while (p && *p) {
+            extra_bufts.push_back(*p++);
+        }
+    }
+
+    // would dev run mul_mat(w, activations) with w in buft? (the check llama.cpp does)
+    auto matmul_supported = [&](ggml_tensor * w, ggml_backend_buffer_type_t buft) {
+        struct ggml_init_params p = {
+            /*.mem_size =*/ 4 * ggml_tensor_overhead(),
+            /*.mem_buffer =*/ nullptr,
+            /*.no_alloc =*/ true,
+        };
+        ggml_context_ptr c(ggml_init(p));
+        ggml_tensor * b  = ggml_new_tensor_4d(c.get(), GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]);
+        ggml_tensor * op = ggml_mul_mat(c.get(), w, b);
+        GGML_ASSERT(w->buffer == nullptr);
+        w->buffer = ggml_backend_buft_alloc_buffer(buft, 0);
+        const bool ok = ggml_backend_dev_supports_op(dev, op);
+        ggml_backend_buffer_free(w->buffer);
+        w->buffer = nullptr;
+        return ok;
+    };
+
+    enum laya_weight_use { LAYA_USE_OTHER, LAYA_USE_MATMUL, LAYA_USE_ROWS };
+
     std::vector<ggml_tensor *> tensors_to_load;
     std::vector<ggml_tensor *> tensors_data;
 
     // weights stay in their native GGUF type (F16 for the reference F16 GGUF,
     // quantized for the k-quant models); ggml mul_mat dequantizes internally.
-    auto get_tensor = [&](const std::string & name, bool required = true) -> ggml_tensor * {
+    auto get_tensor = [&](const std::string & name, bool required = true, laya_weight_use use = LAYA_USE_OTHER) -> ggml_tensor * {
         ggml_tensor * cur = ggml_get_tensor(meta, name.c_str());
         if (!cur) {
             if (required) {
@@ -510,7 +874,20 @@ laya_model * laya_model_load_from_file(const char * fname) {
             }
             return nullptr;
         }
-        ggml_tensor * data_tensor = ggml_dup_tensor(model->ctx_data.get(), cur);
+        ggml_context * dst = ctx_loaded;
+        if (use == LAYA_USE_ROWS && ctx_mapped) {
+            dst = ctx_mapped;
+        } else if (use == LAYA_USE_MATMUL) {
+            for (ggml_backend_buffer_type_t buft : extra_bufts) {
+                if (!matmul_supported(cur, buft)) {
+                    continue;
+                }
+                auto it = std::find_if(ctx_extra.begin(), ctx_extra.end(), [&](const auto & e) { return e.first == buft; });
+                dst = it != ctx_extra.end() ? it->second : ctx_extra.emplace_back(buft, new_ctx()).second;
+                break;
+            }
+        }
+        ggml_tensor * data_tensor = ggml_dup_tensor(dst, cur);
         ggml_set_name(data_tensor, cur->name);
         tensors_to_load.push_back(cur);
         tensors_data.push_back(data_tensor);
@@ -518,7 +895,7 @@ laya_model * laya_model_load_from_file(const char * fname) {
     };
 
     // encoder
-    model->tok_embd   = get_tensor("token_embd.weight");
+    model->tok_embd   = get_tensor("token_embd.weight", true, LAYA_USE_ROWS);
     model->tok_norm   = get_tensor("token_embd_norm.weight", false);
     model->output_norm = get_tensor("output_norm.weight", false);
 
@@ -533,10 +910,10 @@ laya_model * laya_model_load_from_file(const char * fname) {
         // blk.0.attn_norm.weight but it must NOT be applied (matches the
         // reference, where layer 0 has no attn_norm parameter at all).
         layer.attn_norm = il == 0 ? nullptr : get_tensor(p + "attn_norm.weight");
-        layer.wqkv      = get_tensor(p + "attn_qkv.weight");
-        layer.wo        = get_tensor(p + "attn_output.weight");
-        layer.ffn_up    = get_tensor(p + "ffn_up.weight");
-        layer.ffn_down  = get_tensor(p + "ffn_down.weight");
+        layer.wqkv      = get_tensor(p + "attn_qkv.weight",    true, LAYA_USE_MATMUL);
+        layer.wo        = get_tensor(p + "attn_output.weight", true, LAYA_USE_MATMUL);
+        layer.ffn_up    = get_tensor(p + "ffn_up.weight",      true, LAYA_USE_MATMUL);
+        layer.ffn_down  = get_tensor(p + "ffn_down.weight",    true, LAYA_USE_MATMUL);
         layer.ffn_norm  = get_tensor(p + "ffn_norm.weight");
     }
 
@@ -552,19 +929,20 @@ laya_model * laya_model_load_from_file(const char * fname) {
 
         layer.attn_norm   = get_tensor(p + "attn_norm.weight");
         layer.attn_norm_b = get_tensor(p + "attn_norm.bias");
-        layer.wqkv        = get_tensor(p + "attn_qkv.weight");
+        layer.wqkv        = get_tensor(p + "attn_qkv.weight",    true, LAYA_USE_MATMUL);
         layer.wqkv_b      = get_tensor(p + "attn_qkv.bias");
-        layer.wo          = get_tensor(p + "attn_output.weight");
+        layer.wo          = get_tensor(p + "attn_output.weight", true, LAYA_USE_MATMUL);
         layer.wo_b        = get_tensor(p + "attn_output.bias");
         layer.ffn_norm    = get_tensor(p + "ffn_norm.weight");
         layer.ffn_norm_b  = get_tensor(p + "ffn_norm.bias");
-        layer.ffn_up      = get_tensor(p + "ffn_up.weight");
+        layer.ffn_up      = get_tensor(p + "ffn_up.weight",      true, LAYA_USE_MATMUL);
         layer.ffn_up_b    = get_tensor(p + "ffn_up.bias");
-        layer.ffn_down    = get_tensor(p + "ffn_down.weight");
+        layer.ffn_down    = get_tensor(p + "ffn_down.weight",    true, LAYA_USE_MATMUL);
         layer.ffn_down_b  = get_tensor(p + "ffn_down.bias");
     }
 
     // scorer: LayerNorm(d) -> Linear(d, d) -> GELU -> Linear(d, 1)
+    // (the scorer and act head matrices are F16 in every tier: no repacked kernel)
     model->scorer_0   = get_tensor("scorer.0.weight");
     model->scorer_0_b = get_tensor("scorer.0.bias");
     model->scorer_1   = get_tensor("scorer.1.weight");
@@ -578,27 +956,53 @@ laya_model * laya_model_load_from_file(const char * fname) {
     model->act_head_2   = get_tensor("act_head.2.weight");
     model->act_head_2_b = get_tensor("act_head.2.bias");
 
-    // backend
-    model->backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-    if (!model->backend) {
-        throw std::runtime_error("failed to initialize CPU backend");
+    // ---- buffers ----
+    auto alloc_ctx = [&](ggml_context * c, ggml_backend_buffer_type_t buft) {
+        if (!ggml_get_first_tensor(c)) {
+            return;
+        }
+        ggml_backend_buffer_t b = ggml_backend_alloc_ctx_tensors_from_buft(c, buft);
+        if (!b) {
+            throw std::runtime_error(std::string("failed to allocate the ") + ggml_backend_buft_name(buft) + " weight buffer");
+        }
+        ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        model->bufs.emplace_back(b);
+    };
+    if (ctx_mapped) {
+        ggml_backend_buffer_t b = ggml_backend_dev_buffer_from_host_ptr(dev, model->mapping.data(), ggml_nbytes(model->tok_embd), ggml_nbytes(model->tok_embd));
+        if (!b) {
+            throw std::runtime_error("failed to wrap the token_embd mapping in a buffer");
+        }
+        ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        model->bufs.emplace_back(b);
+        if (ggml_backend_tensor_alloc(b, model->tok_embd, model->mapping.data()) != GGML_STATUS_SUCCESS) {
+            throw std::runtime_error("failed to place token_embd in the mapping");
+        }
+        model->n_bytes_mapped = ggml_nbytes(model->tok_embd);
+    }
+    alloc_ctx(ctx_loaded, buft_default);
+    for (const auto & e : ctx_extra) {
+        alloc_ctx(e.second, e.first);
     }
 
-    // alloc weights and read tensor data from file
+    // ---- read the tensor data ----
     {
+#if defined(_WIN32)
+        std::ifstream fin(std::filesystem::path(laya_utf8_to_wide(fname)), std::ios::binary);
+#else
         std::ifstream fin(fname, std::ios::binary);
+#endif
         if (!fin) {
             throw std::runtime_error("failed to open " + std::string(fname));
         }
 
-        ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(model->backend);
-        model->buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(model->ctx_data.get(), buft));
-        ggml_backend_buffer_set_usage(model->buf.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-
         std::vector<uint8_t> read_buf;
         for (size_t i = 0; i < tensors_to_load.size(); ++i) {
             ggml_tensor * cur = tensors_data[i];
-            GGML_ASSERT(cur && "tensor not found in ctx_data");
+            GGML_ASSERT(cur && "tensor not found in the data contexts");
+            if (cur == model->tok_embd && ctx_mapped) {
+                continue;
+            }
             auto it_off = tensor_offset.find(cur->name);
             GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
             fin.seekg(it_off->second, std::ios::beg);
@@ -606,16 +1010,45 @@ laya_model * laya_model_load_from_file(const char * fname) {
                 throw std::runtime_error("failed to seek for tensor " + std::string(cur->name));
             }
             const size_t num_bytes = ggml_nbytes(cur);
-            if (ggml_backend_buft_is_host(buft)) {
+            if (ggml_backend_buft_is_host(ggml_backend_buffer_get_type(cur->buffer))) {
                 fin.read((char *) cur->data, num_bytes);
             } else {
+                // repack buffers convert in set_tensor, which takes the whole tensor at once
                 read_buf.resize(num_bytes);
                 fin.read((char *) read_buf.data(), num_bytes);
                 ggml_backend_tensor_set(cur, read_buf.data(), 0, num_bytes);
             }
+            if (!fin) {
+                throw std::runtime_error("failed to read tensor " + std::string(cur->name));
+            }
+            if (ggml_backend_buffer_get_type(cur->buffer) == buft_default) {
+                model->n_bytes_loaded += num_bytes;
+            } else {
+                model->n_bytes_repacked += num_bytes;
+                model->n_repacked++;
+            }
         }
     }
 
+    if (mparams.use_mlock) {
+        bool ok = true;
+        if (model->mapping.base) {
+            model->mapping.locked = laya_mlock(model->mapping.base, model->mapping.size);
+            ok = model->mapping.locked;
+        }
+        for (const auto & b : model->bufs) {
+            if (ggml_backend_buffer_get_base(b.get()) != model->mapping.data()) {
+                ok = laya_mlock(ggml_backend_buffer_get_base(b.get()), ggml_backend_buffer_get_size(b.get())) && ok;
+            }
+        }
+        if (!ok) {
+            laya_log("%s: warning: failed to lock the model in RAM (RLIMIT_MEMLOCK / working set too small?)\n", __func__);
+        }
+    }
+
+    // the header, the vocab strings and the merges are no longer needed
+    model->ctx_gguf.reset();
+    model->ctx_meta.reset();
     return model.release();
 }
 
@@ -633,6 +1066,15 @@ const laya_hparams & laya_model_hparams(const laya_model * model) {
     return model->hparams;
 }
 
+laya_model_memory laya_model_memory_info(const laya_model * model) {
+    laya_model_memory m;
+    m.loaded     = model->n_bytes_loaded;
+    m.mapped     = model->n_bytes_mapped;
+    m.repacked   = model->n_bytes_repacked;
+    m.n_repacked = model->n_repacked;
+    return m;
+}
+
 int32_t laya_vocab_bos (const laya_model * model) { return model->bos_id; }
 int32_t laya_vocab_sep (const laya_model * model) { return model->sep_id; }
 int32_t laya_vocab_mask(const laya_model * model) { return model->mask_id; }
@@ -647,7 +1089,8 @@ std::string laya_vocab_mask_token(const laya_model * model) {
 }
 
 // ---- self-contained tokenizer (HF fast tokenizer port) ----
-// The reference checkpoint's tokenizer is a Metaspace pre-tokenizer
+// bytelevel-bpe (English checkpoints) is laya_tokenize_bytelevel below. metaspace-bpe:
+// the laya-multilingual tokenizer is a Metaspace pre-tokenizer
 // (replacement U+2581, prepend_scheme="always") on top of a BPE with byte
 // fallback and the mmBERT vocabulary. llama.cpp's built-in GPT-2 pre-tokenizer
 // cannot reproduce it for this vocab, so this is implemented here against the
@@ -684,12 +1127,14 @@ struct laya_bpe_scratch {
     std::vector<sym>   syms;
     std::vector<merge> heap;
     std::string        norm;
+    std::vector<std::pair<size_t, size_t>> pieces; // bytelevel: pre-tokenized pieces
 };
+
+static void laya_bpe_merge(const laya_model * model, laya_bpe_scratch & sc, std::vector<int32_t> & out);
 
 // BPE over one word (starts with U+2581, contains no other U+2581)
 static void laya_bpe_word(const laya_model * model, const char * word, size_t n, laya_bpe_scratch & sc, std::vector<int32_t> & out) {
     using sym   = laya_bpe_scratch::sym;
-    using merge = laya_bpe_scratch::merge;
     std::vector<sym> & syms = sc.syms;
     syms.clear();
 
@@ -737,6 +1182,14 @@ static void laya_bpe_word(const laya_model * model, const char * word, size_t n,
     if (pending_unk) {
         add(model->unk_id);
     }
+    laya_bpe_merge(model, sc, out);
+}
+
+// BPE merges over sc.syms (linked in order), appending the result to out
+static void laya_bpe_merge(const laya_model * model, laya_bpe_scratch & sc, std::vector<int32_t> & out) {
+    using merge = laya_bpe_scratch::merge;
+    using sym   = laya_bpe_scratch::sym;
+    std::vector<sym> & syms = sc.syms;
     if (syms.empty()) {
         return;
     }
@@ -839,9 +1292,8 @@ static void laya_tokenize_segment(const laya_model * model, const char * text, s
     }
 }
 
-// Longest added token starting at text[pos]: index into added_tokens, or -1
-static int32_t laya_match_added(const laya_model * model, const std::string & text, size_t pos, size_t & len) {
-    const auto & trie = model->added_trie;
+// Longest added token of trie starting at text[pos]: index into added_tokens, or -1
+static int32_t laya_match_added(const std::vector<laya_model::trie_node> & trie, const std::string & text, size_t pos, size_t & len) {
     int32_t best = -1;
     int32_t node = 0;
     for (size_t j = pos; j < text.size(); ++j) {
@@ -882,10 +1334,76 @@ static size_t laya_whitespace_start(const std::string & text, size_t lo, size_t 
     return pos;
 }
 
+// Split text at the added tokens of trie (leftmost-longest, lstrip); on_gap(a, b) gets each text
+// range between two matches, the ids of the matches go to out
+template <typename F>
+static void laya_split_added(const laya_model * model, const std::vector<laya_model::trie_node> & trie, const std::string & text, std::vector<int32_t> & out, F on_gap) {
+    size_t seg_start = 0;
+    size_t i = 0;
+    while (i < text.size()) {
+        size_t len = 0;
+        const int32_t idx = trie.size() <= 1 ? -1 : laya_match_added(trie, text, i, len);
+        if (idx < 0) {
+            ++i;
+            continue;
+        }
+        const auto & at = model->added_tokens[(size_t) idx];
+        const size_t start = at.lstrip ? laya_whitespace_start(text, seg_start, i) : i;
+        on_gap(seg_start, start);
+        out.push_back(at.id);
+        i += len;
+        seg_start = i;
+    }
+    on_gap(seg_start, text.size());
+}
+
+// bytelevel: pre-tokenize text[begin, end) with the GPT-2 regex, then BPE over the byte-to-unicode chars
+static void laya_tokenize_bytelevel_words(const laya_model * model, const std::string & text, size_t begin, size_t end, laya_bpe_scratch & sc, std::vector<int32_t> & out) {
+    if (begin >= end) {
+        return;
+    }
+    sc.pieces.clear();
+    laya_gpt2_split(text, begin, end, sc.pieces);
+    for (const auto & p : sc.pieces) {
+        sc.syms.clear();
+        for (size_t k = p.first; k < p.second; ++k) {
+            const int32_t id = model->byte_sym[(uint8_t) text[k]];
+            if (id >= 0) {
+                const int32_t idx = (int32_t) sc.syms.size();
+                sc.syms.push_back({ id, idx - 1, idx + 1, true });
+            }
+        }
+        laya_bpe_merge(model, sc, out);
+    }
+}
+
+// HF AddedVocabulary + ByteLevel BPE: split the raw text at the raw added tokens; normalize each gap,
+// split it at the normalized added tokens, and pre-tokenize + BPE what is left
+static std::vector<int32_t> laya_tokenize_bytelevel(const laya_model * model, const std::string & text) {
+    std::vector<int32_t> out;
+    laya_bpe_scratch sc;
+    std::string gap;
+    std::string norm;
+    laya_split_added(model, model->added_trie, text, out, [&](size_t a, size_t b) {
+        if (a >= b) {
+            return;
+        }
+        gap.assign(text, a, b - a);
+        const std::string & t = model->nfc && laya_nfc(gap, norm) ? norm : gap;
+        laya_split_added(model, model->added_trie_norm, t, out, [&](size_t a2, size_t b2) {
+            laya_tokenize_bytelevel_words(model, t, a2, b2, sc, out);
+        });
+    });
+    return out;
+}
+
 std::vector<int32_t> laya_tokenize(const laya_model * model, const std::string & text) {
     std::vector<int32_t> out;
     if (text.empty()) {
         return out;
+    }
+    if (model->bytelevel) {
+        return laya_tokenize_bytelevel(model, text);
     }
 
     // split the raw text at added tokens; every gap goes through Metaspace + BPE
@@ -894,7 +1412,7 @@ std::vector<int32_t> laya_tokenize(const laya_model * model, const std::string &
     size_t i = 0;
     while (i < text.size()) {
         size_t len = 0;
-        const int32_t idx = model->added_trie.empty() ? -1 : laya_match_added(model, text, i, len);
+        const int32_t idx = model->added_trie.empty() ? -1 : laya_match_added(model->added_trie, text, i, len);
         if (idx < 0) {
             ++i;
             continue;
@@ -921,22 +1439,26 @@ void laya_vocab_added_tokens(const laya_model * model, std::vector<std::string> 
 }
 
 laya_context * laya_init(const laya_model * model, int n_threads) {
-    std::unique_ptr<laya_context> ctx(new laya_context());
-    ctx->model = model;
+    laya_context_params params;
+    params.n_threads = n_threads;
+    return laya_init_ext(model, params);
+}
+
+laya_context * laya_init_ext(const laya_model * model, const laya_context_params & params) {
+    // laya_free on a throw: it frees whatever was created so far (backends, threadpool)
+    struct ctx_deleter {
+        void operator()(laya_context * c) const { laya_free(c); }
+    };
+    std::unique_ptr<laya_context, ctx_deleter> ctx(new laya_context());
+    ctx->model     = model;
+    ctx->n_threads = std::max(1, params.n_threads);
+    ctx->qos       = params.qos;
 
     ctx->backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
     if (!ctx->backend_cpu) {
         throw std::runtime_error("failed to initialize CPU backend");
     }
     ctx->backend = ctx->backend_cpu;
-
-    ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(ctx->backend);
-    ctx->sched.reset(ggml_backend_sched_new(&ctx->backend, &buft, 1, 8192, false, true));
-    if (!ctx->sched.get()) {
-        throw std::runtime_error("failed to initialize backend scheduler");
-    }
-
-    ctx->n_threads = std::max(1, n_threads);
 
     // resolve through the registry so that GGML_BACKEND_DL builds link
     ggml_backend_dev_t dev = ggml_backend_get_device(ctx->backend_cpu);
@@ -946,6 +1468,52 @@ laya_context * laya_init(const laya_model * model, int n_threads) {
         if (set_n_threads_fn) {
             set_n_threads_fn(ctx->backend_cpu, ctx->n_threads);
         }
+
+        auto tp_new  = (laya_threadpool_new_t)  ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_new");
+        auto tp_free = (laya_threadpool_free_t) ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_free");
+        auto tp_set  = (laya_set_threadpool_t)  ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_threadpool");
+        if (tp_new && tp_free && tp_set) {
+            ggml_threadpool_params tpp = ggml_threadpool_params_default(ctx->n_threads);
+            tpp.poll = (uint32_t) std::min(100, std::max(0, params.poll));
+            ctx->threadpool = tp_new(&tpp);
+            if (ctx->threadpool) {
+                ctx->threadpool_free = tp_free;
+                tp_set(ctx->backend_cpu, ctx->threadpool);
+            }
+        }
+        if (!ctx->threadpool) {
+            laya_log("%s: no persistent threadpool, ggml creates the threads on every compute\n", __func__);
+        }
+    }
+
+    std::vector<ggml_backend_t> backends;
+    if (params.use_blas) {
+        ggml_backend_dev_t blas = ggml_backend_dev_by_name("BLAS");
+        ctx->backend_blas = blas ? ggml_backend_dev_init(blas, nullptr) : nullptr;
+        if (!ctx->backend_blas) {
+            // an explicit request: computing with other kernels would change the logits silently
+            throw std::runtime_error("BLAS kernels requested, but this build has no BLAS backend");
+        }
+        // capped: ggml-blas starts n - 1 new threads for every weight conversion
+        ctx->n_threads_blas = params.n_threads_blas > 0 ? params.n_threads_blas
+                                                        : std::min(ctx->n_threads, LAYA_BLAS_THREADS_AUTO);
+        ggml_backend_reg_t breg = ggml_backend_dev_backend_reg(blas);
+        auto set_n_threads_fn = breg ? (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(breg, "ggml_backend_set_n_threads") : nullptr;
+        if (set_n_threads_fn) {
+            set_n_threads_fn(ctx->backend_blas, ctx->n_threads_blas);
+        }
+        backends.push_back(ctx->backend_blas);
+    }
+    // the scheduler wants the CPU backend last
+    backends.push_back(ctx->backend_cpu);
+
+    std::vector<ggml_backend_buffer_type_t> bufts;
+    for (ggml_backend_t b : backends) {
+        bufts.push_back(ggml_backend_get_default_buffer_type(b));
+    }
+    ctx->sched.reset(ggml_backend_sched_new(backends.data(), bufts.data(), (int) backends.size(), 8192, false, true));
+    if (!ctx->sched.get()) {
+        throw std::runtime_error("failed to initialize backend scheduler");
     }
 
     return ctx.release();
@@ -955,10 +1523,164 @@ void laya_free(laya_context * ctx) {
     if (!ctx) {
         return;
     }
+    ctx->sched.reset();
+    if (ctx->backend_blas) {
+        ggml_backend_free(ctx->backend_blas);
+    }
     if (ctx->backend_cpu) {
         ggml_backend_free(ctx->backend_cpu);
     }
+    // after the backend that uses it
+    if (ctx->threadpool) {
+        ctx->threadpool_free(ctx->threadpool);
+    }
     delete ctx;
+}
+
+std::string laya_context_kernels(const laya_context * ctx) {
+    std::string s = "cpu";
+    if (ctx->model->n_repacked > 0) {
+        s += "+repack";
+    }
+    if (ctx->backend_blas) {
+        s += "+blas";
+    }
+    return s;
+}
+
+int32_t laya_context_n_threads_blas(const laya_context * ctx) {
+    return ctx->backend_blas ? ctx->n_threads_blas : 0;
+}
+
+int laya_warmup(laya_context * ctx, int32_t n_tokens) {
+    // >= 32 tokens: the BLAS backend (min batch 32) takes its matmuls too
+    const laya_model * model = ctx->model;
+    const int32_t n = std::max(8, std::min(n_tokens, model->hparams.max_len > 0 ? model->hparams.max_len : 1024));
+    std::vector<int32_t> tokens(n, model->sep_id), pos(n), seq(n, 0), qtype(n, 0);
+    std::vector<int32_t> marker_pos(LAYA_MAX_MARKERS, 0), marker_mask(LAYA_MAX_MARKERS, 0);
+    tokens[0] = model->bos_id;
+    for (int32_t i = 0; i < n; ++i) {
+        pos[i] = i;
+    }
+    for (int32_t m = 0; m < 2; ++m) {
+        tokens[n - 3 + m] = model->mask_id;
+        marker_pos[m]     = n - 3 + m;
+        marker_mask[m]    = 1;
+    }
+    const int32_t seq_start = 0;
+
+    laya_batch batch;
+    batch.n_tokens    = n;
+    batch.n_seqs      = 1;
+    batch.tokens      = tokens.data();
+    batch.positions   = pos.data();
+    batch.seq_id      = seq.data();
+    batch.qtype       = qtype.data();
+    batch.marker_pos  = marker_pos.data();
+    batch.marker_mask = marker_mask.data();
+    batch.seq_start   = &seq_start;
+
+    laya_result res;
+    return laya_encode(ctx, batch, res);
+}
+
+std::string laya_blas_description() {
+    ggml_backend_dev_t blas = ggml_backend_dev_by_name("BLAS");
+    return blas ? ggml_backend_dev_description(blas) : "";
+}
+
+#if defined(_WIN32)
+std::wstring laya_utf8_to_wide(const std::string & utf8) {
+    if (utf8.empty() || utf8.size() > (size_t) INT_MAX) {
+        return std::wstring();
+    }
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), (int) utf8.size(), nullptr, 0);
+    if (n <= 0) {
+        return std::wstring();
+    }
+    std::wstring out((size_t) n, L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), (int) utf8.size(), &out[0], n);
+    return out;
+}
+
+// PROCESSOR_RELATIONSHIP::EfficiencyClass exists in the Windows 10 SDK headers; older headers
+// (older MinGW-w64) declare the same byte as Reserved[0] (Flags, EfficiencyClass, Reserved[20]
+// vs Flags, Reserved[21]). Picked at compile time, so either header set builds.
+template <typename T>
+static auto laya_efficiency_class(const T & p, int) -> decltype((int32_t) p.EfficiencyClass) {
+    return (int32_t) p.EfficiencyClass;
+}
+template <typename T>
+static int32_t laya_efficiency_class(const T & p, long) {
+    return (int32_t) p.Reserved[0];
+}
+#endif
+
+int32_t laya_cpu_perf_cores() {
+#if defined(__APPLE__)
+    int32_t n = 0;
+    size_t len = sizeof(n);
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &n, &len, nullptr, 0) == 0 && n > 0) {
+        return n;
+    }
+    len = sizeof(n);
+    if (sysctlbyname("hw.physicalcpu", &n, &len, nullptr, 0) == 0 && n > 0) {
+        return n;
+    }
+    return 0;
+#elif defined(_WIN32) && (_WIN32_WINNT >= 0x0601)
+    // hybrid CPUs (Alder Lake and later, Snapdragon X): count the cores of the highest
+    // EfficiencyClass only; on a uniform CPU every core has class 0 and all are counted
+    DWORD size = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &size);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || size == 0) {
+        return 0;
+    }
+    std::vector<char> buf(size);
+    auto * info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &size)) {
+        return 0;
+    }
+    int32_t best_class = -1;
+    int32_t n_best     = 0;
+    for (DWORD off = 0; off < size;) {
+        const auto * p = reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(buf.data() + off);
+        if (p->Relationship == RelationProcessorCore) {
+            const int32_t cls = laya_efficiency_class(p->Processor, 0);
+            if (cls > best_class) {
+                best_class = cls;
+                n_best     = 0;
+            }
+            if (cls == best_class) {
+                n_best++;
+            }
+        }
+        off += p->Size;
+    }
+    return n_best;
+#else
+    return 0;
+#endif
+}
+
+// Only libomp and libgomp read these. The MSVC runtime (vcomp, /openmp, OpenMP 2.0) documents
+// OMP_DYNAMIC, OMP_NESTED, OMP_NUM_THREADS and OMP_SCHEDULE only, so in an MSVC build with
+// GGML_OPENMP=ON this is a no-op and idle workers keep vcomp's own wait policy.
+void laya_cpu_env_defaults() {
+    const char * vars[][2] = {
+        { "KMP_BLOCKTIME",   "0"       }, // LLVM libomp: workers sleep right after a parallel region
+        { "OMP_WAIT_POLICY", "passive" }, // libomp / libgomp: no spin-waiting between regions
+    };
+    for (const auto & v : vars) {
+        if (getenv(v[0]) != nullptr) {
+            continue;
+        }
+#if defined(_WIN32)
+        _putenv_s(v[0], v[1]);
+#else
+        setenv(v[0], v[1], 0);
+#endif
+    }
 }
 
 // ---- graph helpers ------------------------------------------------------
@@ -1343,6 +2065,18 @@ int laya_encode(laya_context * ctx, const laya_batch & batch, laya_result & resu
     if (batch.n_tokens <= 0 || batch.n_seqs <= 0) {
         return 1;
     }
+
+#if defined(__APPLE__)
+    // the calling thread is thread 0 of the graph compute: keep it off the efficiency
+    // cores when the machine is busy (a server's worker thread starts at QOS_CLASS_DEFAULT)
+    static thread_local bool qos_done = false;
+    if (ctx->qos && !qos_done) {
+        qos_done = true;
+        if ((int) qos_class_self() < (int) QOS_CLASS_USER_INITIATED) {
+            pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+        }
+    }
+#endif
 
     laya_graph g;
 

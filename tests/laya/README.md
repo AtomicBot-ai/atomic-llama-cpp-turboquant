@@ -135,6 +135,45 @@ stdout JSON contains `answers` (per question), the raw per-question tensors
 (`per_question`) used for golden comparison, and, with `--bench`, a `bench`
 timing block. `-t` sets the CPU thread count.
 
+## English checkpoints (`laya`, `laya-typed-decisions`)
+
+`convaiinnovations/laya` (512 ctx, head budget 192) and
+`convaiinnovations/laya-typed-decisions` (1024 ctx, head budget 256) use a
+ModernBERT-large encoder (28 layers, d 1024, 421M parameters) and the
+ModernBERT / OLMo byte-level BPE (NFC, GPT-2 regex, `[CLS]` 50281, `[SEP]`
+50282, `[MASK]` 50284 with lstrip). The same converter handles them and writes
+`decision.laya.tokenizer = bytelevel-bpe` plus the temperature buckets
+(`laya.temperature_by_options.*`):
+
+```bash
+python convert_hf_to_gguf.py <snapshot of convaiinnovations/laya> --outfile laya-en-f16.gguf --outtype f16
+```
+
+Tokenizer parity (0 mismatches required; the corpus has an English-heavy
+section of at least 5000 strings):
+
+```bash
+python tests/laya/verify_tokenizer.py build/bin/llama-laya-cli laya-en-f16.gguf <snapshot>/tokenizer
+```
+
+Parity against the PyTorch reference on the English items of an item set
+(`tests/laya/verify_reference.py`; `ref` needs the `laya` package):
+
+```bash
+$LAYA_PY tests/laya/verify_reference.py ref <snapshot> items.jsonl ref.jsonl --english
+python3  tests/laya/verify_reference.py cli build/bin/llama-laya-cli laya-en-f32.gguf ref.jsonl cli_f32.jsonl
+python3  tests/laya/verify_reference.py server build/bin/llama-server laya-en-f16.gguf ref.jsonl server_f16.jsonl
+python3  tests/laya/verify_reference.py compare ref.jsonl cli_f32.jsonl server_f16.jsonl
+```
+
+`cli` packs all questions of an item into one graph (`llama-laya-cli`, default kernels);
+`server` sends each item to one `llama-server --decision` process over HTTP, which runs the
+plan `sequential` (one graph per question) with the server's default threads and kernels
+(`--kernels` / `-t` override them), i.e. what a client of the server gets.
+
+`tools/laya/gen-unicode-data.py` regenerates `tools/laya/laya-unicode-data.inc`
+(the NFC and regex tables of HF tokenizers) and checks it against HF.
+
 ### Known deviations
 
 * Known fix: the encoder attention output projection (`attn_output.weight`

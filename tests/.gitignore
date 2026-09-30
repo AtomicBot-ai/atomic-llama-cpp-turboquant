@@ -5,6 +5,7 @@
 !laya/golden/
 !decision/
 !decision/golden/
+!decision/bench/
 *.o
 ggml-common.h
 **/*.swp

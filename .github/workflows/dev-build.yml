@@ -1058,7 +1058,7 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_FATAL_WARNINGS=ON
           cmake --build build --config Release -j $(nproc) \
-            --target test-decision-json test-decision-request test-decision-calib test-decision-router llama-server llama-laya-cli
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference llama-server llama-laya-cli
 
       # same toolchain as the server.yml Windows job
       - name: Build (Windows)
@@ -1075,7 +1075,7 @@ jobs:
             -DLLAMA_BUILD_TESTS=ON ^
             -DLLAMA_BUILD_EXAMPLES=OFF
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS% ^
-            --target test-decision-json test-decision-request test-decision-calib test-decision-router llama-server llama-laya-cli
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference llama-server llama-laya-cli
 
       - name: Unit tests
         run: ctest --test-dir build -C Release -R decision --output-on-failure
@@ -1085,6 +1085,17 @@ jobs:
         with:
           python-version: '3.11'
           pip-install: -r tools/server/tests/requirements.txt
+
+      # the Python reference of the router rendering and the calibration tools; the golden file
+      # that test-decision-reference reads must match a fresh run of its generator
+      - name: Reference tests
+        shell: bash
+        env:
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          python -m pip install jsonschema
+          python tests/decision/gen_router_golden.py --check
+          python -m pytest -v tests/decision/test_reference.py
 
       # offline: the tests generate a tiny random laya GGUF
       - name: Server tests

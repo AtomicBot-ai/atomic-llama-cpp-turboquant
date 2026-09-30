@@ -92,7 +92,7 @@ struct laya_seq {
 // Special-token text in user input. The reference turns the mask literal into a
 // space (special_tokens "mask-to-space"). "escape-control" (router inputs) also
 // turns every CONTROL-token string (<pad>, <eos>, <bos>, <unusedN>, ...) and every
-// <unusedN> added token into a space. These strings cannot overlap each other and
+// <unusedN> / [unusedN] added token into a space. These strings cannot overlap each other and
 // a space cannot form a new one, so one pass equals str.replace in any order.
 struct laya_escape {
     struct node {
@@ -105,6 +105,9 @@ struct laya_escape {
 };
 
 laya_escape laya_escape_init(const laya_model * model);
+
+// escape set from its strings (laya_escape_init takes them from the vocabulary); the mask is added to control
+laya_escape laya_escape_make(const std::string & mask, std::vector<std::string> control);
 
 std::string laya_escape_text(const laya_escape & esc, const std::string & text, bool escape_control);
 
@@ -144,7 +147,7 @@ struct laya_batch_data {
 void laya_batch_pack(const std::vector<const laya_seq *> & seqs, laya_batch_data & out);
 
 // llama-laya-cli answer for question idx of res, shaped like the reference Agent answer:
-// per-qtype base temperature, float softmax, noul confidence max(p, 1 - p), choice/score
+// temperature_by_options bucket else per-qtype temperature, float softmax, noul confidence max(p, 1 - p), choice/score
 // confidence 1 - H/log K, answer_confidence max(p), the action head, values rounded
 // like Python round(x, 4). per_question gets the raw outputs compared against tests/laya/golden.
 void laya_postprocess(
@@ -152,6 +155,6 @@ void laya_postprocess(
         const laya_seq & seq,
         const laya_result & res,
         int32_t idx,
-        const std::vector<float> & temperature,
+        const laya_hparams & hp,
         json & answer,
         json & per_question);
