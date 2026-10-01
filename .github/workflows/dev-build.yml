@@ -1058,7 +1058,7 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF \
             -DLLAMA_FATAL_WARNINGS=ON
           cmake --build build --config Release -j $(nproc) \
-            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference llama-server llama-laya-cli
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-laya-convert llama-server llama-laya-cli llama-laya-convert
 
       # same toolchain as the server.yml Windows job
       - name: Build (Windows)
@@ -1075,10 +1075,12 @@ jobs:
             -DLLAMA_BUILD_TESTS=ON ^
             -DLLAMA_BUILD_EXAMPLES=OFF
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS% ^
-            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference llama-server llama-laya-cli
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-laya-convert llama-server llama-laya-cli llama-laya-convert
 
+      # decision + the checkpoint converter (test-laya-convert, test-decision-checkpoint-cli); the Python
+      # cross-check (label python) needs torch + transformers 5.17 and runs locally (make_tiny_hf_laya.py --check)
       - name: Unit tests
-        run: ctest --test-dir build -C Release -R decision --output-on-failure
+        run: ctest --test-dir build -C Release -R "decision|laya-convert" -LE python --output-on-failure
 
       - name: Python setup
         uses: actions/setup-python@v6
