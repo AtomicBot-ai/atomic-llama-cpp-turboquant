@@ -89,6 +89,17 @@ struct laya_model_params {
     // repacked kernel (Q4_0 / Q4_K / Q5_K / Q6_K / Q8_0 ... on NEON dotprod / i8mm, AVX2).
     // Other kernels, other rounding: the logits change slightly (same accuracy class).
     bool use_extra_bufts = false;
+    // compute device (laya_device_select): nullptr = the CPU. A GPU / iGPU device of the ggml backend
+    // registry gets the weights in its buffer type; a weight whose op the device cannot run stays in host
+    // memory (laya_placement.host_weights counts them). The load throws when the device buffer cannot be
+    // allocated: computing from host weights would copy them to the device on every pass (the scheduler
+    // offloads large-batch matmuls) or run them on the CPU. token_embd always stays on the host (file
+    // mapping or CPU buffer): only get_rows reads it, on the CPU, and that keeps the 393 MB (F16 mmBERT)
+    // table out of device memory. use_extra_bufts is CPU-only (throws with a device).
+    ggml_backend_dev_t device = nullptr;
+    // test hook (tests/test-laya-backend-parity.cpp): names of weights a device model keeps in host memory
+    // as if the device could not run their op
+    std::vector<std::string> host_weights;
 };
 
 // load a laya GGUF (F16 or quantized; dequantization happens inside ggml mul_mat)
@@ -102,12 +113,30 @@ const laya_hparams & laya_model_hparams(const laya_model * model);
 // where the weights went: loaded into the CPU buffer, used in place from the file mapping
 // (token_embd with use_mmap), converted into repack buffers (use_extra_bufts)
 struct laya_model_memory {
-    size_t  loaded     = 0;  // bytes
+    size_t  device     = 0;  // bytes in the buffer of the compute device (0 on the CPU)
+    size_t  loaded     = 0;  // bytes (host memory)
     size_t  mapped     = 0;  // bytes (virtual: only the rows of the tokens seen become resident)
     size_t  repacked   = 0;  // bytes before repacking
     int32_t n_repacked = 0;  // tensors
 };
 laya_model_memory laya_model_memory_info(const laya_model * model);
+
+// ---- compute device ----
+// The GPU / iGPU devices of the ggml backend registry, in llama.cpp order: the discrete GPUs first, then
+// the integrated ones (ggml_backend_load_all first in GGML_BACKEND_DL builds).
+std::vector<ggml_backend_dev_t> laya_gpu_devices();
+
+// device for laya_model_params.device from a mode: "cpu" (nullptr), "gpu" (laya_gpu_devices()[gpu_index],
+// throws when there is no such device), "auto" (laya_gpu_devices()[gpu_index] when it exists, else the CPU,
+// with a log line). Throws on any other mode. A caller in auto mode also falls back to the CPU when the
+// device then fails to load, initialize or warm up (engine-laya.cpp, laya-cli.cpp).
+ggml_backend_dev_t laya_device_select(const std::string & mode, int32_t gpu_index = 0);
+
+// "cpu" or the ggml device name of a device ("MTL0", "CUDA0", "Vulkan0", ...)
+std::string laya_device_name(ggml_backend_dev_t device);
+
+// the device a model was loaded for (nullptr = the CPU)
+ggml_backend_dev_t laya_model_device(const laya_model * model);
 
 // ---- tokenizer: self-contained ports of the two HF fast tokenizers of the laya checkpoints ----
 // GGUF key decision.laya.tokenizer picks one (absent: metaspace-bpe, the only kind before it existed):
@@ -134,6 +163,28 @@ int32_t laya_vocab_mask(const laya_model * model);
 // build_sequence replaces this literal string with a space in the inputs
 std::string laya_vocab_mask_token(const laya_model * model);
 
+// matmul precision request (ggml_mul_mat_set_prec) of the graph. The CPU and BLAS backends ignore it:
+// on the CPU both modes compute the same bits. It matters on devices that pick lower-precision
+// kernels by default (CUDA: TF32 / F16 accumulation, DECISION.md "Backend parity tiers").
+//   default  KQ and PV (both operands F32 activations): GGML_PREC_F32_PEDANTIC; the matmuls with a
+//            weight matrix: GGML_PREC_F32 (F32 accumulation; an F32 weight may still run in TF32)
+//   strict   GGML_PREC_F32_PEDANTIC on every matmul (the strict-f32 parity mode)
+// On CUDA the graph also dequantizes some weights to F32 before their matmul and, in strict, applies
+// RoPE from host tables (laya_weight_dequantized; DECISION.md "Backend parity tiers").
+enum laya_precision {
+    LAYA_PRECISION_DEFAULT = 0,
+    LAYA_PRECISION_STRICT  = 1,
+};
+
+// "default" / "strict"
+const char * laya_precision_name(laya_precision precision);
+// false for any other name
+bool         laya_precision_from_name(const std::string & name, laya_precision & precision);
+
+// true when the graph on this device dequantizes a weight of this type to F32 before its matmul at
+// this precision (CUDA: F16 in strict, Q8_0 always), so the matmul runs F32 x F32
+bool laya_weight_dequantized(ggml_backend_dev_t device, laya_precision precision, ggml_type type);
+
 struct laya_context_params {
     int32_t n_threads = 1;
     // polling level of the persistent threadpool between graphs (0..100, see
@@ -143,7 +194,7 @@ struct laya_context_params {
     // supports (F32/F16/quantized weights converted to F32, sgemm). No activation rounding and
     // F32 accumulation, so the logits change (with Accelerate: closer to the PyTorch reference).
     // Off here; the decision engine's kernels "auto" turns it on for Accelerate. laya_init_ext
-    // throws when the build has no BLAS backend.
+    // throws when the build has no BLAS backend, and for a device model (BLAS is CPU-only).
     // ggml-blas takes a matmul only when all its dimensions are >= 32: sequences shorter than 32
     // tokens and the marker-row head matmuls still run on the ggml CPU kernels. Repacked weights
     // (use_extra_bufts) are not host memory, BLAS never takes them.
@@ -155,9 +206,49 @@ struct laya_context_params {
     int32_t n_threads_blas = 0;
     // macOS: raise the QoS of the thread that runs laya_encode to USER_INITIATED (never lowers it)
     bool    qos       = true;
+    // matmul precision request, see laya_precision
+    laya_precision precision = LAYA_PRECISION_DEFAULT;
+    // with a device model: laya_init_ext throws when a graph node outside the allowlist runs on the CPU or
+    // a weight stays in host memory (see laya_placement). Off: such nodes run on the CPU
+    // (ggml_backend_sched copies their inputs).
+    bool    strict_placement = false;
+    // layer trace: an existing directory; every laya_encode of the context dumps the outputs of the layers,
+    // the marker rows and the logits there (trace.jsonl + raw float32 files, compared with
+    // tools/laya/trace_diff.py). Empty: off. The CPU computes the same bits with and without it. The library
+    // reads no environment: llama-laya-cli and llama-decision-bench take LAYA_TRACE_DIR, llama-server only
+    // with --decision-debug (a trace holds the activations of every request).
+    std::string trace_dir;
 };
 
-// one persistent ggml threadpool per context (created here, freed by laya_free)
+// Where ggml_backend_sched put the nodes of a graph. laya_init_ext builds the graph of the warm-up input
+// (64 tokens, one sequence), lets the scheduler place it (ggml_backend_sched_alloc_graph, no compute) and
+// keeps the report. The placement can depend on the input size: ggml-blas takes a matmul only when all
+// its dimensions are >= 32, the scheduler offloads an op on host weights to the device only from a
+// minimum batch (op_offload; host_weights counts such weights instead), and a backend's supports_op may
+// look at the shapes. The probe sees the 64-token graph only.
+//   nodes        compute nodes (views, reshapes, permutes and transposes compute nothing: not counted)
+//   backends     compute nodes per backend name, in the scheduler's order ("MTL0", "BLAS", "CPU")
+//   n_splits     graph splits (every split boundary copies the inputs of the next backend)
+//   cpu_fallback compute nodes of a device context that run on the CPU although the design does not
+//                put them there. Allowed on the CPU: get_rows of token_embd (host memory by design),
+//                casts of graph inputs (the I32 marker_mask to F32) and of that get_rows result, and
+//                every node of a CPU context (BLAS included). fallback_ops: "OP xN" per op.
+//   host_weights weights of a device model that stay in host memory because the device cannot run their
+//                op (laya_model_params.device); their nodes may still show on the device (op_offload)
+struct laya_placement {
+    std::string device;          // laya_device_name of the context's device
+    int32_t     n_nodes      = 0;
+    int32_t     n_splits     = 0;
+    std::vector<std::pair<std::string, int32_t>> backends;
+    int32_t     cpu_fallback = 0;
+    std::vector<std::string> fallback_ops;
+    int32_t     host_weights = 0;
+};
+laya_placement laya_context_placement(const laya_context * ctx);
+// one line for the log: "MTL0: 1203 nodes (MTL0 1170, CPU 33), 3 splits, cpu fallback 0"
+std::string laya_placement_str(const laya_placement & p);
+
+// one persistent ggml threadpool per context (created here, freed by laya_free).
 laya_context * laya_init(const laya_model * model, int n_threads);
 laya_context * laya_init_ext(const laya_model * model, const laya_context_params & params);
 
@@ -166,11 +257,15 @@ laya_context * laya_init_ext(const laya_model * model, const laya_context_params
 // again (ggml_backend_sched_alloc_graph), so this does not bound the compute memory.
 int laya_warmup(laya_context * ctx, int32_t n_tokens = 64);
 
-// "cpu", "cpu+repack", "cpu+blas", ...: the kernels a context computes with
+// "cpu", "cpu+repack", "cpu+blas", ...: the kernels a context computes with; a device context: the
+// lower-case name of the device's backend ("metal", "cuda", "vulkan")
 std::string laya_context_kernels(const laya_context * ctx);
 
 // threads of the BLAS backend of a context; 0 without BLAS
 int32_t laya_context_n_threads_blas(const laya_context * ctx);
+
+// matmul precision request of a context
+laya_precision laya_context_precision(const laya_context * ctx);
 
 // description of the BLAS backend of this build ("Accelerate", "OpenBLAS", ...), "" if none
 std::string laya_blas_description();
@@ -193,5 +288,8 @@ std::wstring laya_utf8_to_wide(const std::string & utf8);
 
 void laya_free(laya_context * ctx);
 
-// run one forward pass; returns 0 on success, non-zero on failure
+// run one forward pass; returns 0 on success, non-zero on failure. The batch is checked first
+// (O(n_tokens)): token ids within the token_embd rows, qtype within type_emb, seq_start and every
+// marker_pos slot (masked ones too: get_rows gathers them) within [0, n_tokens). A device get_rows
+// has no bounds check, so an index outside would read outside the tensor.
 int laya_encode(laya_context * ctx, const laya_batch & batch, laya_result & result);
