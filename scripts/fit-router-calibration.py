@@ -20,7 +20,7 @@ different function. fit refuses logits from more than one engine identity (a rec
 "engine" block counts as its own), and refuses to fit on fewer than --min-examples fit examples or
 --min-per-class of either outcome. collect --spec accepts the file the server runs with
 (--decision-spec) and the output of "gguf_decision_spec.py get model.gguf > spec.json" (the GGUF text
-plus the newline print adds).
+plus the one newline get adds).
 
 "before" is what ships now: --before A,B, else the router.calibration of --spec, else the
 uncalibrated zero-shot baseline p = sigmoid(z); "after" is sigmoid(a z + b). Both are scored on the
@@ -246,7 +246,8 @@ def cmd_fit(a) -> int:
             return 2
         report["spec_in"] = os.path.abspath(a.spec)
         if a.spec_out:
-            with open(a.spec_out, "w", encoding="utf-8") as f:
+            # LF on every OS: gguf_decision_spec.py set stores these bytes, and spec_sha256 is their hash
+            with open(a.spec_out, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(spec, f, ensure_ascii=False, indent=1)
                 f.write("\n")
             report["spec_out"] = os.path.abspath(a.spec_out)
