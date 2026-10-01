@@ -570,6 +570,23 @@ static uint32_t laya_cpt_from_utf8(const char * s, size_t n, size_t & len, bool 
     return cpt;
 }
 
+std::string laya_foreign_gguf_hint(const std::string & arch) {
+    const std::string official = "download the official checkpoint (convaiinnovations/laya, laya-multilingual or "
+                                 "laya-typed-decisions) and start it with llama-server --decision -m <checkpoint dir>";
+    if (arch == "ggmlc") {
+        return "this is a ggmlc file (github.com/monatis/ggmlc, e.g. mys/laya-*-GGUF), a compiled graph for the "
+               "ggmlc runtime, not a llama.cpp model; " + official;
+    }
+    if (arch == "modern-bert") {
+        return "a modern-bert GGUF holds only an encoder; community Laya GGUFs of this kind (Weidows/*, fr0stbit3/*) "
+               "keep the decision head in a separate file; " + official;
+    }
+    if (arch == "laya-head") {
+        return "a laya-head GGUF holds only the decision head of an NPU split (wigcheng5566/laya-neutron-gguf); " + official;
+    }
+    return "";
+}
+
 laya_model * laya_model_load_from_file(const char * fname) {
     return laya_model_load_from_file_ext(fname, laya_model_params());
 }
@@ -625,8 +642,11 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
     // architecture check
     {
         const int64_t id = gguf_find_key(ctx_gguf, "general.architecture");
-        if (id < 0 || std::string(gguf_get_val_str(ctx_gguf, id)) != "laya") {
-            throw std::runtime_error("not a laya GGUF (general.architecture != \"laya\")");
+        const std::string arch = id < 0 ? std::string() : std::string(gguf_get_val_str(ctx_gguf, id));
+        if (arch != "laya") {
+            const std::string hint = laya_foreign_gguf_hint(arch);
+            throw std::runtime_error("not a laya GGUF (general.architecture is \"" + arch + "\", not \"laya\")" +
+                                     (hint.empty() ? std::string() : ": " + hint));
         }
     }
 

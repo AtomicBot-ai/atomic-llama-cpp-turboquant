@@ -11,6 +11,11 @@ name: Dev Build (all platforms)
 
 on:
   workflow_dispatch:
+    inputs:
+      sign:
+        description: "Authenticode-sign the Windows runtime binaries (costs KeyLocker signatures)"
+        type: boolean
+        default: false
   push:
     branches:
       - dev
@@ -691,14 +696,19 @@ jobs:
               Copy-Item $_.FullName -Destination $dst -Force
             }
 
-      # Signed before staging, so the archive carries the signatures. Signing
-      # runs only on push: PR runs may lack the secrets, and dev binaries are
-      # for internal testing anyway.
+      # Dev binaries are for internal testing: unsigned by default. Every signed
+      # file costs one KeyLocker signature (about 200 per push when everything
+      # was signed). Sign on demand: a manual run with "sign", or the repository
+      # variable SIGN_DEV_BUILDS=true; then only the runtime the app runs, and a
+      # signing failure (quota, DigiCert outage) does not stop the archives from
+      # being published. Signed before staging, so the archive carries them.
       - name: Sign Windows binaries
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && (inputs.sign || vars.SIGN_DEV_BUILDS == 'true') }}
+        continue-on-error: true
         uses: ./.github/actions/windows-code-sign
         with:
           path: build\bin\Release
+          scope: runtime
           sm-api-key: ${{ secrets.SM_API_KEY }}
           sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
           sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
@@ -896,10 +906,12 @@ jobs:
           $total = (Get-ChildItem -Path hip-out -File | Measure-Object -Property Length -Sum).Sum
           Write-Host ("  HIP backend payload total: {0:N1} MiB" -f ($total / 1MB))
 
-      # Same rule as the CUDA archives: everything in the payload carries a
-      # signature. The action skips files that already have a valid one, so
-      # AMD-signed DLLs keep AMD's signature and unsigned ones get ours.
+      # Same rule as the other Windows archives: signed on demand only (see
+      # "Sign Windows binaries"). The whole payload is runtime; the action skips
+      # files that already have a valid signature, so AMD-signed DLLs keep AMD's.
       - name: Sign HIP backend
+        if: ${{ github.event_name != 'pull_request' && (inputs.sign || vars.SIGN_DEV_BUILDS == 'true') }}
+        continue-on-error: true
         uses: ./.github/actions/windows-code-sign
         with:
           path: hip-out

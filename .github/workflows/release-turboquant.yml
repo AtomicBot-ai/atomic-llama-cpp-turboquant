@@ -702,11 +702,14 @@ jobs:
               Copy-Item $_.FullName -Destination $dst -Force
             }
 
-      # Signed before staging, so the archive carries the signatures.
+      # Signed before staging, so the archive carries the signatures. Only the
+      # runtime the app runs (llama-server.exe and its DLLs): every file costs a
+      # KeyLocker signature, and the other tools were about 30 of ~47 per archive.
       - name: Sign Windows binaries
         uses: ./.github/actions/windows-code-sign
         with:
           path: build\bin\Release
+          scope: runtime
           sm-api-key: ${{ secrets.SM_API_KEY }}
           sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
           sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}

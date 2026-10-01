@@ -147,6 +147,10 @@ int llama_server(common_params & params, int argc, char ** argv) {
     } else if (!params.model.path.empty() && server_decision_gguf_arch(params.model.path) == "laya") {
         SRV_ERR("%s is a laya decision model; start it with --decision (see DECISION.md)\n", params.model.path.c_str());
         return 1;
+    } else if (!params.model.path.empty() && server_decision_foreign_laya_hint(params.model.path) != "") {
+        // ggmlc / laya-head files: llama.cpp cannot load them; a modern-bert encoder is a valid embedding model
+        SRV_ERR("%s: %s\n", params.model.path.c_str(), server_decision_foreign_laya_hint(params.model.path).c_str());
+        return 1;
     } else if (!params.model.path.empty() && server_decision_is_checkpoint_dir(params.model.path)) {
         SRV_ERR("%s is a laya checkpoint directory; start it with --decision (see DECISION.md)\n", params.model.path.c_str());
         return 1;
