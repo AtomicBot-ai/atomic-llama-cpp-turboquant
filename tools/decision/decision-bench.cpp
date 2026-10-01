@@ -7,7 +7,9 @@
 //   llama-decision-bench -m laya-q8_0.gguf -f tests/decision/bench/suite.jsonl [-t 4] [--kernels NAME]
 //                        [--repeat 20] [--warmup 2] [--plan NAME] [--spec FILE]
 //                        [--idle-ms 60000] [--filter TEXT] [--poll N] [--no-mmap] [--mlock] [--no-warmup]
-//                        [--warmup-tokens N] [--blas-threads N] [-o result.json]
+//                        [--warmup-tokens N] [--blas-threads N] [--device cpu|gpu|auto] [--gpu N]
+//                        [--strict-placement] [-o result.json]
+//   LAYA_TRACE_DIR=<dir>: the laya layer trace (decision_engine_params.trace_dir)
 //
 // Suite: one JSON object per line
 //   {"id": "router-n4-a", "endpoint": "systemone" | "router", "group": "router N=4", "body": {...}}
@@ -456,6 +458,10 @@ static void bench_usage(const char * argv0) {
            "  --spec FILE           decision spec sidecar (default: from the GGUF)\n"
            "  --max-items N         questions / candidates per request (default: 16)\n"
            "  --kernels NAME        laya matmul kernels: auto, default, repack, blas, repack+blas (default: from the spec, then auto)\n"
+           "  --precision NAME      matmul precision request: default, strict (the CPU computes the same bits)\n"
+           "  --device NAME         compute device: cpu, gpu, auto (default: cpu; see llama-server --decision-device)\n"
+           "  --gpu N               GPU / iGPU device for --device gpu / auto (default: 0)\n"
+           "  --strict-placement    fail at load when a graph node outside the allowlist runs on the CPU\n"
            "  --poll N              threadpool polling level between graphs, 0..100 (default: 0)\n"
            "  --no-mmap             load token_embd instead of mapping it\n"
            "  --mlock               lock the model memory in RAM\n"
@@ -507,6 +513,26 @@ int main(int argc, char ** argv) {
             idle_ms = std::max(0LL, atoll(next().c_str()));
         } else if (arg == "--kernels") {
             ep.kernels = next();
+        } else if (arg == "--precision") {
+            ep.precision = next();
+            if (ep.precision != "default" && ep.precision != "strict") {
+                fprintf(stderr, "error: --precision must be default or strict\n");
+                return 1;
+            }
+        } else if (arg == "--device") {
+            ep.device = next();
+            if (ep.device != "cpu" && ep.device != "gpu" && ep.device != "auto") {
+                fprintf(stderr, "error: --device must be cpu, gpu or auto\n");
+                return 1;
+            }
+        } else if (arg == "--gpu") {
+            ep.gpu_index = atoi(next().c_str());
+            if (ep.gpu_index < 0) {
+                fprintf(stderr, "error: --gpu must be >= 0\n");
+                return 1;
+            }
+        } else if (arg == "--strict-placement") {
+            ep.strict_placement = true;
         } else if (arg == "--poll") {
             ep.poll = std::min(100, std::max(0, atoi(next().c_str())));
         } else if (arg == "--no-mmap") {
@@ -535,6 +561,11 @@ int main(int argc, char ** argv) {
     if (model_path.empty() || suite_path.empty()) {
         bench_usage(argv[0]);
         return 1;
+    }
+
+    {
+        const char * trace_dir = getenv("LAYA_TRACE_DIR");
+        ep.trace_dir = trace_dir ? trace_dir : "";
     }
 
     // inputs first, before the model loads
@@ -566,8 +597,8 @@ int main(int argc, char ** argv) {
     const double    load_cpu  = bench_cpu_seconds() - cpu_start;
     const bench_mem mem_load  = bench_mem_now();
 
-    fprintf(stderr, "decision-bench: %s layout %s, plan %s (router %s), kernels %s (blas threads %d), %d threads, spec %s (%s), %zu requests, warmup %d, repeat %d, load %.1f ms\n",
-            model_path.c_str(), ctx.spec.layout.c_str(), ctx.caps.plan.c_str(), ctx.caps.plan_independent.c_str(), ctx.caps.kernels.c_str(), ctx.caps.n_threads_blas, ctx.caps.n_threads,
+    fprintf(stderr, "decision-bench: %s layout %s, plan %s (router %s), device %s, kernels %s (blas threads %d), %d threads, spec %s (%s), %zu requests, warmup %d, repeat %d, load %.1f ms\n",
+            model_path.c_str(), ctx.spec.layout.c_str(), ctx.caps.plan.c_str(), ctx.caps.plan_independent.c_str(), ctx.caps.device.c_str(), ctx.caps.kernels.c_str(), ctx.caps.n_threads_blas, ctx.caps.n_threads,
             ctx.spec.source.c_str(), ctx.spec.sha256.substr(0, 12).c_str(), reqs.size(), n_warmup, n_repeat, load_ms);
 
     std::vector<bench_series> series(reqs.size());
@@ -728,8 +759,11 @@ int main(int argc, char ** argv) {
             {"layout",  ctx.spec.layout},
             {"format",  ctx.caps.format},
             {"device",  ctx.caps.device},
+            {"device_description", ctx.caps.device_description},
+            {"placement", ctx.caps.placement},
             {"kernels", ctx.caps.kernels},
             {"n_threads_blas", ctx.caps.n_threads_blas},
+            {"precision", ctx.caps.precision},
             {"engine_params", {
                 {"mmap", ep.use_mmap}, {"mlock", ep.use_mlock}, {"warmup", ep.warmup}, {"poll", ep.poll},
                 {"warmup_tokens", ep.warmup_tokens}, {"blas_threads", ep.n_threads_blas},

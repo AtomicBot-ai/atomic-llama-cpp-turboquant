@@ -3451,6 +3451,49 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_KERNELS"));
     add_opt(common_arg(
+        {"--decision-precision"}, "{default,strict}",
+        "decision matmul precision request; default: F32 accumulation (PEDANTIC for the activation x activation\n"
+        "matmuls), strict: GGML_PREC_F32_PEDANTIC on every matmul (strict-f32 parity mode, slower on CUDA);\n"
+        "the CPU and BLAS kernels compute the same bits in both modes (default: default)",
+        [](common_params & params, const std::string & value) {
+            if (value != "default" && value != "strict") {
+                throw std::invalid_argument("--decision-precision must be default or strict");
+            }
+            params.decision.precision = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_PRECISION"));
+    add_opt(common_arg(
+        {"--decision-device"}, "{cpu,gpu,auto}",
+        "decision compute device; cpu, gpu (the GPU / iGPU device of --decision-gpu, an error when there is none)\n"
+        "or auto (that device when it exists, else the CPU); a device takes --decision-kernels auto or default\n"
+        "(default: cpu)",
+        [](common_params & params, const std::string & value) {
+            if (value != "cpu" && value != "gpu" && value != "auto") {
+                throw std::invalid_argument("--decision-device must be cpu, gpu or auto");
+            }
+            params.decision.device = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_DEVICE"));
+    add_opt(common_arg(
+        {"--decision-gpu"}, "N",
+        string_format("GPU / iGPU device for --decision-device gpu or auto, 0 = the first (discrete GPUs before integrated ones)\n"
+                      "(default: %d)", params.decision.gpu),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--decision-gpu must be >= 0");
+            }
+            params.decision.gpu = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_GPU"));
+    add_opt(common_arg(
+        {"--decision-strict-placement"},
+        "with a decision device: fail at load when a graph node outside the allowlist would run on the CPU\n"
+        "(default: disabled, such nodes run on the CPU)",
+        [](common_params & params) {
+            params.decision.strict_placement = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_STRICT_PLACEMENT"));
+    add_opt(common_arg(
         {"--decision-queue"}, "N",
         string_format("decision requests that may wait before new ones get 429 (default: %d)", params.decision.queue),
         [](common_params & params, int value) {

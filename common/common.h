@@ -424,6 +424,10 @@ struct common_params_decision {
     bool        allow_uncalibrated = false; // router scores without a router calibration
     bool        debug              = false; // raw logits, render endpoint, load delay for tests
     std::string kernels            = "";    // laya matmul kernels; empty: from the spec, then "auto" // NOLINT
+    std::string precision          = "default"; // matmul precision request: default, strict      // NOLINT
+    std::string device             = "cpu"; // compute device: cpu, gpu, auto                        // NOLINT
+    int32_t     gpu                = 0;     // which GPU / iGPU device for gpu / auto (0 = the first)
+    bool        strict_placement   = false; // fail at load when a graph node falls back to the CPU
     bool        threads_set        = false; // -t given: otherwise the engine runs on the performance cores
     std::string convert_cache      = "";    // -m DIR: GGUF cache; empty: the user cache (llama.cpp/laya/gguf-cache) // NOLINT
     std::string convert_type       = "f16"; // -m DIR: f16 or f32                                                  // NOLINT

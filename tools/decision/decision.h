@@ -109,6 +109,10 @@ struct decision_output {
     bool                 options_cut = false;
     bool                 head_cut    = false;
     std::vector<int32_t> tokens;            // prompt token ids
+    // laya: the raw act-head logits and act_probability = round(softmax(act_logits)[0], 4), float softmax
+    // as llama-laya-cli prints it (laya_act_softmax); empty / < 0 when the engine has no act head
+    std::vector<float>   act_logits;
+    double               act_probability = -1.0;
 };
 
 struct decision_caps {
@@ -121,10 +125,16 @@ struct decision_caps {
     int32_t                  max_options = 0;
     int32_t                  max_tokens  = 0;  // sequence limit of the model
     int32_t                  n_threads   = 0;
-    std::string              device;
-    std::string              kernels;       // laya: "cpu", "cpu+repack", "cpu+blas", "cpu+repack+blas"
+    std::string              device;        // "cpu" or the ggml device name that computes the graph ("MTL0", "CUDA0", ...)
+    std::string              device_description; // "" on the CPU, else the device description ("Apple M4 Max")
+    // laya: where the scheduler put the graph nodes (laya_placement): {"nodes", "splits", "backends": {name: nodes},
+    // "cpu_fallback", "fallback_ops", "strict"}; null for an engine without it
+    json                     placement;
+    std::string              kernels;       // laya: "cpu", "cpu+repack", "cpu+blas", "cpu+repack+blas"; on a device "metal", "cuda", ...
     int32_t                  n_threads_blas = 0; // threads of the BLAS backend; 0 without BLAS
+    std::string              precision;     // laya: matmul precision request, "default" or "strict"
     // weight bytes: loaded into RAM, used in place from the read-only file mapping, repacked
+    size_t                   weights_device   = 0;  // in the memory of the compute device
     size_t                   weights_loaded   = 0;
     size_t                   weights_mapped   = 0;
     size_t                   weights_repacked = 0;
@@ -174,6 +184,23 @@ struct decision_engine_params {
     int32_t     warmup_tokens  = 64;
     int32_t     n_threads_blas = 0; // BLAS backend threads; 0: auto (laya_context_params)
     int32_t     poll      = 0;      // threadpool polling level between graphs (0..100)
+    // matmul precision request: "default" (F32 accumulation, PEDANTIC on the activation x activation
+    // matmuls) or "strict" (PEDANTIC everywhere; the strict-f32 parity mode). CPU and BLAS ignore it.
+    // Empty: "default".
+    std::string precision;
+    // compute device: "cpu" (default), "gpu" (GPU / iGPU device gpu_index of the ggml backend registry; an
+    // error when there is none) or "auto" (that device when it exists, else the CPU). A device runs the
+    // graph with its stock ggml backend; kernels "auto" then means the device's own, and the CPU-only
+    // kernels (repack, blas) are refused with "gpu"; with "auto" they select the CPU. "auto" also falls
+    // back to the CPU when the device fails to load, initialize or warm up (a warning on stderr).
+    std::string device = "cpu";
+    int32_t     gpu_index = 0;
+    // fail at load when a graph node outside the allowlist would run on the CPU or a weight stays in host
+    // memory (laya_placement)
+    bool        strict_placement = false;
+    // laya layer trace directory (laya_context_params.trace_dir); empty: off. It records the activations of
+    // every request: llama-server passes LAYA_TRACE_DIR only with --decision-debug
+    std::string trace_dir;
 };
 
 // default engine threads: the performance cores (macOS hw.perflevel0.physicalcpu, Windows the
