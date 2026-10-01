@@ -24,6 +24,7 @@ Code map:
 | `tests/test-decision-*.cpp`, `tests/decision/` | C++ unit tests, golden files, tiny model generator |
 | `tools/server/tests/unit/test_decision.py` | server contract tests (offline) |
 | `tools/decision/decision-bench.cpp`, `tests/decision/bench/`, `scripts/bench-decision*` | `llama-decision-bench`, its request suite, the KPI script and report (see Benchmark) |
+| `tests/laya/verify_reference.py`, `tests/laya/parity/` | parity against the PyTorch reference and between backends: corpus generator, public-output gate, tiers, identity records (see Backend parity tiers) |
 
 ## Quick start
 
@@ -54,6 +55,10 @@ Environment variables use the `LLAMA_ARG_DECISION_*` names.
 | `--decision-spec FILE` | from the GGUF | JSON that replaces the embedded `decision.spec` as a whole. A bare Arbiter `calibration.json` (`{"temperature": x}` or `{"temperature": {...}}`) is accepted too: it is a required calibration, keeps the layout clamp (laya [0.5, 5]) and replaces the `laya.temperature` calibration; its `calibration.version` is its own `version` field (else `cal-<hash>`), never `gguf:laya.temperature`. |
 | `--decision-plan NAME` | from the spec | compute plan, laya: `sequential`, `packed` (systemone only; the router always runs `sequential`) |
 | `--decision-kernels NAME` | from the spec, then `auto` | matmul kernels, laya: `auto` (`blas` when the BLAS backend is Accelerate, i.e. on macOS; else `default`), `default` (ggml CPU kernels, the Phase 1 numerics), `repack` (CPU repack buffers for quantized weights), `blas` (BLAS backend in the scheduler), `repack+blas`. Kernels change the logits slightly, so the default logits on macOS differ from those on Linux and Windows; `default` gives the same numerics everywhere. An explicit `blas` / `repack+blas` fails at load on a build without a BLAS backend. See "CPU kernels and memory" |
+| `--decision-precision NAME` | `default` | matmul precision request of the laya graph: `default` (`GGML_PREC_F32` on the weight matmuls, `GGML_PREC_F32_PEDANTIC` on KQ and PV, whose operands are both F32 activations), `strict` (`GGML_PREC_F32_PEDANTIC` on every matmul: the `strict-f32` parity mode, slower on CUDA). The CPU and BLAS kernels ignore it: both modes give the same bits there. On CUDA the graph also dequantizes F16 weights to F32 in `strict` and Q8_0 weights in both modes, and `strict` applies RoPE from host tables (see "Backend parity tiers"). `/props.decision.plan.precision` shows it; `llama-laya-cli --precision` and `llama-decision-bench --precision` take the same values |
+| `--decision-device NAME` | `cpu` | compute device of the laya graph: `cpu`, `gpu` (the GPU / iGPU device `--decision-gpu` of the ggml backend registry; the load fails when there is none) or `auto` (that device when it exists, else the CPU). A device runs the graph with its stock ggml backend (Metal, CUDA, Vulkan, ...); `--decision-kernels` must then be `auto` or `default` (`repack` and `blas` are CPU-only). See "Compute device" |
+| `--decision-gpu N` | 0 | which GPU / iGPU for `gpu` / `auto`: 0 is the first, discrete GPUs before integrated ones (the llama.cpp order) |
+| `--decision-strict-placement` | off | with a device: the load fails when a graph node outside the allowlist would run on the CPU (see "Compute device"); without it such nodes run on the CPU and `/props.decision.placement` counts them |
 | `--decision-queue N` | 4 | requests that may wait while one runs; more get 429 |
 | `--decision-max-items N` | 16 | questions per `/v1/systemone` request, candidates per `/v1/router/score` request (router is also capped at 16) |
 | `--decision-allow-uncalibrated` | off | serve `/v1/router/score` without a router calibration |
@@ -65,7 +70,7 @@ Reused: `-m`, `-a/--alias` (default: the model file name without its directories
 `mlock` / `mmap+mlock` also lock the model in RAM, and a failed lock only warns),
 `--mlock` / `--no-mmap` (deprecated spellings of `--load-mode`), `--no-warmup` (skip the
 warm-up forward pass at load), `--metrics`, `--timeout`, SSL flags. `--device` is
-ignored by the laya engine (CPU only).
+ignored with a warning: the decision engine takes `--decision-device` and `--decision-gpu`.
 
 Ignored with a warning: `--parallel`, `-ctk/-ctv`, `--ctx-checkpoints`, `--spec-*` / `-md`,
 `--embedding` / `--pooling`, `--mmproj`, `--lora`, `--sleep-idle-seconds`,
@@ -144,9 +149,9 @@ Response:
 ```json
 {"model": "tiny-laya",
  "answers": {
-   "refund": {"type": "noul", "noul": 0.93, "confidence": 0.93},
-   "topic":  {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.97, "other": 0.03}, "confidence": 0.81},
-   "sev":    {"type": "score", "score": 1.4, "probabilities": {"0": 0.2, "1": 0.2, "2": 0.6}, "legend": {"0": "low", "1": "mid", "2": "high"}, "confidence": 0.1}},
+   "refund": {"type": "noul", "noul": 0.93, "confidence": 0.93, "action": {"act_probability": 1.0}},
+   "topic":  {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.97, "other": 0.03}, "confidence": 0.81, "action": {"act_probability": 1.0}},
+   "sev":    {"type": "score", "score": 1.4, "probabilities": {"0": 0.2, "1": 0.2, "2": 0.6}, "legend": {"0": "low", "1": "mid", "2": "high"}, "confidence": 0.1, "action": {"act_probability": 0.9998}}},
  "usage": {"input_tokens": 138, "output_tokens": 0, "evaluated_tokens": 138},
  "latency_ms": 42.1,
  "timings": {"queue_ms": 0.1, "render_ms": 0.4, "compute_ms": 41.5},
@@ -166,7 +171,15 @@ Response:
   left, `state_ids[len - room:]`, anything else from the right), `options_truncated`, `instructions_truncated`.
   With `"truncation": "error"` any of these cuts is a 422 instead (`STATE_TRUNCATED`,
   `OPTIONS_TRUNCATED`, `PROMPT_TOO_LONG` with `param` `questions.<id>.instructions`).
-- With `--decision-debug` every answer has `debug: {logits, temperature, tokens, n_state, n_state_cut, options_cut, head_cut}`.
+- `action.act_probability` (laya): the act head of the reference Agent, softmax(act logits)[0]
+  computed in float and rounded to 4 digits (Python `round(x, 4)`), exactly as `llama-laya-cli`
+  prints it (`laya_act_softmax` in `tools/decision/laya-decide.cpp`); the other numbers of the
+  answer are not rounded. The act head saturates on the published checkpoints (\|act logit\| in
+  the thousands, `act_probability` 1.0 on every Phase 4 English record), so the value carries
+  little information; it is there for parity with the reference answer shape. Router scores have
+  no `action`.
+- With `--decision-debug` every answer has `debug: {logits, temperature, tokens, n_state, n_state_cut, options_cut, head_cut}`;
+  systemone answers also have `act_logits` (the raw act-head logits).
 
 ### `POST /v1/router/score`
 
@@ -268,12 +281,16 @@ candidates' scores (bitwise).
   `question_types`, `limits` (`max_questions`, `max_candidates`, `max_options`,
   `max_checks`, `max_tokens`, `max_card_tokens`, `max_card_field_bytes`, `max_body_bytes`), `confidence`,
   `calibration {method, calibrated, version}`, `router {available, calibrated, method, card_schema, card_renderer}`,
-  `plan {name, router, plans, n_threads, kernels, n_threads_blas, state_split, recipe, fa, n_batch, n_ubatch}`
+  `plan {name, router, plans, n_threads, kernels, n_threads_blas, precision, state_split, recipe, fa, n_batch, n_ubatch}`
   (`router`: the plan of `/v1/router/score`; `kernels`: `cpu`, `cpu+repack`, `cpu+blas` or
-  `cpu+repack+blas`; `n_threads_blas`: threads of the BLAS backend, 0 without it; `state_split`:
+  `cpu+repack+blas`, on a device the lower-case backend name: `metal`, `cuda`, `vulkan`;
+  `n_threads_blas`: threads of the BLAS backend, 0 without it; `precision`: `default` or
+  `strict` (`--decision-precision`); `state_split`:
   router state pieces are tokenized separately, see Scheduling),
-  `memory {weights_loaded_bytes, weights_mapped_bytes, weights_repacked_bytes}` (where the
-  weights went, see "CPU kernels and memory"), `device`, `kv_type`,
+  `memory {weights_device_bytes, weights_loaded_bytes, weights_mapped_bytes, weights_repacked_bytes}` (where the
+  weights went, see "CPU kernels and memory" and "Compute device"), `device` (`cpu` or the
+  ggml device name: `MTL0`, `CUDA0`, `Vulkan0`, ...), `device_description` (`""` on the CPU),
+  `placement {nodes, splits, backends, cpu_fallback, fallback_ops, host_weights, strict}` (see "Compute device"), `kv_type`,
   `queue_capacity`, `input_contract`, `special_tokens`, `debug`,
   `source` (`gguf` for `-m FILE`, `checkpoint-dir` for `-m DIR`), `cache_path` (the cached GGUF
   that was loaded; `null` for `gguf`) and `checkpoint` (`null` for `gguf`, else
@@ -299,7 +316,7 @@ Decision handlers answer `{"error": {"code", "type", "reason", "message", "param
 | 413 | `BODY_TOO_LARGE` (body over 1 MiB, checked in the handler) |
 | 422 | `PROMPT_TOO_LONG` (instructions cut with `"truncation": "error"`; letters engine: prompt too long), `CARD_TOO_LONG` (card over `router.max_card_tokens`), `CRITERION_TOO_LONG` (card + criterion do not fit), `OPTIONS_TRUNCATED` (option markers cut, or any option cut with `"truncation": "error"`), `STATE_TRUNCATED` (with `"truncation": "error"`) |
 | 429 | `OVERLOADED`, with `Retry-After: 1` |
-| 500 | `INTERNAL` |
+| 500 | `INTERNAL`. An unexpected exception answers with the fixed message `internal error while processing the request (details in the server log)`; its text (paths, library internals, input fragments) goes to the server log only |
 | 501 | `ROUTER_NOT_CALIBRATED` |
 | 503 | `UNAVAILABLE`: an accepted request was not run or not finished because the server is stopping or the client left |
 
@@ -422,6 +439,87 @@ numerics (plan, threads, kernels, recipe) are shown in `/props.decision.plan`.
     differently and are not measured); parity tables below. `--decision-kernels default` (or spec
     `plan.kernels: "default"`) restores the Phase 1 numerics bit for bit on every platform.
   - Results are bitwise stable for a fixed model, `-t` and kernels on one machine.
+
+### Compute device
+
+`--decision-device gpu|auto` (`llama-laya-cli --device`, `llama-decision-bench --device`) runs the
+laya graph on one GGUF device of the ggml backend registry through `ggml_backend_sched`, with the
+stock backends only (no kernels of our own, ggml untouched). The default stays `cpu`: in the
+Atomic Chat app the chat model has the GPU.
+
+- Where things go: every weight goes into the device buffer type, except `token_embd`, which
+  stays in host memory (the file mapping, or a CPU buffer with `--load-mode none`): only its
+  `get_rows` reads it, on the CPU, which keeps the table (393 MB F16 for mmBERT-base) out of
+  device memory and copies only the `n_embd x n_tokens` rows per pass. A weight whose op the
+  device does not support (`ggml_backend_dev_supports_op`, the check llama.cpp makes) stays in
+  host memory, is logged and counted (`placement.host_weights`). When the device buffer cannot
+  be allocated at all, the load fails: computing from host weights would make the scheduler copy
+  every large-batch matmul weight to the device on each pass (`op_offload`) and run the rest on
+  the CPU, a silent slow mode the placement report would not show. With `gpu` that is a load
+  error; with `auto` the engine falls back to the CPU (below). The graph inputs are set on the
+  CPU and copied at the split.
+  The CPU backend (with its threadpool) remains in the scheduler behind the device; BLAS and
+  the repack buffers are CPU-only and refused with a device.
+- Placement report: at context creation the engine builds the graph of the warm-up input
+  (64 tokens, one sequence), lets the scheduler place it (`ggml_backend_sched_alloc_graph`, no
+  compute) and walks the nodes with `ggml_backend_sched_get_tensor_backend`. It logs one line
+  (`laya: laya_init_ext: placement MTL0: 562 nodes (MTL0 561, CPU 1), 2 splits, cpu fallback 0`)
+  and `/props.decision.placement` gives `nodes` (compute nodes; views, reshapes, permutes and
+  transposes compute nothing and are not counted), `splits` (`ggml_backend_sched_get_n_splits`),
+  `backends` (nodes per backend), `cpu_fallback` / `fallback_ops` (nodes of a device context
+  that run on the CPU outside the allowlist, `"OP xN"`), `host_weights` (weights a device model
+  keeps in host memory) and `strict`. The report is of the 64-token graph only: the placement
+  can depend on the input size (ggml-blas takes a matmul only when all its dimensions are at
+  least 32; the scheduler offloads an op on a host weight to the device only from a minimum
+  batch, so such a node shows on the device at 64 tokens and on the CPU for a short marker-row
+  matmul, which is why `host_weights` is counted separately; a backend's `supports_op` may look
+  at shapes). On the CPU the report shows only `CPU` (and `BLAS`), one split with the ggml
+  kernels, one split per BLAS matmul boundary with `blas`.
+- Allowlist (nodes that may run on the CPU in a device context): `get_rows` of `token_embd`
+  (host memory by design), the casts of graph inputs (the I32 `marker_mask` to F32) and the F32
+  upcast of the embedding rows. Everything else counts as a fallback. A split by itself is not
+  an error, and the default never fails on one: `--decision-strict-placement` turns a fallback,
+  or a weight kept in host memory, into a load failure (`test-laya-backend-parity` forces one
+  weight to the host through a test hook and checks both the count and the refusal).
+- `auto`: the first GPU / iGPU of the registry (`--decision-gpu N`) when it exists, else the CPU
+  with a log line (`auto: no GPU device N (have M), using the CPU`). It also uses the CPU, with a
+  warning, when the device then fails to load the model, to initialize its backend, to allocate
+  the compute graph or to warm up, and when `--decision-kernels` names CPU-only kernels (`blas`,
+  `repack`; `gpu` refuses them). A device error that aborts inside ggml (a CUDA error) ends the
+  process and cannot fall back.
+- Unverified devices: ROCm and MUSA builds of ggml-cuda get the CUDA graph changes (same
+  kernels) but have no parity run, nor does any backend other than Metal, CUDA and Vulkan, and no
+  weight type other than F32, F16 and Q8_0 has a device gate (Q4_K / Q5_K on CUDA still go
+  through MMQ, the failure mode Q8_0 had); the load logs a warning for each, and they need an
+  `f16-class` run of their own before use.
+- Warm-up: the server's warm-up pass (on by default) compiles the device pipelines and makes the
+  weights resident; `llama-laya-cli` does one 64-token pass at load when it runs on a device.
+- Bounds: every forward pass checks its batch first (token ids within the `token_embd` rows,
+  question types within `type_emb`, `seq_start` and every marker slot, masked ones too, within
+  the batch). Device `get_rows` kernels have no bounds check; batches built by the engine are
+  valid by construction, so the check only guards against a future bug.
+- Precision: `--decision-precision` sets the matmul precision request (Metal ignores it: both
+  modes give the same bits there; CUDA reads it, see "Backend parity tiers"). Metal (Apple M4
+  Max) passes its tier, `f16-class`, on the full parity corpus for every checkpoint and weight
+  type measured, through the CLI and the server, and the server gives the CLI's bits on the
+  device ("Metal results" below). CUDA (RTX 4090, sm_89) passes its tiers for every checkpoint,
+  weight type and precision measured, `strict-f32` included, and Vulkan (RTX 4090) passes
+  `f16-class` on `laya-multilingual` F32 / F16 / Q8_0 and `laya-typed-decisions` F16 ("CUDA and
+  Vulkan results" below). Latency, memory and the recommendation per platform: "GPU backends".
+
+`llama-laya-cli --jsonl FILE` (`-` for stdin) loads the model and the context once and then
+reads one input object per line (the `-f` format); every line prints exactly one line: the
+`-f` output of that input on one line, or `{"error": "<the message -f prints>"}` (an empty
+line included), and the next line runs. Each line is its own forward pass, exactly as a `-f`
+run of that input: there is no batching across lines (a third numerical mode the server and
+the golden files do not have). `tests/laya/verify_reference.py cli --jsonl` uses it for the
+device parity runs, where one process per item would pay the device init and the pipeline
+compilation per item. `llama-laya-cli --plan sequential` (with `-f` or `--jsonl`; default
+`packed`) runs one graph per question, the plan the server runs: on a device the two plans can
+compute different bits, because the kernel of a matmul depends on its row count (Metal: a
+mat-vec kernel below 9 rows, the matrix-matrix kernel above, which rounds its operands to half),
+so a CLI run that must match the server bit for bit on a device uses `--plan sequential`
+(`verify_reference.py cli --plan sequential`).
 
 ## Model metadata: `decision.spec`
 
@@ -668,7 +766,38 @@ python3 tests/laya/verify_reference.py cli build/bin/llama-laya-cli laya-en-f32.
 # the same items through llama-server --decision over HTTP (plan sequential, the server's threads and kernels)
 python3 tests/laya/verify_reference.py server build/bin/llama-server laya-en-f16.gguf ref.jsonl server.jsonl
 python3 tests/laya/verify_reference.py compare ref.jsonl cli.jsonl server.jsonl
+# backend parity tooling: gate, identity records, corpus regeneration (offline; see "Backend parity tiers")
+python -m pytest -q tests/laya/parity
+# GPU backends (skipped, exit code 77, in a build without a GPU / iGPU device)
+ctest --test-dir build -L laya            # matmul precision probe per device, CPU vs device replay on the tiny GGUF
 ```
+
+`test-laya-backend-precision [--json out.json]` multiplies small matrices with known exact
+products on every device of the ggml backend registry: F32 x F32 at k = 65 and F16 x F16 at
+k = 65, 1024 and 2624, at 33 columns (matrix-matrix kernels) and 5 (small-batch kernels), with
+`GGML_PREC_F32` and `GGML_PREC_F32_PEDANTIC`, against a double sum of the values the device
+received, at the laya.cpp tolerance of 1e-5. The F32 operands have low bits that half and TF32
+rounding drop; the F16 products and sums are exact in fp32, so the F16 cases see only the
+accumulator. Each device gets a tier per precision request: `strict-f32` (every case passes),
+`f16-class` (the F16 cases pass, F32 does not) or `below-f16-class` (a half accumulator). A case the
+laya graph does not issue on a device runs the way the graph does it: on CUDA in `strict` the
+graph dequantizes F16 weights first (`laya_weight_dequantized`), so those F16 cases go in as
+F32 x F32 with the same half-rounded values (printed `as f32`). A GPU
+or iGPU device that is below f16-class, or cannot compute a case, fails the test; the CPU and
+BLAS devices are printed for reference only (the ggml CPU F16 dot product on ARM sums in half,
+which is why the tiers name the CPU kernels of a baseline). `test-laya-backend-parity` loads the
+tiny random GGUF (a ctest fixture runs `tests/decision/make_tiny_laya.py`; it needs numpy and
+pyyaml, `-DPython3_EXECUTABLE=<venv>/bin/python` picks the interpreter, and CMake registers the
+fixture and the test only when that interpreter imports both) on the CPU (BLAS with
+Accelerate) and on the first GPU / iGPU device, runs A, B, A on each (two sequences, then the same
+two in the other order: same token count, other `seq_start`), requires the replayed A to be
+bitwise equal to the first on each backend, and compares the device with the CPU with the
+`f16-class` rule and numbers of `tests/laya/parity/tiers.json`. The graph is rebuilt on every
+pass, so the replay is a determinism check, weaker than the graph-reuse replay of laya.cpp
+`tests/backend_replay.cpp` it follows. It also loads a device model with one encoder weight
+forced into host memory (the `laya_model_params.host_weights` test hook) and requires
+`placement.host_weights == 1` and a refusal under strict placement. CI (`decision-tests`) runs
+`ctest -L laya` too; on a runner without a GPU both tests report skipped.
 
 The server tests are offline. The first `tiny_laya_decision_server()` call generates a random
 tiny laya GGUF (`tests/decision/make_tiny_laya.py`, numpy + gguf-py) into `tools/server/tests/tmp`;
@@ -690,6 +819,8 @@ default cache locations; the tiny checkpoints of `tests/laya/convert`). With `--
 environment variables make timing tests deterministic:
 `LLAMA_DECISION_DEBUG_LOAD_DELAY_MS` (delay before the engine loads, for the 503 test) and
 `LLAMA_DECISION_DEBUG_JOB_DELAY_MS` (delay before each job, for the 429 and shutdown tests).
+`LLAMA_DECISION_DEBUG_THROW=worker|http` makes every systemone request throw an exception on the
+worker or on the HTTP thread (the 500 test: fixed message to the client, the text in the log).
 
 ## Benchmark
 
@@ -734,7 +865,9 @@ power mode, load average and top CPU users before every run), one bench JSON per
 thread count, and one `__server.json` per server run: time from spawn to `/health` 200 (K5),
 RSS and footprint of the server, warm latency, and the first request after `IDLE_S` seconds
 idle over HTTP (K6). `scripts/bench-decision-report.py` prints the tables (K1, K4, K5, K6,
-K7, K9). Close other applications first: a busy machine makes p95 meaningless.
+K7, K9). Close other applications first: a busy machine makes p95 meaningless. CPU against a GPU
+in paired blocks: `scripts/bench-decision-device.py` ("GPU backends"); the report prints a speed
+row only with a passing parity gate of the same identity (`--parity`).
 
 Baseline before the Phase 4 work (2026-09-30, Apple M4 Max 12P + 4E, 48 GB, macOS 26.6.2, AC
 power, low power mode off; one background process at 100% of one core; static Release build
@@ -1167,6 +1300,747 @@ UTF-8 through UTF-16 with the helpers of the Windows fixes (`laya_utf8_to_wide`,
 `llama-laya-convert` takes its arguments through `decision_utf8_args`, like `llama-laya-cli`; see
 "Status and known gaps"), but `-m DIR` and `llama-laya-convert` have not been built or run there yet.
 
+## Backend parity tiers
+
+Pre-registered on 2026-09-30, before any GPU number exists (Phase 4b); revised once, as tiers v2,
+on 2026-10-01 12:45 (+03:00), after the reviews of the step-7 results and before the gates that
+use it ("Tiers v2" below; `tiers.json` keeps both revisions). A GPU backend of the laya engine
+counts as correct only when its run passes the gate of its tier on the full parity corpus, with
+identity records that fit the tier. The numbers below are in `tests/laya/parity/tiers.json`,
+which the gate reads; `tests/laya/parity/derive_tiers.py`
+derives them from CPU runs made before this section was written and checks that file
+(`--check`). The observed values quoted here are from its output
+(`build-4b/parity/tiers-derivation.json`, made from the Phase 4 parity outputs in
+`build-p4/parity`).
+
+### Corpus
+
+`tests/laya/parity/gen_corpus.py` writes the corpus (`items.jsonl`, one `{"id", "cat",
+"state", "questions"}` object per line; not committed) from two vendored files written for it,
+`text/prose.txt` and `text/lexicon.json`: no dataset rows, model cards or other third-party
+text. `tests/laya/parity/corpus.json` records the result: 915 items, 2579 questions (911
+choice, 822 score, 846 noul), English subset (all letters ASCII, for the English checkpoints)
+635 items / 1816 questions, sha256
+`2d719419ed7eac4b18eff04ae8301f9d9177f529ced78d1f88487269144b1aa7`.
+`test_parity_corpus.py` (CI: `decision-tests` job) regenerates it byte for byte and checks the
+coverage: typed-decisions style 5-question workflows on string / object / list states and
+one question per item, preset question sets, mixed questions on 12 state kinds, every option
+count 2..20 for choice and score, long options (48-token cap), many long options (head
+budget), long instructions (head cut), long states that hit `max_len` (list states cut from
+the left), structured criterion values, tokenizer edge text, scalar states (the null state
+is refused) and the compat shapes. It replaces the laya-eval set of Phase 4 (third-party
+text, outside the repo): the Phase 4 parity tables above were measured on that set; on this
+corpus the PyTorch fp32 references were recomputed on the vast box (laya 0.3.21,
+`build-4b/parity/ref/`) and the CPU against PyTorch table is in "Tiers v2".
+
+### Gate
+
+`verify_reference.py compare <baseline> <candidate>... --gate <tier>` (code:
+`tests/laya/parity/parity_gate.py`):
+
+- Only questions with identical input ids (and marker positions, where both runs have them)
+  are compared. Input mismatches and refusals are counted by kind; only the known intentional
+  differences the tier lists pass (below); anything else fails.
+- Public outputs: the answer key sets must be equal, categories (`choice`, and the argmax of
+  the raw scorer logits) must agree, every number must be finite and within the tolerance,
+  where an error equal to the tolerance up to float noise passes (`isclose(err, tol,
+  rel_tol=1e-9, abs_tol=1e-12)`, the rule of laya.cpp `benchmarks/compare.py`): at 1e-4 a
+  4-digit reference answer of .8000 against .8001 passes and against .8002 fails. The English
+  F32 CPU run of Phase 4 has its largest public error at 1.0000000000000167e-4
+  (`compare_en.json`), so a plain `<=` would fail the reference implementation's own numbers.
+- `strict-f32` (v2): the reference rounds its answers to 4 digits and a server answer is not
+  rounded, so a candidate number whose reference number is 4-digit is rounded with Python
+  `round(x, 4)` first; then both sides are 4-digit, the error is a whole number of 1e-4 steps and
+  the boundary rule passes one step. A `score` error is divided by K - 1 (the score range; a
+  score sums K probability terms, each with its own rounding). The gate JSON reports `score`
+  (divided) and `score_raw`. Every other number is compared as it is.
+- Act head: both runs must have the act logits of every compared question. A whole run without
+  them (a server build before `debug.act_logits`) is the known difference `server_no_act_head`,
+  allowed in `f16-class` only; missing act logits on some questions of a run that has them fail.
+- A missing public answer fails (v1 only counted it), and so does a run with no compared
+  question or no checked public answer.
+- Raw-logit statistics (max / mean |dlogit|, TVD) are reported as diagnostics only.
+- Identity (`<run>.identity.json`): the corpus sha256 and subset must be equal; strict-f32
+  needs the PyTorch reference as the baseline, the same checkpoint revision on both sides (the converter writes the snapshot hash as
+  `general.name`), F32 weights and an allowed backend; f16-class needs the same GGUF sha256,
+  a CPU baseline and (v2) a baseline whose activations are F32: kernels `blas` (or `auto`
+  resolved to `cpu+blas`), or any CPU kernels on an F32 GGUF. The ggml CPU kernels multiply in
+  the weight's vec_dot type (F16 for F16 weights, an 8-bit block format for Q8_0), so CPU
+  `default` on a quantized GGUF quantizes activations: such a candidate is gated only against a
+  baseline with the same kernels and the `activation_quantized` numbers. A run that does not fit
+  is refused (exit 2) unless `--allow-identity-mismatch`; a failed gate exits 1. Since step 8 an
+  identity also records `source`: a sha256 manifest of `tools/laya`, `tools/decision`,
+  `tools/server/server-decision.cpp`, `ggml/src` and `ggml/include` of the source tree the build
+  was configured from (`CMAKE_HOME_DIRECTORY`), as read when the run started.
+
+| tier | candidate | baseline | argmax | public numbers | act head (relative dlogit) |
+|---|---|---|---|---|---|
+| `strict-f32` | F32 GGUF on the CPU (any kernels); CUDA with `--decision-precision strict` (PEDANTIC on every matmul) | PyTorch fp32 reference on the CPU, same checkpoint revision | exact | every number <= 1e-4 after rounding like the reference (v2); `score` / (K - 1) | <= 2e-4 |
+| `f16-class` | F16 and Q8_0 GGUFs on any device; F32 GGUFs on Metal, Vulkan and CUDA `default` | CPU run of the same GGUF with F32 activations (v2: enforced from the identities) | a flip passes only when the baseline top-2 gap is below `flip_max_gap`, and at most `max_flip_fraction` of the questions flip | probabilities and `noul`: mean \|dp\| bound, max \|dp\| as a sanity bound; `confidence`, `score`: finite (computed on the host from the probabilities by the same code) | <= `act_max_rel_dlogit` |
+
+`f16-class` numbers by weight type:
+
+| weights | `flip_max_gap` | `max_flip_fraction` | `max_abs_dp` | `mean_abs_dp` | `act_max_rel_dlogit` |
+|---|---|---|---|---|---|
+| F16, F32, Q8_0 (v2) | 0.009 | 0.003 | 0.5 | 0.002 | 0.2 |
+| Q8_0, `activation_quantized` (v1: the Q8_0 row) | 0.4 | 0.02 | 0.5 | 0.005 | 0.3 |
+
+- The top-2 gap is p1 - p2 of softmax(raw scorer logits) of the baseline at T = 1. Calibration
+  is monotonic within a question, so it never changes which option is first.
+- Relative dlogit = max \|a - b\| / max(\|a\|, \|b\|, 1) over the act logits. The act head
+  saturates on this model family: \|act logit\| reaches the thousands and `act_probability` is
+  1.0 on every Phase 4 English record, so \|dp\| of the act head says nothing. The server
+  returns the act logits in `debug.act_logits` and `action.act_probability` in the answer
+  (`verify_reference.py server` records both), so server runs are gated on the act head too;
+  server runs made before that (the Phase 4b step 1 CPU runs) have none and count as
+  `server_no_act_head` (`f16-class` only since v2).
+- Baseline kernels: F32 activations (`blas`, `auto` on Accelerate, or any kernels on an F32
+  GGUF) for every device: Metal, Vulkan, and CUDA, whose laya graph dequantizes Q8_0 weights
+  since step 6 (before it, CUDA MMQ quantized Q8_0 activations and the v1 baseline was CPU
+  `default`). `check_identity` enforces this since v2 from the recorded kernels; no device
+  declares quantized activations (`runtime.activations`).
+- Why Metal is `f16-class`: its matrix-matrix kernel (`kernel_mul_mm`, the path of a
+  multi-token pass) rounds both operands to half, F32 weights included, and ignores
+  `GGML_PREC_*`.
+  CUDA: `GGML_PREC_F32` on the weight matmuls and `GGML_PREC_F32_PEDANTIC` on KQ / PV (F32
+  activations as src0; all 14 matmuls of the graph go through one helper, `laya_mm` in
+  `tools/laya/laya.cpp`) keep F16 GGUFs in `f16-class`; an F32 GGUF without PEDANTIC runs in
+  TF32, hence `f16-class` too; `--decision-precision strict` sets PEDANTIC everywhere and is
+  the `strict-f32` mode. Two CUDA-only graph changes (step 6, stock ops) make that hold:
+  ggml-cuda honours PEDANTIC for an F32 src0 only, so an F16 weight under PEDANTIC stays in cuBLAS
+  F16 compute and a Q8_0 weight goes through MMQ / MMVQ, which quantize the activations to 8-bit
+  blocks (the massive-activation channel of this model, \|x\| ~ 1e4 from layer 10 on, then takes
+  the precision of the rest of its block); the graph dequantizes such weights to F32 with
+  `ggml_get_rows` (exact; F16 in `strict`, Q8_0 in both modes), so those matmuls run F32 x F32.
+  And ggml-cuda is built with `-use_fast_math`, so its rope kernel takes sin / cos / pow from the
+  fast intrinsics, whose error grows with the angle: `strict` computes the rotary tables on the
+  host as the PyTorch reference does and applies them with mul / sub / add / concat. Vulkan: `f16-class` (stock ggml does not select its FP32-accumulating
+  F32 pipeline).
+
+### Derivation
+
+Rule: each threshold is 2x the largest value seen over the CPU pairs of its class, rounded up
+to one significant digit. Every pair is (baseline, candidate) on the same questions, the
+baseline being the more exact run.
+
+- F16 pairs (11): CPU F16 against CPU F32 (English checkpoints, CLI) or against the PyTorch
+  fp32 reference (`laya-multilingual`, server; its F32 GGUF had no Phase 4 run), and CPU F16
+  `default` (ggml kernels: activations rounded to F16; on ARM the dot products also sum in F16)
+  against `auto` / `blas` (F32 sgemm) on the same GGUF. Seen: 9 flips, largest baseline gap
+  0.00444 (English F16 `default` against `auto`, server); largest flip fraction 0.00134 (2 of
+  1491); largest \|dp\| 0.208 (one tokenizer-edge question of `laya-multilingual` F16
+  `default`, against the reference and against `auto` alike); largest mean \|dp\| 0.000609;
+  largest act relative dlogit 0.0587 (English F16 `default` against `blas`, CLI).
+- Q8_0: CPU Q8_0 `repack` against `default`, two kernel sets that both quantize the
+  activations to Q8_0 and differ in the order of the sums, as a device that quantizes
+  activations differs from CPU `default` (CLI, 2604 questions): 24 flips (0.0092), baseline
+  gaps up to 0.193, mean \|dp\| 0.00234, act relative dlogit 0.106. The F16 pairs count too (a
+  device that keeps Q8_0 activations in F16, as Metal does); the largest \|dp\| is theirs.
+- Seen but not used: Q8_0 `default` against `auto` (server) and against `blas` (CLI): 57 and
+  58 flips with gaps up to 0.556 and 0.370, max \|dp\| 0.364 and 0.338. These mix quantized and
+  F32 activations, which is why the baseline kernels must treat activations as the device does.
+- `strict-f32`: the public tolerance 1e-4 is the precision of the reference answers (4
+  digits); largest error seen 1.0000000000000167e-4. Act: largest relative dlogit 8.19e-5
+  (English F32 CLI against the reference) -> 2e-4.
+- The max \|dp\| bound (0.5) only catches gross errors; the mean bound and the flip rule carry
+  the gate for `f16-class`. Its observed value 0.208 is softmax of raw logits (the
+  `laya-multilingual` pairs have no public answers) on CPU F16 `default`, whose ARM dot product
+  sums in half, so the number is informational, not a discriminating threshold.
+- On the new corpus the registered numbers have less room than on the Phase 4 set: the CPU pairs
+  re-derived on it (`build-4b/parity/cpu/gates/derivation-new-corpus.json`) give a flip fraction
+  up to 0.00233 (6 of 2578, `laya-multilingual` F16 `default` against F32 `auto`) against the
+  registered 0.003, and the rule applied to them would give 0.005. The registered 0.003 stays;
+  a device run near it (CUDA `strict` on `laya-typed-decisions` F16 in step 5: 0.0039) fails.
+
+### Known intentional differences
+
+Counted apart in the gate JSON (`known_differences`); a tier allows only the ones it lists.
+
+| kind | what | allowed in |
+|---|---|---|
+| `server_answer_shape` | server answers have no `answer_confidence` (server builds before `action.act_probability` have no `action` either); the reference shape (and `llama-laya-cli`) has both. A key only one side has is dropped on both sides; `action` is compared whenever both have it | `strict-f32` |
+| `server_no_act_head` | a whole run without act logits (a server build before `debug.act_logits`); missing act logits on some questions of a run never pass | `f16-class` (v1: both) |
+| `null_state_refused` | the server refuses a null state (400, `state is required`); an older reference accepted it (laya 0.3.21 refuses it too) | `strict-f32` |
+| `list_state_truncation` | inputs differ only in the state part of a list state at the same length | none: the engine cuts list states from the left, as the reference does |
+
+### Runs
+
+```bash
+python3 tests/laya/parity/gen_corpus.py -o build/parity/corpus/items.jsonl --check
+# PyTorch fp32 references (laya 0.3.21): all items, every item through system_one
+$LAYA_PY tests/laya/verify_reference.py ref <laya-multilingual snapshot> build/parity/corpus/items.jsonl ml.0.jsonl --shard 0/4 --api-every 1   # ... shards 1-3
+python3 tests/laya/verify_reference.py cat ref-ml.jsonl ml.0.jsonl ml.1.jsonl ml.2.jsonl ml.3.jsonl
+$LAYA_PY tests/laya/verify_reference.py ref <laya snapshot> build/parity/corpus/items.jsonl en.0.jsonl --english --shard 0/4 --api-every 1  # same for laya-typed-decisions
+# engine runs (each writes <out>.identity.json)
+python3 tests/laya/verify_reference.py server build/bin/llama-server laya-f32.gguf ref-ml.jsonl srv-ml-f32.jsonl
+python3 tests/laya/verify_reference.py cli build/bin/llama-laya-cli laya-f32.gguf ref-ml.jsonl cli-ml-f32.jsonl
+# device runs: one llama-laya-cli --jsonl process (the server's plan), or the server on the device;
+# the CPU baseline of a CLI device run is a CLI run with --plan sequential --kernels auto
+python3 tests/laya/verify_reference.py cli build/bin/llama-laya-cli laya-f16.gguf ref-ml.jsonl cpu-ml-f16.jsonl --jsonl --jobs 8 --plan sequential --kernels auto
+python3 tests/laya/verify_reference.py cli build/bin/llama-laya-cli laya-f16.gguf ref-ml.jsonl metal-ml-f16.jsonl --jsonl --jobs 1 -t 8 --plan sequential --device gpu
+python3 tests/laya/verify_reference.py server build/bin/llama-server laya-f16.gguf ref-ml.jsonl srv-metal-ml-f16.jsonl --device gpu
+# gates
+python3 tests/laya/verify_reference.py compare ref-ml.jsonl srv-ml-f32.jsonl cli-ml-f32.jsonl --gate strict-f32 --json gate-ml-f32.json
+python3 tests/laya/verify_reference.py compare cpu-ml-f16.jsonl metal-ml-f16.jsonl --gate f16-class --weights f16 --json gate-ml-f16-metal.json
+python3 tests/laya/parity/derive_tiers.py --p4 build-p4/parity -o tiers-derivation.json --check tests/laya/parity/tiers.json
+```
+
+`scripts/bench-decision.sh` and `scripts/bench-decision-device.py` add the same identity record
+to every bench and server JSON (`identity` key), and `scripts/bench-decision-report.py --parity`
+prints a speed number only when a passing gate JSON of the same build, GGUF and device covers it
+("GPU backends").
+
+### Metal results
+
+Apple M4 Max, Phase 4b step 5 (`build-4b-s5`, stock ggml Metal backend). Outputs, gate JSONs and
+their identities are in `build-4b/parity/metal/`; the tables are copied from its `summary.json`
+(written by the step's summary script from the gate and bitwise JSONs).
+
+- `test-laya-backend-precision` (`backend-precision.json`): `MTL0` is `f16-class` for both
+  precision requests. Its matrix-matrix kernel misses the F32 x F32 oracle by 4.3e-4 at 33 columns
+  (half-rounded operands) and by 1.8e-7 at 5 columns (mat-vec kernel); every F16 x F16 case is exact
+  (fp32 accumulation). For reference, BLAS (Accelerate) is `strict-f32` and the ggml CPU F16 dot
+  product (ARM) sums in half (`below-f16-class`).
+- `test-laya-backend-parity` (`backend-parity.txt`): replay A, B, A is bitwise on the CPU and on
+  `MTL0`; the tiny model passes the `f16-class` rule on the device.
+- Full corpus, `verify_reference.py cli --jsonl --plan sequential --device gpu` and
+  `verify_reference.py server --device gpu` (every item: the server runs cost about a minute),
+  `default` and `strict` precision. Gates: `f16-class` of `tiers.json` against the CPU run of the
+  same GGUF with kernels `auto` (`cpu+blas`, F32 activations), CLI against CLI and server against
+  server, both CPU baselines from the same build. The CPU CLI (`--plan sequential`) and CPU
+  server baselines are bitwise equal to each other and to the step 1 CPU server runs (raw logits);
+  the act head is gated on every question (relative dlogit). Every row below passes with no known
+  difference and no input mismatch; `strict` gives the same bits as `default` on every question,
+  so its gates repeat the `default` rows.
+
+| checkpoint | weights | CLI gate | server gate | questions | flips (largest baseline gap) | max \|dp\| | mean \|dp\| | act rel dlogit | server == CLI | default == strict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| laya-multilingual | F32 | pass | pass | 2578 | 2 (0.0032) | 0.0092 | 0.00014 | 0.0217 | 2578/2578 | 2578/2578 |
+| laya-multilingual | F16 | pass | pass | 2578 | 1 (0.0034) | 0.0093 | 0.00015 | 0.0215 | 2578/2578 | 2578/2578 |
+| laya-multilingual | Q8_0 | pass | pass | 2578 | 5 (0.0015) | 0.0323 | 0.00017 | 0.0167 | 2578/2578 | 2578/2578 |
+| laya | F32 | pass | pass | 1815 | 4 (0.0023) | 0.0112 | 0.00016 | 0.0211 | 1815/1815 | 1815/1815 |
+| laya | F16 | pass | pass | 1815 | 3 (0.0026) | 0.0113 | 0.00016 | 0.021 | 1815/1815 | 1815/1815 |
+| laya-typed-decisions | F32 | pass | pass | 1815 | 1 (0.00034) | 0.0156 | 7.6e-05 | 0.00928 | 1815/1815 | 1815/1815 |
+| laya-typed-decisions | F16 | pass | pass | 1815 | 1 (0.00035) | 0.0157 | 9e-05 | 0.00951 | 1815/1815 | 1815/1815 |
+
+- The same F32 runs against the PyTorch fp32 references (diagnostic: Metal is not a `strict-f32`
+  backend, and `f16-class` names a CPU baseline, so both are run with
+  `--allow-identity-mismatch`):
+
+| checkpoint | f16-class rule vs PyTorch | flips (largest gap) | max \|dp\| | strict-f32 rule vs PyTorch | failures | max \|dlogit\| |
+|---|---|---|---|---|---|---|
+| laya-multilingual F32 | pass | 2 (0.0032) | 0.0091 | fail | 2761 | 0.279 |
+| laya F32 | pass | 4 (0.0023) | 0.0112 | fail | 2273 | 0.742 |
+| laya-typed-decisions F32 | pass | 1 (0.00034) | 0.0157 | fail | 1348 | 0.124 |
+
+  The `strict-f32` failures are public numbers beyond 1e-4 and act relative dlogits beyond 2e-4,
+  as the tier assignment predicts for a backend that rounds matmul operands to half.
+- Plan: the packed plan on Metal (`llama-laya-cli --plan packed`, `laya-multilingual` F16) gives
+  the sequential plan's bits on 1005 of 2578 questions: every question of a single-question item
+  matches, the others (599 items with several questions) do not, since the marker-row head matmuls
+  change kernel with the row count. The server runs `sequential`, so device runs that are compared
+  with the server use `--plan sequential`.
+- Where Metal leaves the CPU (diagnostic, `LAYA_TRACE_DIR` + `tools/laya/trace_diff.py`, `laya`
+  F32, the question with the largest raw-logit difference, `preset_mail_0426/bulk`): the first
+  encoder layer output already differs (max relative 3.2e-4), the difference passes 1e-3 relative
+  at `l_out-6` and jumps at `l_out-19`, the layer where CPU `default` and `auto` also jump apart;
+  the scorer logits end 0.74 apart (`trace/en_f32_preset_mail_0426_bulk/`). No precision fix is
+  made: Metal passes its tier.
+
+### CUDA and Vulkan results
+
+RTX 4090 (sm_89), CUDA 12.8, stock ggml CUDA and Vulkan backends (the stock ggml-cuda sources do
+not build with `-DLLAMA_FATAL_WARNINGS=ON`; the laya and decision sources build without
+warnings). Outputs, gate JSONs and identities: `build-4b/parity/cuda/` (step 5) and
+`build-4b/parity/cuda-s6/` (step 6); the numbers below are from their `gates/summary*.json`,
+`gates/before-after.json` and `gates/q8-argmax-vs-ref.json`. Every device run is gated on the full
+corpus three ways: `llama-laya-cli` packed, `llama-laya-cli --plan sequential` and the server.
+
+- Step 5 (before any fix): CUDA `default` passes `f16-class` on the six F32 / F16 GGUFs (18 of
+  18 gates) and Vulkan passes it on `laya-multilingual` F32 / F16 in both modes (12 of 12; the
+  Vulkan F32 x F32 pipeline runs at TF32 level even under PEDANTIC, so `strict` there is
+  `f16-class` too). CUDA `strict` failed 17 of 30 gates and CUDA Q8_0 `default` 3 of 3:
+  `strict-f32` on `laya-multilingual` F32 (act head relative dlogit 0.00114 on
+  `stress_longopt_0728/n`, a 1024-token item; the layer-0 difference to the CPU grew about 5x from
+  position 0 to 1000, the rope kernel), `strict` on F16 GGUFs (PEDANTIC F16 matmuls in cuBLAS F16
+  compute: up to 14 flips, 3 above the gap) and Q8_0 (MMQ activation quantization: up to 50 flips,
+  flips above the gap and \|dp\| up to 0.74).
+- Step 6 fixes (CUDA only, "Backend parity tiers"): F16 weights dequantized to F32 in `strict`,
+  Q8_0 weights in both modes, host rotary tables in `strict`. After them every gate of the
+  changed cells passes (33 of 33):
+
+| checkpoint | weights | precision | f16-class: CLI / sequential / server | flips | mean \|dp\| | act rel dlogit | strict-f32 vs PyTorch: CLI / sequential / server |
+|---|---|---|---|---|---|---|---|
+| laya-multilingual | F32 | strict | pass / pass / pass | 0 | 4.2e-07 | 9.1e-05 | pass / pass / pass (act rel 0.00011) |
+| laya-multilingual | F16 | strict | pass / pass / pass | 0 | 1.5e-05 | 0.0012 | - |
+| laya-multilingual | Q8_0 | strict | pass / pass / pass | 0 | 1.6e-05 | 0.018 | - |
+| laya-multilingual | Q8_0 | default | pass / pass / pass | 5 | 0.00013 | 0.018 | - |
+| laya | F32 | strict | pass / pass / pass | 0 | 3.7e-07 | 7.7e-05 | pass / pass / pass (act rel 4.3e-05) |
+| laya | F16 | strict | pass / pass / pass | 1 | 1.7e-05 | 0.00021 | - |
+| laya-typed-decisions | F32 | strict | pass / pass / pass | 0 | 1.8e-07 | 2.8e-05 | pass / pass / pass (act rel 9.9e-06) |
+| laya-typed-decisions | F16 | strict | pass / pass / pass | 0 | 2e-05 | 0.00037 | - |
+
+  Flips, mean \|dp\| and act rel dlogit are the largest of the three runs. The `f16-class`
+  baselines are the CPU `blas` runs of the same GGUF (F32 activations), for Q8_0 too since the
+  device no longer quantizes activations; against the step-5 Q8_0 baseline (CPU `default`,
+  activations quantized) the step-6 Q8_0 runs pass as well (43 and 40 allowed flips). Argmax
+  agreement of the Q8_0 runs with the PyTorch fp32 reference, of 2578: CPU `default` 2507, CPU
+  `blas` 2536, CUDA step 5 2514, CUDA step 6 `default` 2533 and `strict` 2536.
+- The `laya-multilingual` F16 GGUF holds exactly the F32 values (the checkpoint weights are
+  half-precision values), so CUDA `strict` gives the F32 GGUF's bits on it.
+- Bitwise: server == CLI (`--plan sequential`) on the device 8 of 8, GPU 0 == GPU 1 4 of 4 (file
+  bytes), and the cells step 6 does not change (CUDA `default` on F32 / F16) give the step-5 bits
+  (3 of 3). On the CPU device the step-6 build gives the Phase 4 bits (CLI golden inputs, suite
+  logits hash).
+- `test-laya-backend-precision` on CUDA: `strict-f32` for both requests (the F16 cases of
+  `strict` as F32, as the graph runs them); at k = 65 sm_89 does not reach TF32, so the probe
+  calls `default` `strict-f32` although an F32 GGUF runs in TF32 there (a model-shaped case is
+  missing). `test-laya-backend-parity`: replay A, B, A bitwise on the CPU and CUDA0; the tiny
+  model passes `f16-class`.
+- sm_120 (RTX 5060 Ti): step 7 gated `laya-multilingual` F16 `default` with the step-6 binaries;
+  step 8 ran `laya-multilingual` F32 `strict` (CLI and server), Q8_0 and F16 `default` with the
+  final tree ("Step 8" below). Vulkan was checked on the NVIDIA driver only (step 7 ran
+  `laya-multilingual` F16 / Q8_0 and `laya-typed-decisions` F16 `default` with a build of the
+  step-6 tree: pass; the Q8_0 baseline, CPU `blas`, was chosen after the CPU `default` comparison
+  had been seen, which tiers v2 now prescribes).
+
+### Tiers v2 and step 8 (final tree)
+
+Three reviews of the step-7 state found rule gaps in the gate, not wrong verdicts: the `strict-f32`
+rule compared a score unscaled and an unrounded server answer against the 4-digit reference
+answers (so the CPU failed its own tier on the new corpus: Mac CPU server F32 on
+`sweep_k10_0671/s.score`, 3.4511 against 3.451589, and 3 of 9 x86 CPU gates), a missing act head
+or public answer did not fail, the `f16-class` Q8_0 row and the baseline-kernel rule did not
+discriminate, and no CUDA run had been made from the final `tools/laya/laya.cpp`. Tiers v2 (above)
+was registered in `tiers.json` before any of the re-gates below. Step 8 then ran the cells the
+reviews named from the final tree, whose source manifest (`identity.json` `source.sha256`
+`04a5c08ffbb3...`) is the same on the Mac and on both vast boxes.
+
+Every number below is in `tests/laya/parity/results/phase4b-gates.json` (written by the step's
+summary script from the gate JSONs; `build-4b/...` paths are the local artifact tree, which git
+ignores, and the summary keeps the identity hashes of both sides of every gate).
+
+CPU against PyTorch, `strict-f32` v2, full corpus (every run gated on the act head):
+
+| host | runs | gates | largest act rel dlogit | largest score error / (K - 1) (raw) |
+|---|---|---|---|---|
+| Apple M4 Max, `build-4b-s8` | server F32 `auto` (`cpu+blas`): ml, en, td; server ml F32 `default`; CLI ml F32 `default` (step 1) | 5 of 5 pass | 1.2e-4 | 5.56e-5 (5e-4, `sweep_k10_0671/s`, the v1 failure) |
+| AMD EPYC 7V12, step-5 runs (the final tree gives the same CPU bits: golden 28/28, suite logits hash 13/13) | CLI F32 `default` and `blas`: ml, en, td; server F32 `blas`: ml, en, td | 9 of 9 pass (3 failed under v1) | 1.2e-4 | 5e-5 (2e-4) |
+
+The step-1 Mac CPU server runs (`gates-strict/`) were made by a server build without the act
+head; under v2 they fail for that reason (`server_no_act_head` is no longer a `strict-f32`
+difference), and the step-8 server runs above replace them.
+
+CUDA from the final tree (`/workspace/fork4b-s8`, `build-cuda` sm_89 + sm_120), full corpus:
+
+| GPU | GGUF | precision | tier | runs | flips (allowed) | mean \|dp\| | act rel dlogit |
+|---|---|---|---|---|---|---|---|
+| RTX 4090 | ml F32 | strict | `strict-f32` | CLI, server | 0 | 1.7e-7 / 2.0e-5 | 1.1e-4 / 4.2e-5 |
+| RTX 4090 | en F32 | strict | `strict-f32` | CLI, server | 0 | 3.2e-7 / 2.1e-5 | 4.3e-5 / 3.3e-5 |
+| RTX 4090 | td F32 | strict | `strict-f32` | CLI, server | 0 | 1.4e-7 / 2.0e-5 | 8.4e-6 / 9.9e-6 |
+| RTX 4090 | ml Q8_0 | default | `f16-class` (v2: f16 numbers) | CLI, server | 5 / 4 | 1.3e-4 | 0.0083 / 0.018 |
+| RTX 4090 | ml F16 | default | `f16-class` | CLI | 1 | 1.0e-4 | 0.014 |
+| RTX 4090 | td F16 | default | `f16-class` | CLI | 0 | 5.1e-5 | 0.0049 |
+| RTX 5060 Ti | ml F32 | strict | `strict-f32` | CLI, server | 0 | 2.4e-7 / 2.0e-5 | 5.6e-5 / 5.6e-5 |
+| RTX 5060 Ti | ml Q8_0 | default | `f16-class` | CLI | 5 | 1.3e-4 | 0.016 |
+| RTX 5060 Ti | ml F16 | default | `f16-class` | CLI | 1 | 1.0e-4 | 0.011 |
+
+All 18 pass with no identity problem. The `f16-class` baselines are the x86 CPU `blas` runs of
+steps 5 / 6 (F32 activations). The RTX 4090 runs give the step-6 runs' bits on every question
+(raw and act logits: ml F32 strict CLI and server, en / td F32 strict, ml Q8_0 and F16 default;
+`build-4b/parity/s8/bitwise-vs-step6.json`), and the RTX 5060 Ti ml F16 run gives the step-7
+run's bits, so the step-6 / 7 CUDA tables describe the final tree. The sm_120 F32 `strict` run,
+open since step 5, passes. `test-laya-backend-precision` and `test-laya-backend-parity` (replay,
+cross-backend, the new strict-placement case) pass on CUDA0 of both boxes.
+
+Metal from the final tree (`build-4b-s8`): `laya-multilingual` F16 CLI and server and Q8_0 CLI
+give the step-5 runs' bits on all 2578 questions (raw logits, act logits, answers), and pass v2
+(Q8_0 now under the f16 numbers: 5 allowed flips, mean \|dp\| 1.7e-4). The backend tests pass on
+MTL0.
+
+Re-gate of every saved gate JSON under v2 (192 gate objects, the run files found by their
+identity records; `build-4b/parity/v2/regate-saved/regate.json`): the tier gates of Metal (28),
+Vulkan (12), CUDA step 6 (33) and step 7 (10 of 11) pass as before. Refused now, as v2 intends:
+the diagnostic Metal-against-PyTorch and CUDA-against-CPU-`default` comparisons, and
+`s7/gates/cpu_ml_q8_0_default` (CPU `default` on Q8_0 quantizes activations, its `blas` baseline
+does not; that row was speed coverage, see "GPU backends"). The step-5 CUDA failures stay
+failures (superseded by step 6).
+
+### Diagnostics
+
+- Layer trace: `LAYA_TRACE_DIR=<existing directory>` (read by `llama-laya-cli` and
+  `llama-decision-bench`, and by the server only with `--decision-debug`, since a trace writes the
+  activations of every request to disk; the library takes it as `laya_context_params.trace_dir`
+  and reads no environment) makes every forward pass dump the nodes at the
+  ends of op chains through the stock `ggml_backend_sched_set_eval_callback`: the residual output
+  of every encoder layer (`l_out-N`), the encoder output after the output norm (`enc_out`),
+  `type_emb_out`, the output of every head layer (`head_out-N`), `markers`, `logits`,
+  `logits_masked` and `act_logits`, as raw float32 files plus `trace.jsonl` (call, name, op,
+  buffer, shape). Only chain ends are asked for, because the scheduler splits the graph at every
+  node the callback asks for, which would break the fused kernels of Metal and CUDA inside a
+  chain. `python3 tools/laya/trace_diff.py <dir-a> <dir-b> [--tol T]` compares two traces node by
+  node and names the first node whose max \|d\| relative to the node's scale exceeds T (where
+  a device starts to drift from the CPU). The CPU computes the same bits with and without the
+  trace (checked on the CLI golden inputs, F16 / Q8_0 / F32, `default` and `blas`).
+- Outputs: the scorer and act logits are graph outputs (`ggml_set_output`); the allocator
+  never reuses their memory, so the engine reads them from the compute buffer (no per-call
+  output buffer, no copy nodes; the same bits).
+- Load-time checks (tools/laya): the GGUF must have `laya.attention.sliding_window`,
+  `laya.attention.sliding_window_pattern`, `laya.rope.freq_base` and `laya.rope.freq_base_swa`
+  (a missing window would make every layer dense, a missing SWA base would take the global
+  one; `conversion/laya.py` writes all four, and every converted GGUF of Phases 1-4 has them),
+  `laya.hidden_activation` must be `gelu` when present, every tensor must have the shape the
+  hparams give, the tokenizer must not have more tokens than `token_embd` rows (a larger id
+  would read past the table on a device without bounds checks) and `laya.n_qtype` must fit the
+  `type_emb` rows and `laya.act_classes` must be at least 1 (`action.act_probability` reads
+  class 0). There is no scan of the weights for non-finite values.
+
+## GPU backends
+
+Phase 4b in one place: which flags select a GPU, which accuracy tier each backend is held to,
+where the parity gates stand, and what a GPU buys in latency. The mechanics are in "Compute
+device", the gate and the tiers in "Backend parity tiers", the per-backend gate tables in
+"Metal results" and "CUDA and Vulkan results".
+
+### Flags
+
+| server | `llama-laya-cli` / `llama-decision-bench` | meaning |
+|---|---|---|
+| `--decision-device cpu\|gpu\|auto` | `--device` | default `cpu`; `gpu` fails at load without a GPU / iGPU (or when it fails to load, initialize or warm up); `auto` uses the CPU then, with a warning, and with CPU-only kernels |
+| `--decision-gpu N` | `--gpu N` | which device of the ggml registry (discrete before integrated) |
+| `--decision-precision default\|strict` | `--precision` | `strict` = PEDANTIC on every matmul (the CUDA `strict-f32` mode; for parity audits) |
+| `--decision-strict-placement` | `--strict-placement` | a graph node outside the allowlist on the CPU, or a weight kept in host memory, fails the load |
+| `--decision-kernels` | `--kernels` | CPU kernels; with `gpu` only `auto` / `default` (`blas`, `repack` are refused); with `auto` they select the CPU |
+
+Builds: the stock ggml backends, nothing of our own. Metal is on by default on macOS;
+`-DGGML_CUDA=ON` (the stock ggml-cuda sources need `-DLLAMA_FATAL_WARNINGS=OFF` under nvcc 12.8 +
+GCC 11); `-DGGML_VULKAN=ON`. `/props.decision` shows `device`, `device_description`, `placement`
+and `memory.weights_device_bytes`.
+
+### Tiers and parity status
+
+| backend | `default` | `strict` | measured on | full-corpus gates |
+|---|---|---|---|---|
+| CPU | reference: F32 GGUFs pass `strict-f32` v2 against PyTorch (under v1 the Mac server and 3 x86 runs failed on the rounding rule, "Tiers v2") | same bits | Apple M4 Max, AMD EPYC 7V12, AMD EPYC 9334 | Phase 1-4 gates; `strict-f32` v2 5/5 (Mac) and 9/9 (x86); x86 `default` on F16 passes `f16-class` against x86 `blas` (step 7) |
+| Metal | `f16-class` | `f16-class` (flag ignored, same bits) | Apple M4 Max | 7 GGUFs x CLI / server, all pass ("Metal results") |
+| CUDA | `f16-class` | `strict-f32` on F32 GGUFs, `f16-class` on F16 / Q8_0 | RTX 4090 (sm_89); RTX 5060 Ti (sm_120): `laya-multilingual` F32 `strict`, F16 / Q8_0 `default` | all pass after step 6, and from the final tree (step 8, "Tiers v2") |
+| Vulkan | `f16-class` | `f16-class` (F32 x F32 at TF32 level) | RTX 4090, NVIDIA driver | `laya-multilingual` F32 / F16 / Q8_0 and `laya-typed-decisions` F16 pass |
+
+### No speed number without parity
+
+`scripts/bench-decision-report.py` prints a latency row only when a parity gate JSON
+(`verify_reference.py compare ... --json`, given with `--parity FILE|DIR`) with verdict `pass`
+and no identity problem covers that run: the same build tree (every file of the gate run's
+build record, its executable included, has the same sha256 in the bench run's build, and the
+libraries are the same set; a bench run records `llama-server` and `llama-laya-cli` next to
+`llama-decision-bench` for this), the same GGUF sha256, the same backend and GPU model (the index
+does not matter: GPU 0 and GPU 1 give the same bits) and the same precision; on the CPU the same
+resolved kernels. A CPU run also counts as covered when it was the baseline of such a gate. Every
+other row is listed under "Refused by the parity gate" with the closest reason and no numbers.
+`--allow-ungated-cpu` prints CPU rows without a record (marked `ungated`; for CPU-only folders
+from before the gate); a GPU row is never printed without one.
+
+### Measuring CPU against GPU
+
+`scripts/bench-decision-device.py` runs paired blocks: one block is one `llama-decision-bench`
+process (warmup 1 + repeat 10 runs of every suite request), the configs run one after another
+inside a cycle and the order flips every cycle (A B C, C B A, ...), so drift of clocks and load
+hits every config alike; the report pairs the blocks of a cycle (speedup = reference p50 /
+config p50 of the same cycle). A block is measured again (up to 2 times, every attempt kept) when
+the 1-minute load average before it is above `--load-max`, when other processes used more than
+`--foreign-max` cores during it (the cgroup's CPU time minus the bench process's rusage on Linux,
+`ps` on macOS) or when another process holds a CUDA context. It also records GPU utilization,
+SM / memory clocks and power (`nvidia-smi` every 200 ms; `ioreg` utilization and driver memory on
+macOS), the bench process's GPU memory, and time to ready (`llama-server --decision` spawn ->
+`/health` 200, 3 starts per config and model, interleaved). `--chat-model GGUF` is the app case:
+the script keeps a chat model generating on the GPU in `llama-server` for the whole session
+(after `--chat-alone` completions measured alone) and the report adds the chat model's
+generation speed during the blocks of each config next to its speed alone.
+
+```bash
+python3 scripts/bench-decision-device.py --model laya-f16.gguf \
+  --config "cpu32 bin=build-cpu/bin device=cpu threads=32 kernels=default" \
+  --config "cuda bin=build-cuda/bin device=gpu gpu=0 threads=4" \
+  --blocks 3 --repeat 10 --warmup 1 --ready 3 --out build/bench-device --label box
+python3 scripts/bench-decision-report.py build/bench-device --parity <gate JSONs or folders> --ref cpu32
+```
+
+### Results: AMD EPYC 7V12 + RTX 4090 (step 7)
+
+2026-10-01, vast.ai container: AMD EPYC 7V12 (Zen 2, AVX2, no AVX-512; 128 logical CPUs, cgroup
+quota 122.9 cores), 2x RTX 4090 (driver 595.84, CUDA 12.8). Binaries: the step-6 builds of this
+tree (`build-cpu-blas`: CPU + OpenBLAS; `build-cuda`: sm_89 + sm_120) and a step-7 Vulkan build of
+the same sources (`build-vulkan`; LunarG SDK 1.4.363 loader, the NVIDIA EGL ICD, GPU 1; CUDA ran on
+GPU 0). Configs: `cpu16d` / `cpu32d` = CPU with the ggml `default` kernels (what `auto` picks on
+Linux) at `-t 16` / `-t 32`; `cpu32b` = OpenBLAS (`blas`) at `-t 32`; `cuda` / `vulkan` =
+`--device gpu`, `-t 4` for the CPU side. Suite `tests/decision/bench/suite.jsonl`, 3 cycles
+(order flipped every cycle), warmup 1 + repeat 10 per block, `--load-max 48` (a 32-thread block
+leaves the 1-minute load average high for the next one; the test that counts is the foreign
+CPU): other processes used at most 0.08 cores in any block, no block was measured again, and
+every block was bitwise deterministic. Files: `build-4b/parity/s7/heavy/bench/`; the tables
+below are the output of `python3 scripts/bench-decision-report.py build-4b/parity/s7/heavy/bench
+--parity build-4b/parity/s7/gates --ref cpu32d`.
+
+Parity of every benchmarked configuration (full corpus, `verify_reference.py cli --jsonl`, gate
+`f16-class`; the JSONs are in `build-4b/parity/s7/gates/`; every baseline is the CPU `blas` run of
+the same GGUF with the EPYC 7V12 box's `build-cpu-blas`, which the `cpu32b` rows run; the
+`old_cpu` and `sm120` rows are the AMD EPYC 9334 / RTX 5060 Ti box below):
+
+| gate | GGUF | box | candidate | candidate build | baseline | verdict | flips / compared | max \|dp\| | mean \|dp\| | act rel dlogit | identity problems |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| cpu_ml_f16_default | laya-f16.gguf | EPYC 7V12 | CPU default | build-cpu-blas ba6656c7000f | CPU blas | pass | 0 / 2578 | 0.0089 | 0.0001 | 0.013 | none |
+| cpu_ml_q8_0_default | laya-q8_0.gguf | EPYC 7V12 | CPU default | build-cpu-blas ba6656c7000f | CPU blas | pass | 40 / 2578 | 0.353 | 0.0044 | 0.23 | none |
+| cpu_td_f16_default | laya-td-f16.gguf | EPYC 7V12 | CPU default | build-cpu-blas ba6656c7000f | CPU blas | pass | 0 / 1815 | 0.005 | 4.9e-05 | 0.0063 | none |
+| cuda_ml_f16_default | laya-f16.gguf | EPYC 7V12 | NVIDIA GeForce RTX 4090 | build-cuda 5560f0101c96 | CPU blas | pass | 1 / 2578 | 0.0278 | 0.0001 | 0.014 | none |
+| cuda_ml_q8_0_default | laya-q8_0.gguf | EPYC 7V12 | NVIDIA GeForce RTX 4090 | build-cuda 5560f0101c96 | CPU blas | pass | 5 / 2578 | 0.029 | 0.00013 | 0.0083 | none |
+| cuda_td_f16_default | laya-td-f16.gguf | EPYC 7V12 | NVIDIA GeForce RTX 4090 | build-cuda 5560f0101c96 | CPU blas | pass | 0 / 1815 | 0.0065 | 5.1e-05 | 0.0049 | none |
+| old_cpu_ml_f16_default | laya-f16.gguf | EPYC 9334 | CPU default | build-cuda 7585c50b37a7 | CPU blas | pass | 0 / 2578 | 0.0089 | 0.0001 | 0.013 | none |
+| sm120_ml_f16_default | laya-f16.gguf | EPYC 9334 | NVIDIA GeForce RTX 5060 Ti | build-cuda 7585c50b37a7 | CPU blas | pass | 1 / 2578 | 0.0103 | 0.0001 | 0.011 | none |
+| vulkan_ml_f16_default | laya-f16.gguf | EPYC 7V12 | NVIDIA GeForce RTX 4090 | build-vulkan 322eab61ee7f | CPU blas | pass | 2 / 2578 | 0.0079 | 0.00015 | 0.01 | none |
+| vulkan_ml_q8_0_default | laya-q8_0.gguf | EPYC 7V12 | NVIDIA GeForce RTX 4090 | build-vulkan 322eab61ee7f | CPU blas | pass | 5 / 2578 | 0.0266 | 0.00017 | 0.021 | none |
+| vulkan_td_f16_default | laya-td-f16.gguf | EPYC 7V12 | NVIDIA GeForce RTX 4090 | build-vulkan 322eab61ee7f | CPU blas | pass | 0 / 1815 | 0.0026 | 7.4e-05 | 0.0085 | none |
+
+- The x86 CPU `default` kernels are a separate numerical path from `blas` (F16 weights: same
+  tier, 0 flips; Q8_0: activations quantized, 40 allowed flips). `cpu_ml_q8_0_default` compares
+  a CPU run that quantizes activations with one that does not: tiers v2 refuses that pair (no
+  baseline quantizes the same way), so that row is speed coverage only. The CPU `default` Q8_0
+  rows (`cpu16d`, `cpu32d`) are the CPU reference path itself, covered by the Phase 1-4 CPU gates
+  (CLI golden bytes, suite logits hash, which step 8 re-checked on x86), not by a parity gate. On `laya-multilingual` F16 the
+  two x86 boxes (AVX2 `build-cpu-blas`, AVX-512 `build-cuda`) wrote byte-identical parity files
+  (sha256 `9c0b9e84...`), and the suite logits hash of `cpu16d` / `cpu32d` / `cpu28d` is the same
+  on both boxes.
+- Vulkan on Q8_0 passes against CPU `blas` with 5 allowed flips and against CPU `default` with
+  45 (`build-4b/parity/s7/gates-diag/`): its results land next to `blas`, so on this device it
+  does not quantize the activations of the Q8_0 matmuls, and `blas` is its tier baseline.
+
+Resources: load = in-process model load (median over blocks); ready = llama-server --decision spawn -> /health 200, first = the first so-1q-noul request after ready (HTTP); RSS MiB after load / peak (bench) and at ready (server); GPU MiB = the most nvidia-smi showed for the bench process (macOS: the most ioreg showed in use by the GPU driver, all processes); weights = weights in device memory (/props); placement = graph nodes / splits / nodes on the CPU (64-token graph); util %, SM / memory MHz and W: GPU samples every 200 ms during the blocks (median of the block means; GPU configs only); CPU s = process CPU seconds per request of systemone 1q / router N=8 (median of the block means); load = 1-minute load average before the blocks; foreign = cores other processes used (max over blocks); re-run = disturbed blocks measured again; det = the same logits hash in every run of every block.
+
+#### laya-multilingual F16 (`laya-f16.gguf`), EPYC 7V12 + RTX 4090
+
+Latency per request, ms: p50 / p95 over requests x repeats x 3 blocks (in process, llama-decision-bench).
+
+| group | cpu16d | cpu32d | cpu32b | cuda | vulkan |
+|---|---|---|---|---|---|
+| systemone 1q | 176.5 / 198.5 | 93.8 / 101.5 | 407.3 / 447.5 | 7.1 / 7.2 | 6.5 / 7.4 |
+| systemone 5q | 965.6 / 1105.1 | 511.9 / 557.6 | 2010.4 / 2308.1 | 36.5 / 38.5 | 32.3 / 36.2 |
+| router N=1 | 447.3 / 478.2 | 235.4 / 242.7 | 625.3 / 652.2 | 10.9 / 11.9 | 9.7 / 11.1 |
+| router N=4 | 1663.9 / 1795.2 | 875.8 / 920.6 | 2347.8 / 2444.6 | 39.8 / 41.8 | 37.1 / 39.2 |
+| router N=8 | 3316.1 / 3730.9 | 1779.0 / 1910.4 | 4945.9 / 5017.5 | 77.9 / 88.2 | 74.3 / 81.5 |
+| router N=1 t128 | 316.0 / 316.7 | 160.0 / 161.6 | 506.8 / 536.8 | 8.5 / 8.9 | 7.5 / 8.7 |
+| router N=1 t512 | 751.1 / 752.6 | 433.0 / 434.7 | 995.6 / 1011.4 | 18.3 / 18.9 | 13.7 / 15.4 |
+
+Speedup against cpu32d: cpu32d p50 / config p50 of the same cycle; median (min - max) over the cycles. Above 1: faster than the reference.
+
+| group | cpu16d vs cpu32d | cpu32b vs cpu32d | cuda vs cpu32d | vulkan vs cpu32d |
+|---|---|---|---|---|
+| systemone 1q | 0.52x (0.52 - 0.53, n=3) | 0.23x (0.23 - 0.24, n=3) | 13.12x (13.10 - 13.67, n=3) | 14.45x (14.19 - 14.52, n=3) |
+| systemone 5q | 0.52x (0.51 - 0.53, n=3) | 0.25x (0.25 - 0.25, n=3) | 14.14x (13.72 - 14.16, n=3) | 15.85x (15.70 - 15.95, n=3) |
+| router N=1 | 0.53x (0.52 - 0.53, n=3) | 0.38x (0.38 - 0.38, n=3) | 21.66x (21.35 - 22.84, n=3) | 24.30x (24.29 - 24.32, n=3) |
+| router N=4 | 0.52x (0.52 - 0.53, n=3) | 0.38x (0.37 - 0.38, n=3) | 21.78x (21.69 - 22.32, n=3) | 23.60x (23.59 - 23.67, n=3) |
+| router N=8 | 0.53x (0.51 - 0.54, n=3) | 0.38x (0.36 - 0.38, n=3) | 22.07x (21.84 - 22.98, n=3) | 23.92x (23.87 - 23.93, n=3) |
+| router N=1 t128 | 0.51x (0.50 - 0.51, n=3) | 0.32x (0.31 - 0.32, n=3) | 18.99x (18.40 - 19.29, n=3) | 21.32x (21.28 - 21.39, n=3) |
+| router N=1 t512 | 0.58x (0.58 - 0.58, n=3) | 0.44x (0.43 - 0.44, n=3) | 23.60x (23.48 - 23.70, n=3) | 32.57x (30.42 - 32.81, n=3) |
+
+| config | load ms | ready ms | first ms | RSS | RSS ready | GPU MiB | weights MiB | placement | util % | SM / mem MHz | W | CPU s 1q / N=8 | load | foreign | re-run | det |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cpu16d | 855 | 914 (n=3) | 194.3 | 323 / 426 | 346 | - | 0 | 562 / 1 / 562 | - | - | - | 2.903 / 55.227 | 9.3 - 34.0 | 0.07 | 0 | yes |
+| cpu32d | 830 | 886 (n=3) | 119.7 | 324 / 435 | 347 | - | 0 | 562 / 1 / 562 | - | - | - | 2.995 / 56.933 | 17.0 - 39.9 | 0.07 | 0 | yes |
+| cpu32b | 1023 | 1064 (n=3) | 406.4 | 343 / 442 | 359 | - | 0 | 562 / 241 / 442 | - | - | - | 16.050 / 185.341 | 19.2 - 28.6 | 0.07 | 0 | yes |
+| cuda | 894 | 1229 (n=3) | 15.2 | 449 / 1050 | 480 | 738 | 239 | 562 / 2 / 1 | 43 | 2730 / 10251 | 151 | 0.007 / 0.081 | 22.3 - 38.9 | 0.08 | 0 | yes |
+| vulkan | 800 | 987 (n=3) | 21.5 | 168 / 232 | 179 | 341 | 239 | 562 / 2 / 1 | 51 | 2760 / 10501 | 112 | 0.004 / 0.040 | 24.0 - 35.9 | 0.08 | 0 | yes |
+
+#### laya-multilingual Q8_0 (`laya-q8_0.gguf`), EPYC 7V12 + RTX 4090
+
+Latency per request, ms: p50 / p95 over requests x repeats x 3 blocks (in process, llama-decision-bench).
+
+| group | cpu16d | cpu32d | cpu32b | cuda | vulkan |
+|---|---|---|---|---|---|
+| systemone 1q | 148.4 / 162.2 | 77.6 / 87.2 | 336.3 / 391.2 | 7.5 / 8.0 | 7.4 / 8.2 |
+| systemone 5q | 811.5 / 905.3 | 432.7 / 478.0 | 1742.1 / 2036.6 | 39.2 / 40.6 | 34.4 / 37.7 |
+| router N=1 | 384.8 / 408.8 | 200.1 / 210.0 | 581.7 / 606.3 | 11.7 / 12.4 | 9.8 / 11.7 |
+| router N=4 | 1417.4 / 1551.4 | 751.5 / 791.9 | 2167.5 / 2200.4 | 41.6 / 42.6 | 37.3 / 41.8 |
+| router N=8 | 2885.9 / 3216.6 | 1523.9 / 1640.9 | 4486.3 / 4672.7 | 83.7 / 90.2 | 78.7 / 82.9 |
+| router N=1 t128 | 264.6 / 268.2 | 135.3 / 138.4 | 445.4 / 459.2 | 8.7 / 9.0 | 8.6 / 8.8 |
+| router N=1 t512 | 641.9 / 646.5 | 385.3 / 388.8 | 942.5 / 983.8 | 18.3 / 18.8 | 14.0 / 17.2 |
+
+Speedup against cpu32d: cpu32d p50 / config p50 of the same cycle; median (min - max) over the cycles. Above 1: faster than the reference.
+
+| group | cpu16d vs cpu32d | cpu32b vs cpu32d | cuda vs cpu32d | vulkan vs cpu32d |
+|---|---|---|---|---|
+| systemone 1q | 0.53x (0.52 - 0.54, n=3) | 0.23x (0.23 - 0.23, n=3) | 10.33x (10.24 - 10.41, n=3) | 10.44x (10.21 - 11.47, n=3) |
+| systemone 5q | 0.53x (0.52 - 0.54, n=3) | 0.25x (0.23 - 0.25, n=3) | 11.04x (10.85 - 11.19, n=3) | 12.44x (11.72 - 13.00, n=3) |
+| router N=1 | 0.52x (0.52 - 0.52, n=3) | 0.35x (0.34 - 0.35, n=3) | 17.26x (17.00 - 17.40, n=3) | 20.42x (18.42 - 20.74, n=3) |
+| router N=4 | 0.53x (0.52 - 0.53, n=3) | 0.35x (0.35 - 0.36, n=3) | 18.08x (17.93 - 18.23, n=3) | 19.98x (18.65 - 20.58, n=3) |
+| router N=8 | 0.52x (0.51 - 0.53, n=3) | 0.34x (0.34 - 0.35, n=3) | 18.21x (18.17 - 18.26, n=3) | 19.03x (18.73 - 20.97, n=3) |
+| router N=1 t128 | 0.51x (0.51 - 0.51, n=3) | 0.30x (0.30 - 0.31, n=3) | 15.62x (15.56 - 15.64, n=3) | 15.73x (15.67 - 17.98, n=3) |
+| router N=1 t512 | 0.60x (0.60 - 0.60, n=3) | 0.41x (0.41 - 0.41, n=3) | 21.20x (21.04 - 21.22, n=3) | 27.49x (26.33 - 29.73, n=3) |
+
+| config | load ms | ready ms | first ms | RSS | RSS ready | GPU MiB | weights MiB | placement | util % | SM / mem MHz | W | CPU s 1q / N=8 | load | foreign | re-run | det |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cpu16d | 743 | 815 (n=3) | 156.8 | 212 / 314 | 234 | - | 0 | 562 / 1 / 562 | - | - | - | 2.291 / 47.447 | 30.6 - 34.3 | 0.07 | 0 | yes |
+| cpu32d | 733 | 811 (n=3) | 102.3 | 212 / 312 | 236 | - | 0 | 562 / 1 / 562 | - | - | - | 2.496 / 48.844 | 18.1 - 39.2 | 0.07 | 0 | yes |
+| cpu32b | 873 | 954 (n=3) | 362.5 | 225 / 335 | 247 | - | 0 | 562 / 241 / 442 | - | - | - | 13.342 / 170.909 | 14.0 - 28.3 | 0.08 | 0 | yes |
+| cuda | 889 | 1186 (n=3) | 21.4 | 449 / 1131 | 481 | 1040 | 128 | 658 / 3 / 1 | 45 | 2730 / 10251 | 158 | 0.008 / 0.084 | 16.2 - 39.1 | 0.08 | 0 | yes |
+| vulkan | 778 | 963 (n=3) | 23.6 | 168 / 225 | 180 | 217 | 128 | 562 / 2 / 1 | 47 | 2760 / 10501 | 106 | 0.006 / 0.051 | 17.5 - 36.0 | 0.08 | 0 | yes |
+
+#### laya-typed-decisions F16 (`laya-td-f16.gguf`), EPYC 7V12 + RTX 4090
+
+Latency per request, ms: p50 / p95 over requests x repeats x 3 blocks (in process, llama-decision-bench).
+
+| group | cpu16d | cpu32d | cpu32b | cuda | vulkan |
+|---|---|---|---|---|---|
+| systemone 1q | 383.5 / 422.9 | 201.3 / 222.9 | 927.0 / 1044.6 | 10.7 / 11.2 | 9.5 / 9.7 |
+| systemone 5q | 2087.4 / 2278.7 | 1089.3 / 1191.9 | 4863.2 / 5224.3 | 55.0 / 60.2 | 46.3 / 48.9 |
+| router N=1 | 828.4 / 879.7 | 443.7 / 456.1 | 1337.3 / 1402.1 | 16.9 / 17.1 | 12.4 / 12.9 |
+| router N=4 | 3437.1 / 3642.4 | 1880.2 / 1910.6 | 5336.0 / 5612.1 | 66.4 / 68.8 | 48.6 / 50.5 |
+| router N=8 | 6422.9 / 6959.0 | 3455.8 / 3642.9 | 10702.2 / 11322.3 | 124.1 / 133.1 | 92.5 / 98.4 |
+| router N=1 t128 | 617.8 / 619.1 | 323.4 / 327.6 | 1143.2 / 1170.2 | 13.3 / 14.3 | 10.9 / 11.6 |
+| router N=1 t512 | 1587.1 / 1607.3 | 879.7 / 882.5 | 2195.0 / 2219.1 | 29.6 / 30.2 | 19.8 / 22.9 |
+
+Speedup against cpu32d: cpu32d p50 / config p50 of the same cycle; median (min - max) over the cycles. Above 1: faster than the reference.
+
+| group | cpu16d vs cpu32d | cpu32b vs cpu32d | cuda vs cpu32d | vulkan vs cpu32d |
+|---|---|---|---|---|
+| systemone 1q | 0.53x (0.52 - 0.53, n=3) | 0.22x (0.22 - 0.22, n=3) | 18.86x (18.68 - 18.95, n=3) | 21.21x (21.20 - 21.59, n=3) |
+| systemone 5q | 0.52x (0.52 - 0.53, n=3) | 0.22x (0.22 - 0.23, n=3) | 19.70x (19.23 - 19.98, n=3) | 23.47x (23.35 - 23.76, n=3) |
+| router N=1 | 0.54x (0.53 - 0.54, n=3) | 0.33x (0.33 - 0.33, n=3) | 26.40x (26.21 - 26.58, n=3) | 35.79x (35.78 - 36.16, n=3) |
+| router N=4 | 0.54x (0.53 - 0.54, n=3) | 0.35x (0.35 - 0.35, n=3) | 27.94x (27.72 - 28.69, n=3) | 37.95x (37.82 - 39.11, n=3) |
+| router N=8 | 0.53x (0.53 - 0.53, n=3) | 0.32x (0.32 - 0.33, n=3) | 27.16x (27.02 - 27.45, n=3) | 37.07x (36.89 - 37.28, n=3) |
+| router N=1 t128 | 0.52x (0.52 - 0.52, n=3) | 0.28x (0.28 - 0.28, n=3) | 24.49x (23.00 - 24.59, n=3) | 29.58x (29.33 - 29.93, n=3) |
+| router N=1 t512 | 0.55x (0.55 - 0.55, n=3) | 0.40x (0.40 - 0.40, n=3) | 29.64x (29.37 - 30.18, n=3) | 44.32x (43.53 - 44.84, n=3) |
+
+| config | load ms | ready ms | first ms | RSS | RSS ready | GPU MiB | weights MiB | placement | util % | SM / mem MHz | W | CPU s 1q / N=8 | load | foreign | re-run | det |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cpu16d | 706 | 752 (n=3) | 405.3 | 731 / 860 | 753 | - | 0 | 688 / 1 / 688 | - | - | - | 6.185 / 103.981 | 26.0 - 29.6 | 0.07 | 0 | yes |
+| cpu32d | 685 | 695 (n=3) | 227.8 | 732 / 845 | 755 | - | 0 | 688 / 1 / 688 | - | - | - | 6.438 / 108.855 | 16.4 - 28.8 | 0.07 | 0 | yes |
+| cpu32b | 1126 | 1174 (n=3) | 846.4 | 755 / 857 | 778 | - | 0 | 688 / 301 / 538 | - | - | - | 32.099 / 320.718 | 14.2 - 31.2 | 0.07 | 0 | yes |
+| cuda | 505 | 786 (n=3) | 17.7 | 408 / 1034 | 440 | 1228 | 705 | 688 / 2 / 1 | 63 | 2730 / 10251 | 228 | 0.011 / 0.127 | 16.6 - 30.5 | 0.07 | 0 | yes |
+| vulkan | 449 | 656 (n=3) | 26.7 | 122 / 187 | 135 | 827 | 705 | 688 / 2 / 1 | 59 | 2760 / 10501 | 165 | 0.007 / 0.065 | 18.0 - 26.0 | 0.08 | 0 | yes |
+
+### Results: AMD EPYC 9334 + RTX 5060 Ti (step 7)
+
+2026-10-01, vast.ai container: AMD EPYC 9334 (Zen 4, AVX-512; 128 logical CPUs but a cgroup
+quota of 30.7 cores, hence `-t 28` at most), 2x RTX 5060 Ti 16 GB (sm_120, driver 580.126.09).
+Binaries: the step-6 `build-cuda` (its CPU backend for the CPU configs, ggml `default` kernels).
+`laya-multilingual` F16 only. `/proc/loadavg` in this container counts the whole host (other
+tenants), so `--load-max 16`; the foreign test uses this container's CPU time (at most 0.09 cores
+in any block, no block measured again). Files: `build-4b/parity/s7/old/bench-ab/`; tables:
+`python3 scripts/bench-decision-report.py build-4b/parity/s7/old/bench-ab --parity
+build-4b/parity/s7/gates --ref cpu28d`.
+
+Latency per request, ms: p50 / p95 over requests x repeats x 3 blocks (in process, llama-decision-bench).
+
+| group | cpu16d | cpu28d | sm120 |
+|---|---|---|---|
+| systemone 1q | 148.9 / 164.4 | 97.9 / 100.1 | 10.2 / 10.8 |
+| systemone 5q | 830.5 / 918.7 | 527.0 / 585.4 | 54.8 / 60.3 |
+| router N=1 | 377.4 / 405.7 | 235.4 / 259.2 | 17.7 / 21.3 |
+| router N=4 | 1416.7 / 1514.5 | 884.4 / 962.1 | 69.2 / 72.0 |
+| router N=8 | 2854.8 / 3089.9 | 1805.6 / 1940.9 | 145.1 / 153.0 |
+| router N=1 t128 | 251.3 / 255.3 | 153.8 / 162.6 | 13.7 / 14.1 |
+| router N=1 t512 | 675.0 / 698.9 | 411.2 / 464.0 | 33.6 / 34.7 |
+
+Speedup against cpu28d: cpu28d p50 / config p50 of the same cycle; median (min - max) over the cycles. Above 1: faster than the reference.
+
+| group | cpu16d vs cpu28d | sm120 vs cpu28d |
+|---|---|---|
+| systemone 1q | 0.65x (0.61 - 0.66, n=3) | 9.33x (8.94 - 9.65, n=3) |
+| systemone 5q | 0.63x (0.62 - 0.66, n=3) | 9.49x (9.32 - 9.67, n=3) |
+| router N=1 | 0.62x (0.61 - 0.62, n=3) | 13.03x (12.98 - 13.21, n=3) |
+| router N=4 | 0.63x (0.61 - 0.64, n=3) | 12.56x (12.47 - 12.97, n=3) |
+| router N=8 | 0.63x (0.62 - 0.65, n=3) | 12.39x (12.37 - 12.55, n=3) |
+| router N=1 t128 | 0.61x (0.61 - 0.62, n=3) | 11.12x (11.09 - 11.34, n=3) |
+| router N=1 t512 | 0.64x (0.62 - 0.64, n=3) | 12.49x (12.42 - 12.70, n=3) |
+
+| config | load ms | ready ms | first ms | RSS | RSS ready | GPU MiB | weights MiB | placement | util % | SM / mem MHz | W | CPU s 1q / N=8 | load | foreign | re-run | det |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cpu16d | 491 | 823 (n=3) | 149.9 | 476 / 582 | 508 | - | 0 | 562 / 1 / 562 | - | - | - | 2.359 / 45.239 | 7.7 - 15.7 | 0.09 | 0 | yes |
+| cpu28d | 491 | 804 (n=3) | 106.2 | 477 / 564 | 509 | - | 0 | 562 / 1 / 562 | - | - | - | 2.590 / 49.288 | 12.6 - 15.7 | 0.09 | 0 | yes |
+| sm120 | 641 | 961 (n=3) | 14.2 | 540 / 935 | 571 | 472 | 239 | 562 / 2 / 1 | 63 | 2797 / 13801 | 97 | 0.010 / 0.142 | 14.0 - 15.9 | 0.08 | 0 | yes |
+
+### Recommendation
+
+1. **Servers with an NVIDIA GPU: `--decision-device gpu` with the CUDA build, `default`
+   precision, an F16 GGUF.** RTX 4090 against 32 threads of the EPYC 7V12 (the fastest CPU
+   configuration measured): 13-24x lower p50 on `laya-multilingual` F16 (systemone 1q 7.1 vs
+   93.8 ms, router N=8 77.9 vs 1779.0 ms) and 19-30x on `laya-typed-decisions` F16; RTX 5060 Ti
+   against 28 threads of the EPYC 9334: 9-13x (10.2 vs 97.9 ms, 145.1 vs 1805.6 ms). The process
+   then uses 0.007-0.011 CPU seconds per systemone 1q request instead of 2.3-6.4 s, so the CPU
+   stays free for other work. Costs: 0.1-0.4 s more time to ready (CUDA init; 1229 vs 886 ms on
+   `laya-multilingual` F16), 0.5-1.2 GiB of GPU memory and 0.2-0.8 GiB more peak RSS. `strict` is
+   the audit mode (`strict-f32` against PyTorch on F32 GGUFs), not a serving mode.
+2. **F16, not Q8_0, on a GPU.** CUDA dequantizes Q8_0 weights to F32 in the graph (step 6), so
+   Q8_0 is not faster there (systemone 1q 7.5 vs 7.1 ms, router N=8 83.7 vs 77.9 ms) and takes
+   more GPU memory (1040 vs 738 MiB); it only saves device weight memory (128 vs 239 MiB). Q8_0
+   stays the CPU format.
+3. **Vulkan works, but CUDA stays the choice on NVIDIA.** On the same GPU model Vulkan was as fast
+   as CUDA or faster (`laya-typed-decisions` F16 router N=8 92.5 vs 124.1 ms) and used less memory
+   (`laya-multilingual` F16: 341 vs 738 MiB GPU, 168 vs 449 MiB RSS after load), but it has no
+   `strict-f32` mode for parity audits, the container needed a hand-made headless ICD, and it ran
+   on the box's other RTX 4090. It is the path for GPUs without CUDA, after a parity run on that
+   driver (AMD and Intel GPUs are not measured).
+4. **CPU-only x86: keep `auto` (= `default` on Linux) and give it the cores.** OpenBLAS (`blas`)
+   is 2.3-4.5x slower than the ggml kernels at the same 32 threads (`cpu32b` vs `cpu32d`
+   0.22-0.44x) and burns about 5x the CPU seconds (systemone 1q, `laya-multilingual` F16: 16.050
+   vs 2.995 s); 32 threads are 1.7-2.0x faster than 16 on the 7V12, 28 threads 1.5-1.6x faster
+   than 16 on the 9334.
+5. **Atomic Chat app: the default stays `cpu`.** There is no Mac latency number yet; the idle-Mac
+   session below decides with its pre-registered rule. Metal passes its parity tier, and the
+   final tree gives the step-5 Metal bits, so only speed and the chat model's share of the GPU are
+   open.
+
+### To run on an idle Mac (CPU against Metal, not measured yet)
+
+The Mac numbers are taken in one session on an idle Mac (maintainer decision), so this section
+has commands and no numbers. Before it: AC power, low power mode off, other applications closed,
+`uptime` 1-minute load below 2. The build is the final tree (`build-4b-s8`: static, Metal,
+Accelerate, `-DLLAMA_FATAL_WARNINGS=ON`); the Metal gates of "Metal results" are from
+`build-4b-s5`, another build identity (step 8 re-ran three Metal cells with `build-4b-s8` and got
+the same bits), so the session first makes parity runs of the bench build (the report refuses
+rows without them). Two measurements: CPU (`auto` = Accelerate, `-t 12`)
+against Metal on the idle machine, and the app case, where a chat model generates on Metal the
+whole time and the decision process runs on Metal or on the CPU.
+
+```bash
+B=build-4b-s8                          # Metal build of the final tree
+C=build-4b/parity/corpus/items.jsonl   # python3 tests/laya/parity/gen_corpus.py -o $C --check
+O=build-4b/bench-mac
+CHAT=~/models/Qwen3.5-4B/qwen35-4b-Q4_K_M.gguf   # the chat model of the app case
+cmake --build $B -j 8 --target llama-decision-bench llama-server llama-laya-cli
+mkdir -p $O/parity $O/gates
+
+# 1. parity of this build: CPU auto (the server's plan) and Metal, full corpus, per GGUF
+for g in models-local/laya-f16.gguf models-local/laya-q8_0.gguf models-p4/laya-td-f16.gguf; do
+  n=$(basename $g .gguf); e=; case $n in laya-td-*|laya-en-*) e=--english ;; esac
+  python3 tests/laya/verify_reference.py cli $B/bin/llama-laya-cli $g $C $O/parity/cpu_$n.jsonl --jsonl --jobs 8 -t 1 --plan sequential --kernels auto $e
+  python3 tests/laya/verify_reference.py cli $B/bin/llama-laya-cli $g $C $O/parity/metal_$n.jsonl --jsonl --jobs 1 -t 8 --plan sequential --device gpu $e
+  python3 tests/laya/verify_reference.py compare $O/parity/cpu_$n.jsonl $O/parity/metal_$n.jsonl --gate f16-class --weights ${n##*-} --json $O/gates/metal_$n.json
+done
+
+# 2. idle machine: CPU (Accelerate, 12 threads) against Metal, paired blocks
+python3 scripts/bench-decision-device.py \
+  --model models-local/laya-f16.gguf --model models-local/laya-q8_0.gguf --model models-p4/laya-td-f16.gguf \
+  --config "cpu12 bin=$B/bin device=cpu threads=12 kernels=auto" \
+  --config "metal bin=$B/bin device=gpu threads=4" \
+  --blocks 5 --repeat 10 --warmup 1 --ready 3 --load-max 2 --foreign-max 1 --out $O/idle --label mac-idle
+python3 scripts/bench-decision-report.py $O/idle --parity $O/gates --ref cpu12
+
+# 3. app case: the chat model generates on Metal the whole session (256-token completions);
+#    the decision process runs on Metal or on the CPU; the report adds the chat tokens/s per config
+python3 scripts/bench-decision-device.py --model models-local/laya-q8_0.gguf --model models-local/laya-f16.gguf \
+  --config "cpu12 bin=$B/bin device=cpu threads=12 kernels=auto" \
+  --config "metal bin=$B/bin device=gpu threads=4" \
+  --chat-model $CHAT --chat-tokens 256 --chat-alone 5 \
+  --blocks 5 --repeat 10 --warmup 1 --ready 3 --load-max 4 --foreign-max 1 --out $O/chat --label mac-chat
+python3 scripts/bench-decision-report.py $O/chat --parity $O/gates --ref cpu12
+```
+
+Decision rule, written before the numbers: the app default (`--decision-device cpu`) changes to
+Metal only if, in the app case (3), Metal's p95 is below the CPU's p95 for every suite group and
+the chat model keeps at least 0.9x of the generation speed it has while the decision process runs
+on the CPU. Otherwise the default stays `cpu`, and Metal stays an option for machines where no
+chat model shares the GPU.
+
 ## Status and known gaps
 
 - Router calibration: the tools exist (`fit-router-calibration.py`, `router-baselines.py`),
@@ -1176,11 +2050,27 @@ UTF-8 through UTF-16 with the helpers of the Windows fixes (`laya_utf8_to_wide`,
   measured.
 
 - `semif-letters` (Arbiter-4B, JevK5) is not implemented; such a spec fails at load.
+- Compute devices (`--decision-device`): Metal passes `f16-class` on the full corpus ("Metal
+  results"); CUDA passes its tiers after the step-6 fixes, from the final tree too (sm_89 and
+  sm_120, "Tiers v2"), and Vulkan passes `f16-class` on `laya-multilingual` F32 / F16 / Q8_0 and
+  `laya-typed-decisions` F16 ("CUDA and Vulkan results", "GPU backends"). Vulkan was run on the
+  NVIDIA driver only (a step-6 tree build; its graph has no change since), sm_120 has no English
+  or `strict` F16 / Q8_0 run, and the CPU vs device latency tables are x86 + NVIDIA only: the Mac
+  (CPU vs Metal, idle and with a chat model on the GPU) waits for the idle-Mac session ("To run on
+  an idle Mac").
+- Not verified: ROCm / MUSA builds (they get the CUDA graph changes and a load warning), AMD and
+  Intel GPUs, quantized types other than Q8_0 on a device (warning at load), a
+  `GGML_BACKEND_DL` build of the final tree (the last DL builds are of steps 4 / 5), and MSVC (the
+  `dev-build` Windows job is the first to build the new tests). Metal rounds matmul operands to
+  half; the activations of this model family reach about 1.3e4 in layers 10-12, about 5x below
+  the half maximum (65504); the gate catches an overflow only through non-finite or wrong public
+  outputs. `test-laya-backend-precision` on CUDA `strict` multiplies F16 cases as F32 (as the
+  graph does), so it no longer probes F16 there, and a model-shaped k = 768 case is missing.
 - English checkpoints: only F32 and F16 are measured; no quantized recipe, no router calibration
   and no x86 run yet.
 - laya: the reference's per-language temperatures and `answer_confidence` are not
-  implemented in the server; the act head (`action`) is not exposed. `llama-laya-cli` prints
-  both, in the reference answer shape.
+  implemented in the server (`llama-laya-cli` prints the reference answer shape). The act head
+  is exposed as `action.act_probability` (systemone only).
 - The ggml threadpool workers keep QoS `DEFAULT` on macOS (ggml sets no QoS on the threads it
   creates; only the calling worker thread is raised). The first request after a long idle
   pays a fixed ~20 ms (cores and caches waking up), independent of the threadpool.
