@@ -90,6 +90,28 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
   `--no-mmap` and `--mlock` and keeps the `default` kernels. `/props.decision`
   also shows the BLAS threads and the weight bytes loaded / mapped / repacked.
 
+- **Laya checkpoints without Python.** `llama-server --decision -m <dir>` and
+  `llama-laya-cli -m <dir>` take a laya Hugging Face checkpoint directory (an HF
+  snapshot works as it is). The first start converts it into a GGUF cache,
+  later starts reuse it ("converted" / "cache hit" in the log), and the cached
+  GGUF is loaded exactly like `-m FILE`. The cache lives in
+  `$LLAMA_CACHE/laya/gguf-cache` or the user cache (macOS
+  `~/Library/Caches/llama.cpp/laya/gguf-cache`, Linux `~/.cache/...`, Windows
+  `%LOCALAPPDATA%\...`), never in the checkpoint; new flags
+  `--decision-convert-cache DIR` and `--decision-convert-type f16|f32`
+  (default f16; the converter's q8_0 is not the precision-protected Q8_0 recipe,
+  use `tests/laya/quantize.sh` on the f16 GGUF). The cache key covers the
+  converter version, the outtype and the files the converter can read (root,
+  `encoder/`, `tokenizer/`; files up to 8 MiB by content, larger ones such as the
+  weights by size + mtime + symlink target). Writes are atomic and synced to disk.
+  `/props.decision` shows `source` (`gguf` / `checkpoint-dir`) and `cache_path`.
+  The conversion is the new `llama-laya-convert` (C++, no Python; also
+  usable on its own), byte-identical to `convert_hf_to_gguf.py` for all three
+  published checkpoints in f32, f16 and q8_0, with and without `--model-name`
+  (18 of 18 files), and 6-19x faster (0.2-1.8 s per f16 file). A first start of
+  `laya-multilingual` takes about 1.2-1.3 s instead of 0.3 s and peaks at about
+  515 MiB instead of 372 MiB RSS.
+
 ### Notes
 
 - Decision mode runs on the CPU backend only; start it with `--device none` next

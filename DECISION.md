@@ -1,6 +1,7 @@
 # Decision mode (`llama-server --decision`)
 
-`llama-server --decision -m model.gguf` serves a *decision model*: a small model that
+`llama-server --decision -m model.gguf` (or `-m <laya checkpoint dir>`, see "Loading a Hugging
+Face checkpoint directly") serves a *decision model*: a small model that
 returns calibrated probabilities over a fixed set of options in one forward pass, with
 no generation. It is a separate process role of this fork. It has no chat routes, no
 slots, no KV cache and no web UI.
@@ -17,8 +18,8 @@ Code map:
 | path | role |
 |---|---|
 | `tools/server/server-decision.{h,cpp}` | HTTP routes, FIFO worker, error envelope, info routes |
-| `tools/decision/` | static library: py-json, `decision.spec`, request checks, calibration, executor cards, engines, laya input building (`laya-decide`) |
-| `tools/laya/` | laya runtime (port of upstream PR #29363; links only ggml) and `llama-laya-cli` |
+| `tools/decision/` | static library: py-json, `decision.spec`, request checks, calibration, executor cards, engines, laya input building (`laya-decide`), the GGUF cache for `-m <checkpoint dir>` (`decision-checkpoint.h`) |
+| `tools/laya/` | laya runtime (port of upstream PR #29363; links only ggml), `llama-laya-cli`, and `llama-laya-convert` (HF checkpoint -> GGUF without Python, `laya-convert.h`) |
 | `gguf-py/gguf/scripts/gguf_decision_spec.py` | get / set / verify `decision.spec` in a GGUF |
 | `tests/test-decision-*.cpp`, `tests/decision/` | C++ unit tests, golden files, tiny model generator |
 | `tools/server/tests/unit/test_decision.py` | server contract tests (offline) |
@@ -37,7 +38,8 @@ curl -s localhost:8090/v1/systemone -H 'content-type: application/json' \
 ```
 
 Start-up order: the HTTP server starts first (so `/health` answers 503 while the model
-loads), then the spec and the engine load, then the server is ready. A load error stops
+loads), then a checkpoint directory is converted (or found in the cache), then the spec and
+the engine load, then the server is ready. A load error stops
 the process with exit code 1.
 
 ## Flags
@@ -46,7 +48,9 @@ Environment variables use the `LLAMA_ARG_DECISION_*` names.
 
 | flag | default | meaning |
 |---|---|---|
-| `--decision` | off | decision mode. Requires `-m FILE`; `-hf`, `-dr` and `-mu` are rejected (without `-m` the server would start in router mode). Explicit only: a stamped GGUF never switches mode on its own. |
+| `--decision` | off | decision mode. Requires `-m FILE` or `-m DIR` (a laya Hugging Face checkpoint directory, converted once into a GGUF cache); `-hf`, `-dr` and `-mu` are rejected (without `-m` the server would start in router mode). Explicit only: a stamped GGUF never switches mode on its own. |
+| `--decision-convert-cache DIR` | `$LLAMA_CACHE/laya/gguf-cache`, else the user cache + `llama.cpp/laya/gguf-cache` | `-m DIR` only: where the converted GGUF is kept (never in the checkpoint directory). See "Loading a Hugging Face checkpoint directly" |
+| `--decision-convert-type T` | `f16` | `-m DIR` only: `f16` or `f32`. The converter's `q8_0` is not the precision-protected recipe (see "Converting without Python"); for Q8_0 quantize the f16 GGUF with `tests/laya/quantize.sh` |
 | `--decision-spec FILE` | from the GGUF | JSON that replaces the embedded `decision.spec` as a whole. A bare Arbiter `calibration.json` (`{"temperature": x}` or `{"temperature": {...}}`) is accepted too: it is a required calibration, keeps the layout clamp (laya [0.5, 5]) and replaces the `laya.temperature` calibration; its `calibration.version` is its own `version` field (else `cal-<hash>`), never `gguf:laya.temperature`. |
 | `--decision-plan NAME` | from the spec | compute plan, laya: `sequential`, `packed` (systemone only; the router always runs `sequential`) |
 | `--decision-kernels NAME` | from the spec, then `auto` | matmul kernels, laya: `auto` (`blas` when the BLAS backend is Accelerate, i.e. on macOS; else `default`), `default` (ggml CPU kernels, the Phase 1 numerics), `repack` (CPU repack buffers for quantized weights), `blas` (BLAS backend in the scheduler), `repack+blas`. Kernels change the logits slightly, so the default logits on macOS differ from those on Linux and Windows; `default` gives the same numerics everywhere. An explicit `blas` / `repack+blas` fails at load on a build without a BLAS backend. See "CPU kernels and memory" |
@@ -55,7 +59,7 @@ Environment variables use the `LLAMA_ARG_DECISION_*` names.
 | `--decision-allow-uncalibrated` | off | serve `/v1/router/score` without a router calibration |
 | `--decision-debug` | off | raw logits and token ids in answers, `POST /v1/decision/render`, request logging, test delays (below) |
 
-Reused: `-m`, `-a/--alias` (default: the model file name without its directories and a trailing `.gguf`, the same name as the default spec `model_id`), `--host`, `--port`, `--api-key` / `LLAMA_API_KEY`, `-t`
+Reused: `-m`, `-a/--alias` (default: the model file name without its directories and a trailing `.gguf`, for `-m DIR` the directory name; the same name as the default spec `model_id`), `--host`, `--port`, `--api-key` / `LLAMA_API_KEY`, `-t`
 (engine threads, fixed at load; default: the performance cores, see below), `--load-mode`
 (`mmap`, the default, keeps `token_embd` in a read-only file mapping; `none` / `dio` load it;
 `mlock` / `mmap+mlock` also lock the model in RAM, and a failed lock only warns),
@@ -67,7 +71,7 @@ Ignored with a warning: `--parallel`, `-ctk/-ctv`, `--ctx-checkpoints`, `--spec-
 `--embedding` / `--pooling`, `--mmproj`, `--lora`, `--sleep-idle-seconds`,
 `--mcp-servers-*`, `--tools`, `--ui-mcp-proxy`, `--path`. The UI is always off.
 
-A laya GGUF started without `--decision` fails fast with a hint. `--decision` inside a
+A laya GGUF or checkpoint directory started without `--decision` fails fast with a hint. `--decision` inside a
 router-mode child instance is rejected: run a separate process.
 
 ## API
@@ -270,7 +274,10 @@ candidates' scores (bitwise).
   router state pieces are tokenized separately, see Scheduling),
   `memory {weights_loaded_bytes, weights_mapped_bytes, weights_repacked_bytes}` (where the
   weights went, see "CPU kernels and memory"), `device`, `kv_type`,
-  `queue_capacity`, `input_contract`, `special_tokens`, `debug`.
+  `queue_capacity`, `input_contract`, `special_tokens`, `debug`,
+  `source` (`gguf` for `-m FILE`, `checkpoint-dir` for `-m DIR`), `cache_path` (the cached GGUF
+  that was loaded; `null` for `gguf`) and `checkpoint` (`null` for `gguf`, else
+  `{dir, cache_dir, key, outtype, cache_hit, convert_ms, converter}`). `model_path` is `-m` as given.
 - `GET /metrics` (only with `--metrics`): Prometheus counters `llamacpp:decision_requests_total`,
   `_errors_total`, `_rejected_total`, `_items_total`, `_tokens_total`,
   `_compute_seconds_total` and the gauge `llamacpp:decision_queue_waiting`.
@@ -647,6 +654,8 @@ python3 -m pytest -q tests/decision/test_reference.py        # offline tests of 
 
 ```bash
 ctest --test-dir build -R decision        # py-json (golden + splitmix64 hashes), request, calib + spec cases, router, reference goldens
+ctest --test-dir build -R laya-convert -LE python   # C++ HF -> GGUF converter vs the Python converter's SHA-256 (tiny fixtures)
+# (-R decision also runs test-decision-checkpoint-cli: llama-laya-cli -m <tiny checkpoint dir>, cache, identity)
 python3 -m pytest -q tests/decision/test_reference.py   # reference.py, card schema, calibration and baseline scripts
 cd tools/server/tests
 LLAMA_SERVER_BIN_PATH=../../../build/bin/llama-server python -m pytest -q unit/test_decision.py
@@ -671,9 +680,13 @@ generator, so a changed generator never reuses a stale file. `tests/decision/gen
 writes the py-json golden files: `repr` of every power of two, 150 objects, and the SHA-256 of
 30000 doubles and 1000 nested objects drawn from a splitmix64 stream that
 `test-decision-json` draws the same way. CI runs both suites in the `decision-tests` job of
-`.github/workflows/dev-build.yml` (Linux and Windows; warnings are errors on Linux). They cover
+`.github/workflows/dev-build.yml` (Linux and Windows; warnings are errors on Linux), with
+`ctest -R "decision|laya-convert" -LE python` (the converter tests included; the Python
+cross-check needs torch and runs locally). They cover
 response shapes, error codes 400/401/404/413/422/429/501/503, determinism, candidate
-independence, start-up checks and the info routes. With `--decision-debug`, two
+independence, start-up checks, the info routes and `-m <checkpoint dir>` (converted, then a cache
+hit, the Python converter's bytes, the same answers as the Python GGUF, broken checkpoints, the
+default cache locations; the tiny checkpoints of `tests/laya/convert`). With `--decision-debug`, two
 environment variables make timing tests deterministic:
 `LLAMA_DECISION_DEBUG_LOAD_DELAY_MS` (delay before the engine loads, for the 503 test) and
 `LLAMA_DECISION_DEBUG_JOB_DELAY_MS` (delay before each job, for the 429 and shutdown tests).
@@ -923,6 +936,8 @@ measured here.
 
 ```bash
 python convert_hf_to_gguf.py <snapshot of convaiinnovations/laya> --outfile laya-en-f16.gguf --outtype f16
+# or, same bytes, without Python (see "Converting without Python")
+./build/bin/llama-laya-convert <snapshot of convaiinnovations/laya> -o laya-en-f16.gguf --outtype f16
 ./build/bin/llama-server --decision -m laya-en-f16.gguf --device none --port 8090
 ```
 
@@ -992,6 +1007,165 @@ the logits do not depend on them. A rerun with the final binary under background
   and N=4 (939 ms) at `-t 12`; N=2 (about 450 ms) does not.
 - Memory: F16 needs about 950 MiB of footprint; the 400 MB target would need a quantized recipe, and its
   parity is not measured for these checkpoints.
+
+## Converting without Python (`llama-laya-convert`)
+
+```bash
+./build/bin/llama-laya-convert <checkpoint dir> -o laya-f16.gguf [--outtype f32|f16|q8_0] [--model-name NAME] [--verify-against ref.gguf]
+./build/bin/llama-laya-convert --compare a.gguf b.gguf
+```
+
+A C++ port of `convert_hf_to_gguf.py` for laya checkpoints (`conversion/laya.py` and the classes
+it inherits, gguf-py `SpecialVocab` and `Metadata`); it needs no Python and links ggml (plus `laya` for
+its Windows path helper). The Python converter is
+the reference: for all three checkpoints and `f32` / `f16` / `q8_0`, with and without
+`--model-name`, the output is byte-identical to `convert_hf_to_gguf.py <dir> --outfile X --outtype T
+[--model-name NAME]` (18 of 18 files, same SHA-256 and size). An f16 file takes 0.2-1.8 s on an
+M4 Max (idle to shared with other jobs), 6-19x less than the Python converter in the same runs.
+`--verify-against` prints the first difference (KV, tensor info, tensor data, then raw bytes).
+Exit codes: 0 done / identical, 1 error (a file cannot be read, the conversion failed), 2 the files
+differ.
+
+- `q8_0` is `convert_hf_to_gguf.py --outtype q8_0`: 1-D and `*_norm.weight` F32, rows that are not
+  whole Q8_0 blocks F16, every other 2-D weight Q8_0, including `token_embd`, `type_emb`, `scorer.*`
+  and `act_head.*`. That is not the Q8_0 recipe the accuracy figures of this document were measured
+  on (`tests/laya/quantize.sh` keeps those five at F16), and its accuracy is not measured, so
+  `-m DIR` does not offer it. For a served Q8_0 model, quantize the f16 GGUF with
+  `tests/laya/quantize.sh`.
+- `general.*` follows gguf-py: `--model-name`, the README front matter (a YAML subset), and the
+  directory name. Like Python, an HF snapshot directory whose hash starts with a digit gives
+  `general.finetune=<hash>`, and without `--model-name` the name is the title-cased hash.
+- Inputs the port does not cover are refused with a message instead of giving a different file:
+  a root `config.json`, `pytorch_model*.bin` (also a `model.safetensors.index.json` without any
+  `model*.safetensors` file: Python then takes the `.bin` path), non-float dtypes, tensor names
+  outside the laya table, rope scaling / experts / `quantization_config` / `id2label` in the
+  encoder config, `modules.json`, a `tokenizer_class` other than `PreTrainedTokenizerFast` /
+  `TokenizersBackend` (or, without one, a `tokenizer/config.json` with `model_type` or
+  `tokenizer_class`: AutoTokenizer would pick a model-specific class), `auto_map`, added tokens
+  whose AutoTokenizer round trip is not a known identity or U+2581 -> space, special tokens
+  AutoTokenizer would add, list-form chat templates, YAML beyond the subset for a used key,
+  non-finite weights with `q8_0`, absurd sizes Python cannot finish either (`num_hidden_layers` >
+  65536, `vocab_size` > 2^24, `vocab_size` above the `token_embd` rows), JSON nested deeper than 127
+  levels, and a `generation_config.json` with NaN / Infinity / lone surrogate escapes (Python's
+  `json` reads them; a plain syntax error is ignored, as in Python). The full list is in
+  `tools/laya/laya-convert.h`.
+- Where Python loads a file through a strict library, the fields the port reads are held to the
+  same rules: every `added_tokens` flag must be a JSON bool and a `TemplateProcessing` must have
+  the `tokenizers` schema (as tokenizers 0.23 requires), and the README front matter must not
+  contain characters PyYAML's reader rejects. Fields the port does not read are not validated,
+  so Python can still reject a file this tool converts (example: a bad `padding_side` in
+  `tokenizer_config.json`, which transformers checks).
+- Behaviour pinned to the reference environment (transformers 5.17, tokenizers 0.23): the named
+  special tokens of `tokenizer_config.json` and the values of a dict `extra_special_tokens` become
+  CONTROL; `clean_up_tokenization_spaces` is ignored for BPE. F32 -> F16 rounds like numpy on
+  AArch64 / x86-64 F16C (checked on all 2^32 inputs), NaN quieted with the top payload bits.
+- Checkpoint files are untrusted: safetensors header length, offsets, dtype / shape / byte
+  counts are checked (overflow-safe) before any read; JSON nesting is limited before parsing
+  (copying a deeply nested value would overflow the stack); text processing is linear (a 4M-line
+  CRLF README or 300k YAML keys convert in 0.1-0.2 s); paths are UTF-8 (UTF-16 APIs on Windows).
+- Output: written to a new, uniquely named `<out>.<hex>.tmp` (created exclusively, so never through
+  an existing file or symlink), read back with the gguf API, synced to disk (`F_FULLFSYNC` on
+  macOS: 0.08-0.15 s for 660 MB) and renamed. Nothing is left on failure.
+
+Tests: `ctest -R laya-convert` converts the tiny fixtures of `tests/laya/convert` (both tokenizer
+families) against the SHA-256 of the Python output and runs the broken-input cases (CI runs it on
+Linux and Windows); `test-laya-convert-py` (label `python`) converts fresh fixtures with both
+converters (`LAYA_REF_PYTHON` names the interpreter; skipped without torch or without transformers
+5.17 / tokenizers 0.23). To check the real checkpoints yourself:
+
+```bash
+python convert_hf_to_gguf.py <snapshot> --outfile py.gguf --outtype f16
+./build/bin/llama-laya-convert <snapshot> -o cpp.gguf --outtype f16 --verify-against py.gguf   # IDENTICAL to py.gguf
+```
+
+## Loading a Hugging Face checkpoint directly
+
+```bash
+./build/bin/llama-server --decision -m ~/models/laya-multilingual --port 8090     # converts once, then loads
+./build/bin/llama-server --decision -m ~/models/laya-multilingual --port 8090     # cache hit
+./build/bin/llama-laya-cli -m ~/models/laya-multilingual -f tests/laya/demo_input.json
+# options (server and CLI): --decision-convert-cache DIR   --decision-convert-type f16|f32
+```
+
+`-m` may name a laya checkpoint directory (the Hugging Face layout: `rl_agent_config.json`,
+`encoder/config.json`, `tokenizer/`, `model*.safetensors`; an HF snapshot directory works as it
+is). It is converted once with the C++ converter (`llama-laya-convert`, previous section) into a
+GGUF cache, and the cached GGUF is then loaded exactly like `-m FILE`: one execution path, the
+engine never reads the checkpoint. GGUF inputs work as before.
+
+- **Cache**: `<cache>/<key>/<name>.gguf`. `<cache>` is `--decision-convert-cache`, else
+  `$LLAMA_CACHE/laya/gguf-cache`, else the user cache: macOS
+  `~/Library/Caches/llama.cpp/laya/gguf-cache`, Linux `$XDG_CACHE_HOME` or `~/.cache` +
+  `/llama.cpp/laya/gguf-cache`, Windows `%LOCALAPPDATA%\llama.cpp\laya\gguf-cache` (the layout of
+  common's `fs_get_cache_directory`, which `-mu` URL and docker downloads use; `-hf` uses the
+  Hugging Face hub cache instead). Nothing is written into the checkpoint directory: a cache inside
+  it is refused before anything is created. `<name>` is the directory name, so the default model
+  name and spec `model_id` are the directory name (for an HF snapshot: the commit hash; set `-a`
+  for another alias).
+- **Key**: the first 32 hex digits of a SHA-256 over the cache format, the converter version
+  (`LAYA_CONVERT_VERSION`, bumped with every change of the written bytes and with every input a
+  newer converter refuses, so older cache entries are not reused), the outtype, the directory name
+  (the converter derives `general.*` from it) and the files the converter can read: those directly
+  in the checkpoint root, in `encoder/` and in `tokenizer/` (sorted relative paths; dot-entries
+  such as `.git` or `.cache` skipped; at most 20000 entries): files up to 8 MiB by size + SHA-256 of
+  the content, larger files by size + mtime in ns + symlink target. Any other subdirectory counts by
+  its name only: the converter never reads below it (the `laya` repository keeps two more
+  checkpoints and eval data there). Files over 8 MiB are keyed by metadata because hashing them at
+  each start would cost more than converting: the in-tree SHA-256 takes 1.43 s for the 644 MB
+  `laya-multilingual` weights and 1.87 s for the 843 MB English ones. That covers the weights and
+  also the 34 MB `tokenizer.json` of `laya-multilingual`. Size + ns mtime change with every rewrite,
+  and in the HF cache the symlink target is the blob name, which is the content hash. Small files,
+  where an edit can keep the size and fall within the mtime granularity (a digit in a config), are
+  keyed by content. What the key does not see: a same-size rewrite of a file over 8 MiB that also
+  restores its mtime.
+- **Writes are atomic and durable**: the conversion goes to a unique temporary name in the key
+  directory, is synced to disk and renamed into place (the directory is synced too), so a start
+  never sees a partial file and a power loss cannot leave a complete-looking file with zeroed data.
+  Concurrent cold starts on the same checkpoint each convert and the last rename wins with the same
+  bytes (8 simultaneous starts on an empty cache: 8 conversions, 1 file, identical outputs).
+  Temporary files older than 10 minutes in the key directory (a killed conversion) are removed
+  before the next conversion there. A checkpoint that changes while it is converted is refused (key
+  computed again afterwards). A cache entry that is not a readable laya GGUF with all its tensor
+  data is converted again; entries are never deleted, remove old key directories by hand. On POSIX,
+  a key directory or cached file owned by another user, writable by others, or a symlink is refused
+  (a shared `LLAMA_CACHE` could otherwise hand over another model).
+- **Logs**: `decision: converted: <path> in 1.04 s (...)` or `decision: cache hit: <path> (...)`
+  (`laya:` in the CLI). `/props.decision` has `source` (`gguf` or `checkpoint-dir`), `cache_path`
+  and `checkpoint {dir, cache_dir, key, outtype, cache_hit, convert_ms, converter}`: `convert_ms`
+  is 0 on a cache hit, `converter` is the integer `LAYA_CONVERT_VERSION`.
+- **Errors**: a directory without `rl_agent_config.json` ("is a directory but not a laya
+  checkpoint"), a checkpoint the converter refuses ("cannot convert checkpoint directory ...:
+  <converter message>"), `--decision-convert-type q8_0`, and an unusable cache directory stop the
+  load with exit code 1 and leave nothing in the cache.
+- **Cost** (M4 Max shared with other jobs, `laya-multilingual` f16, `llama-laya-cli --tokenize` of
+  one string, 3 rounds): first start 1.16-1.34 s including the 0.86-1.04 s conversion, cache hit
+  0.32-0.36 s, the same GGUF with `-m FILE` 0.29-0.30 s (the key and the cache-entry check cost
+  about 40-60 ms). Peak RSS: 513-517 MiB for a converting start, 372-373 MiB for a cache hit or
+  `-m FILE`.
+
+**Identity with the Python converter.** The cached file is the output of `llama-laya-convert`:
+for the three published checkpoints its bytes equal `convert_hf_to_gguf.py` without
+`--model-name` (what `-m DIR` converts) in f32, f16 and q8_0, and with `--model-name` too (18 of 18
+files). On 67 inputs per cell (the 7 golden cases + 60 sampled from the parity sets), `llama-laya-cli
+-m DIR` (the C++ cache, this build's loader) and the previous CLI and loader on the Python GGUF
+print the same bytes apart from the `"model"` line: 6 of 6 cells (3 checkpoints x f16 / f32, 402 of
+402). GGUF inputs are unchanged: on the 7 golden cases the CLI before and after this change prints
+the same bytes (28 of 28: `laya-multilingual` f16 / q8_0 at `-t 1` / `-t 8`). 989 malformed
+checkpoints (fuzzing under ASan + UBSan) gave no crash: 830 clean refusals and 159 accepted; the
+Python converter wrote the same bytes for 158 of those and rejected the other (a bad
+`padding_side`, a field the port does not read; see the previous section). `test_decision.py` and `test-decision-checkpoint-cli` check the same on the tiny
+fixtures: the first start converts, the second hits the cache, the cached file has the SHA-256 of
+the Python output (`tests/laya/convert/golden.sha256`; with `LAYA_REF_PYTHON` set the Python
+converter also runs), and the answers with debug logits are identical to loading the Python GGUF.
+
+Known gaps: the conversion runs in the server process, and the allocator keeps what it freed:
+a converting start peaks at 513-517 MiB against 372-373 MiB for a cache hit or `-m FILE`
+(`laya-multilingual` f16, `llama-laya-cli`; mostly the 34 MB `tokenizer.json` parsed into a JSON
+tree), and a server keeps part of that until the next start. Convert ahead (`llama-laya-cli -m DIR --tokenize` of one string, or one start) where that
+matters. There is no cache eviction. On Windows the converter and the cache open their paths as
+UTF-8 through UTF-16 with the helpers of the Windows fixes (`laya_utf8_to_wide`, `ggml_fopen`;
+`llama-laya-convert` takes its arguments through `decision_utf8_args`, like `llama-laya-cli`; see
+"Status and known gaps"), but `-m DIR` and `llama-laya-convert` have not been built or run there yet.
 
 ## Status and known gaps
 
