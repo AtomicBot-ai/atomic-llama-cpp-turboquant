@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cfloat>
 #include <climits>
 #include <cmath>
@@ -18,6 +19,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -283,18 +285,22 @@ struct laya_model {
     gguf_context_ptr ctx_gguf;   // (freed after the load)
 
     // data contexts holding the real tensors, one per buffer: loaded (default CPU buffer),
-    // repacked (one per extra buffer type), mapped (token_embd in the file mapping)
+    // repacked (one per extra buffer type), mapped (token_embd in the file mapping), device (the
+    // buffer type of the compute device)
     laya_mmap                            mapping;   // token_embd, when mapped (outlives bufs)
     std::vector<ggml_context_ptr>        ctxs;
     std::vector<ggml_backend_buffer_ptr> bufs;
 
     ggml_backend_t         backend = nullptr;
+    ggml_backend_dev_t     dev_gpu = nullptr;   // compute device of laya_model_params.device; nullptr = CPU
 
     // what the load did, for the log and laya_context_kernels
+    size_t  n_bytes_device   = 0;
     size_t  n_bytes_loaded   = 0;
     size_t  n_bytes_mapped   = 0;
     size_t  n_bytes_repacked = 0;
     int32_t n_repacked       = 0;
+    int32_t n_host_weights   = 0;   // weights of a device model kept in host memory (laya_placement.host_weights)
 
     // self-contained tokenizer data (HF tokenizers semantics)
     bool bytelevel = false;                          // decision.laya.tokenizer: bytelevel-bpe, else metaspace-bpe
@@ -357,7 +363,10 @@ struct laya_context {
     ggml_backend_t         backend      = nullptr;
     ggml_backend_t         backend_cpu  = nullptr;
     ggml_backend_t         backend_blas = nullptr;
+    ggml_backend_t         backend_gpu  = nullptr;   // the model's compute device, ahead of the CPU in the scheduler
     ggml_backend_sched_ptr sched;
+
+    laya_placement placement;   // of the load-time probe graph (laya_placement_probe)
 
     // persistent threadpool: without OpenMP ggml otherwise creates and joins the worker
     // threads on every graph compute
@@ -367,7 +376,18 @@ struct laya_context {
     int  n_threads      = 1;
     int  n_threads_blas = 0;
     bool qos            = true;
+
+    laya_precision precision = LAYA_PRECISION_DEFAULT;
+
+    // layer trace (laya_context_params.trace_dir): trace.jsonl + one .f32 file per dumped node
+    std::string trace_dir;
+    FILE *      trace_index = nullptr;
+    int64_t     trace_call  = -1;  // laya_encode calls of this context, from 0
+    int32_t     trace_seq   = 0;   // dumps within the current call
 };
+
+// fills ctx->placement from the warm-up graph (defined after laya_graph_build)
+static void laya_placement_probe(laya_context * ctx);
 
 static void laya_log(const char * fmt, ...) {
     va_list args;
@@ -375,6 +395,59 @@ static void laya_log(const char * fmt, ...) {
     fprintf(stderr, "laya: ");
     vfprintf(stderr, fmt, args);
     va_end(args);
+}
+
+// ---- layer trace ----------------------------------------------------------
+// laya_context_params.trace_dir (an existing directory; the tools take it from LAYA_TRACE_DIR) makes
+// every laya_encode of a context dump the nodes at the ends
+// of op chains to raw float32 files (tools/laya/trace_diff.py compares two such directories). Only
+// these names are asked for: the scheduler splits the graph at every node the eval callback asks
+// for, so a name inside a chain would break the fused kernels of Metal / CUDA (norm + mul + add,
+// multi-add) and trace a different computation. Off (no callback) the scheduler takes its usual path.
+static bool laya_trace_wanted(const ggml_tensor * t) {
+    const char * n = t->name;
+    return strncmp(n, "l_out-", 6) == 0 || strncmp(n, "head_out-", 9) == 0 || strcmp(n, "enc_out") == 0 ||
+           strcmp(n, "type_emb_out") == 0 || strcmp(n, "markers") == 0 || strcmp(n, "logits") == 0 ||
+           strcmp(n, "logits_masked") == 0 || strcmp(n, "act_logits") == 0;
+}
+
+static bool laya_trace_eval(ggml_tensor * t, bool ask, void * user_data) {
+    laya_context * ctx = (laya_context *) user_data;
+    if (ask) {
+        return laya_trace_wanted(t);
+    }
+    if (!laya_trace_wanted(t) || !ctx->trace_index) {
+        return true;
+    }
+    if (t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t)) {
+        laya_log("trace: skipping %s (not a contiguous F32 tensor)\n", t->name);
+        return true;
+    }
+    std::vector<float> data((size_t) ggml_nelements(t));
+    ggml_backend_tensor_get(t, data.data(), 0, ggml_nbytes(t));
+    char file[160];
+    snprintf(file, sizeof(file), "%06lld-%03d-%s.f32", (long long) ctx->trace_call, ctx->trace_seq, t->name);
+    const std::string path = ctx->trace_dir + "/" + file;
+    FILE * f = ggml_fopen(path.c_str(), "wb"); // UTF-8 name, also on Windows
+    if (!f || fwrite(data.data(), sizeof(float), data.size(), f) != data.size()) {
+        laya_log("trace: cannot write %s, tracing stops\n", path.c_str());
+        if (f) {
+            fclose(f);
+        }
+        fclose(ctx->trace_index);
+        ctx->trace_index = nullptr;
+        return true;
+    }
+    fclose(f);
+    const char * buft = t->buffer ? ggml_backend_buft_name(ggml_backend_buffer_get_type(t->buffer)) : "";
+    fprintf(ctx->trace_index,
+            "{\"call\": %lld, \"node\": %d, \"name\": \"%s\", \"op\": \"%s\", \"buffer\": \"%s\", \"type\": \"f32\", "
+            "\"ne\": [%lld, %lld, %lld, %lld], \"file\": \"%s\"}\n",
+            (long long) ctx->trace_call, ctx->trace_seq, t->name, ggml_op_name(t->op), buft,
+            (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3], file);
+    fflush(ctx->trace_index);
+    ctx->trace_seq++;
+    return true;
 }
 
 // ---- GGUF helpers ------------------------------------------------------
@@ -501,6 +574,37 @@ laya_model * laya_model_load_from_file(const char * fname) {
     return laya_model_load_from_file_ext(fname, laya_model_params());
 }
 
+// A device model on a backend or with a weight type that no parity run covers (DECISION.md "Backend parity
+// tiers": Metal, CUDA and Vulkan; F32, F16 and Q8_0 weights) still loads, with a warning: quantized types
+// other than Q8_0 keep the device's own kernels (CUDA MMQ quantizes the activations, the failure mode Q8_0
+// had before the laya graph dequantized it).
+static void laya_warn_unverified(const laya_model * model) {
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(model->dev_gpu);
+    const std::string backend = reg ? ggml_backend_reg_name(reg) : "?";
+    if (backend != "MTL" && backend != "CUDA" && backend != "Vulkan") {
+        laya_log("%s: warning: the %s backend has no laya parity run (gated: Metal, CUDA, Vulkan); run the f16-class gate "
+                 "(DECISION.md, Backend parity tiers) before trusting its answers\n", __func__, backend.c_str());
+    }
+    std::vector<const ggml_tensor *> mm;
+    for (const auto & l : model->layers) {
+        mm.insert(mm.end(), { l.wqkv, l.wo, l.ffn_up, l.ffn_down });
+    }
+    for (const auto & l : model->head_layers) {
+        mm.insert(mm.end(), { l.wqkv, l.wo, l.ffn_up, l.ffn_down });
+    }
+    mm.insert(mm.end(), { model->scorer_1, model->scorer_3, model->act_head_0, model->act_head_2 });
+    std::set<std::string> ungated;
+    for (const ggml_tensor * t : mm) {
+        if (t && t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_F16 && t->type != GGML_TYPE_Q8_0) {
+            ungated.insert(ggml_type_name(t->type));
+        }
+    }
+    for (const std::string & t : ungated) {
+        laya_log("%s: warning: %s weights have no parity gate on a device (gated: f32, f16, q8_0); run the f16-class gate "
+                 "for this GGUF before trusting its answers\n", __func__, t.c_str());
+    }
+}
+
 laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_params & mparams) {
     std::unique_ptr<laya_model> model(new laya_model());
 
@@ -523,6 +627,23 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
         const int64_t id = gguf_find_key(ctx_gguf, "general.architecture");
         if (id < 0 || std::string(gguf_get_val_str(ctx_gguf, id)) != "laya") {
             throw std::runtime_error("not a laya GGUF (general.architecture != \"laya\")");
+        }
+    }
+
+    // keys without a safe default: a missing sliding window would make every layer dense, a missing
+    // SWA base would take the global one (the English checkpoints use 160000 / 10000). The converter
+    // writes all four (conversion/laya.py), so their absence means a foreign or broken GGUF.
+    for (const char * key : { "laya.attention.sliding_window", "laya.attention.sliding_window_pattern",
+                              "laya.rope.freq_base", "laya.rope.freq_base_swa" }) {
+        if (gguf_find_key(ctx_gguf, key) < 0) {
+            throw std::runtime_error(std::string("missing GGUF key: ") + key + " (reconvert with conversion/laya.py)");
+        }
+    }
+    // the graph implements GeGLU with the erf GELU only
+    {
+        const std::string act = gguf_get_str(ctx_gguf, "laya.hidden_activation", "gelu");
+        if (act != "gelu") {
+            throw std::runtime_error("laya.hidden_activation '" + act + "' is not supported (gelu only)");
         }
     }
 
@@ -553,6 +674,10 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
     if (hp.n_embd % hp.n_head != 0) {
         throw std::runtime_error("n_embd not divisible by n_head");
     }
+    if (hp.n_act < 1) {
+        // act_probability reads class 0 of the act head
+        throw std::runtime_error("invalid laya hparams (laya.act_classes must be >= 1)");
+    }
     hp.n_embd_head = hp.n_embd / hp.n_head;
 
     // temperature array, padded to n_qtype with the last value (or 1.0)
@@ -579,6 +704,7 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
     }
 
     // ---- tokenizer data ----
+    int64_t n_vocab_tok = 0;  // tokenizer.ggml.tokens entries: every id the tokenizer can produce is below
     {
         const std::string kind = gguf_get_str(ctx_gguf, "decision.laya.tokenizer", "metaspace-bpe");
         if (kind != "metaspace-bpe" && kind != "bytelevel-bpe") {
@@ -618,6 +744,7 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
             throw std::runtime_error("missing tokenizer.ggml.tokens in GGUF");
         }
         const int64_t n_tokens = gguf_get_arr_n(ctx_gguf, tid);
+        n_vocab_tok = n_tokens;
 
         // the fallbacks above are the mmBERT ids; a byte-level vocab (OLMo: [CLS] 50281) must name its own
         if (model->bytelevel) {
@@ -790,6 +917,18 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
     ggml_backend_dev_t dev = ggml_backend_get_device(model->backend);
     ggml_backend_buffer_type_t buft_default = ggml_backend_get_default_buffer_type(model->backend);
 
+    // compute device: the weights go into its buffer type (token_embd stays on the host, see laya.h)
+    if (mparams.device && ggml_backend_dev_type(mparams.device) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+        if (mparams.use_extra_bufts) {
+            throw std::runtime_error("CPU repack buffers cannot be combined with the device " + laya_device_name(mparams.device));
+        }
+        model->dev_gpu = mparams.device;
+    }
+    ggml_backend_buffer_type_t buft_device = model->dev_gpu ? ggml_backend_dev_buffer_type(model->dev_gpu) : nullptr;
+    if (model->dev_gpu && !buft_device) {
+        throw std::runtime_error("the device " + laya_device_name(model->dev_gpu) + " has no buffer type");
+    }
+
     std::map<std::string, size_t> tensor_offset;
     for (int64_t i = 0; i < gguf_get_n_tensors(ctx_gguf); ++i) {
         tensor_offset[gguf_get_tensor_name(ctx_gguf, i)] =
@@ -813,6 +952,7 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
     };
     ggml_context * ctx_loaded = new_ctx();
     ggml_context * ctx_mapped = nullptr;
+    ggml_context * ctx_device = model->dev_gpu ? new_ctx() : nullptr;
     std::vector<std::pair<ggml_backend_buffer_type_t, ggml_context *>> ctx_extra; // repack destinations
 
     // token_embd in place: map just its byte range
@@ -841,25 +981,41 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
         }
     }
 
-    // would dev run mul_mat(w, activations) with w in buft? (the check llama.cpp does)
-    auto matmul_supported = [&](ggml_tensor * w, ggml_backend_buffer_type_t buft) {
+    enum laya_weight_use {
+        LAYA_USE_OTHER,   // added to / multiplied into F32 activations (norm weights, biases)
+        LAYA_USE_MATMUL,  // src0 of a matmul with F32 activations
+        LAYA_USE_MATMUL_NO_REPACK,  // the same, never in a CPU repack buffer (scorer, act head)
+        LAYA_USE_ROWS,    // token_embd: get_rows, host memory
+        LAYA_USE_GATHER,  // type_emb: get_rows on the compute device
+    };
+
+    // would device d run the op that uses w, with w in buft? (the check llama.cpp does for the matmuls)
+    auto op_supported = [&](ggml_backend_dev_t d, ggml_tensor * w, ggml_backend_buffer_type_t buft, laya_weight_use use) {
         struct ggml_init_params p = {
             /*.mem_size =*/ 4 * ggml_tensor_overhead(),
             /*.mem_buffer =*/ nullptr,
             /*.no_alloc =*/ true,
         };
         ggml_context_ptr c(ggml_init(p));
-        ggml_tensor * b  = ggml_new_tensor_4d(c.get(), GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]);
-        ggml_tensor * op = ggml_mul_mat(c.get(), w, b);
+        ggml_tensor * op = nullptr;
+        if (use == LAYA_USE_MATMUL || use == LAYA_USE_MATMUL_NO_REPACK) {
+            op = ggml_mul_mat(c.get(), w, ggml_new_tensor_4d(c.get(), GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]));
+        } else if (use == LAYA_USE_GATHER) {
+            op = ggml_get_rows(c.get(), w, ggml_new_tensor_1d(c.get(), GGML_TYPE_I32, 512));
+        } else {
+            op = ggml_add(c.get(), ggml_new_tensor_4d(c.get(), GGML_TYPE_F32, w->ne[0], 512 * w->ne[1], w->ne[2], w->ne[3]), w);
+        }
         GGML_ASSERT(w->buffer == nullptr);
         w->buffer = ggml_backend_buft_alloc_buffer(buft, 0);
-        const bool ok = ggml_backend_dev_supports_op(dev, op);
+        const bool ok = ggml_backend_dev_supports_op(d, op);
         ggml_backend_buffer_free(w->buffer);
         w->buffer = nullptr;
         return ok;
     };
-
-    enum laya_weight_use { LAYA_USE_OTHER, LAYA_USE_MATMUL, LAYA_USE_ROWS };
+    auto matmul_supported = [&](ggml_tensor * w, ggml_backend_buffer_type_t buft) {
+        return op_supported(dev, w, buft, LAYA_USE_MATMUL);
+    };
+    int32_t n_host_fallback = 0;  // weights a device model keeps in host memory (the device cannot run their op)
 
     std::vector<ggml_tensor *> tensors_to_load;
     std::vector<ggml_tensor *> tensors_data;
@@ -875,8 +1031,19 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
             return nullptr;
         }
         ggml_context * dst = ctx_loaded;
-        if (use == LAYA_USE_ROWS && ctx_mapped) {
-            dst = ctx_mapped;
+        if (use == LAYA_USE_ROWS) {
+            if (ctx_mapped) {
+                dst = ctx_mapped;
+            }
+        } else if (ctx_device) {
+            const bool forced = std::find(mparams.host_weights.begin(), mparams.host_weights.end(), name) != mparams.host_weights.end();
+            if (!forced && op_supported(model->dev_gpu, cur, buft_device, use)) {
+                dst = ctx_device;
+            } else {
+                n_host_fallback++;
+                laya_log("%s: %s stays in host memory: %s%s cannot run its op on %s\n", __func__, name.c_str(),
+                         forced ? "(test hook) " : "", laya_device_name(model->dev_gpu).c_str(), ggml_type_name(cur->type));
+            }
         } else if (use == LAYA_USE_MATMUL) {
             for (ggml_backend_buffer_type_t buft : extra_bufts) {
                 if (!matmul_supported(cur, buft)) {
@@ -918,7 +1085,7 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
     }
 
     // decision head
-    model->type_emb = get_tensor("type_emb.weight");
+    model->type_emb = get_tensor("type_emb.weight", true, LAYA_USE_GATHER);
 
     model->head_layers.resize(hp.n_head_layers);
     for (int32_t il = 0; il < hp.n_head_layers; ++il) {
@@ -945,16 +1112,76 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
     // (the scorer and act head matrices are F16 in every tier: no repacked kernel)
     model->scorer_0   = get_tensor("scorer.0.weight");
     model->scorer_0_b = get_tensor("scorer.0.bias");
-    model->scorer_1   = get_tensor("scorer.1.weight");
+    model->scorer_1   = get_tensor("scorer.1.weight", true, LAYA_USE_MATMUL_NO_REPACK);
     model->scorer_1_b = get_tensor("scorer.1.bias");
-    model->scorer_3   = get_tensor("scorer.3.weight");
+    model->scorer_3   = get_tensor("scorer.3.weight", true, LAYA_USE_MATMUL_NO_REPACK);
     model->scorer_3_b = get_tensor("scorer.3.bias");
 
     // act head: Linear(d+4, 256) -> GELU -> Linear(256, n_act)
-    model->act_head_0   = get_tensor("act_head.0.weight");
+    model->act_head_0   = get_tensor("act_head.0.weight", true, LAYA_USE_MATMUL_NO_REPACK);
     model->act_head_0_b = get_tensor("act_head.0.bias");
-    model->act_head_2   = get_tensor("act_head.2.weight");
+    model->act_head_2   = get_tensor("act_head.2.weight", true, LAYA_USE_MATMUL_NO_REPACK);
     model->act_head_2_b = get_tensor("act_head.2.bias");
+
+    // ---- shapes against the hparams ----
+    // a GGUF whose tensors do not fit would compute garbage, or read out of bounds on a device
+    // without bounds checks (get_rows of token ids past the token_embd rows)
+    {
+        auto check = [](const ggml_tensor * t, int64_t ne0, int64_t ne1) {
+            if (t && (t->ne[0] != ne0 || t->ne[1] != ne1 || t->ne[2] != 1 || t->ne[3] != 1)) {
+                throw std::runtime_error(std::string("tensor ") + t->name + " has shape [" + std::to_string(t->ne[0]) + ", " +
+                                         std::to_string(t->ne[1]) + ", " + std::to_string(t->ne[2]) + ", " + std::to_string(t->ne[3]) +
+                                         "], expected [" + std::to_string(ne0) + ", " + std::to_string(ne1) + "] from the hparams");
+            }
+        };
+        const int64_t d = hp.n_embd;
+        check(model->tok_embd, d, hp.n_vocab > 0 ? hp.n_vocab : model->tok_embd->ne[1]);
+        check(model->tok_norm, d, 1);
+        check(model->output_norm, d, 1);
+        for (const auto & layer : model->layers) {
+            check(layer.attn_norm, d, 1);
+            check(layer.wqkv, d, 3 * d);
+            check(layer.wo, d, d);
+            check(layer.ffn_up, d, 2 * (int64_t) hp.n_ff);
+            check(layer.ffn_down, hp.n_ff, d);
+            check(layer.ffn_norm, d, 1);
+        }
+        check(model->type_emb, d, model->type_emb->ne[1]);
+        for (const auto & layer : model->head_layers) {
+            const int64_t n_ff_head = layer.ffn_up->ne[1];
+            check(layer.attn_norm, d, 1);
+            check(layer.attn_norm_b, d, 1);
+            check(layer.wqkv, d, 3 * d);
+            check(layer.wqkv_b, 3 * d, 1);
+            check(layer.wo, d, d);
+            check(layer.wo_b, d, 1);
+            check(layer.ffn_norm, d, 1);
+            check(layer.ffn_norm_b, d, 1);
+            check(layer.ffn_up_b, n_ff_head, 1);
+            check(layer.ffn_down, n_ff_head, d);
+            check(layer.ffn_down_b, d, 1);
+        }
+        check(model->scorer_0, d, 1);
+        check(model->scorer_0_b, d, 1);
+        check(model->scorer_1, d, d);
+        check(model->scorer_1_b, d, 1);
+        check(model->scorer_3, d, 1);
+        check(model->scorer_3_b, 1, 1);
+        const int64_t n_act_hidden = model->act_head_0->ne[1];
+        check(model->act_head_0, d + 4, n_act_hidden);
+        check(model->act_head_0_b, n_act_hidden, 1);
+        check(model->act_head_2, n_act_hidden, hp.n_act);
+        check(model->act_head_2_b, hp.n_act, 1);
+
+        if (n_vocab_tok > model->tok_embd->ne[1]) {
+            throw std::runtime_error("the tokenizer has " + std::to_string(n_vocab_tok) + " tokens, token_embd.weight only " +
+                                     std::to_string(model->tok_embd->ne[1]) + " rows");
+        }
+        if (hp.n_qtype < 1 || hp.n_qtype > model->type_emb->ne[1]) {
+            throw std::runtime_error("laya.n_qtype " + std::to_string(hp.n_qtype) + " does not fit type_emb.weight (" +
+                                     std::to_string(model->type_emb->ne[1]) + " rows)");
+        }
+    }
 
     // ---- buffers ----
     auto alloc_ctx = [&](ggml_context * c, ggml_backend_buffer_type_t buft) {
@@ -981,6 +1208,22 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
         model->n_bytes_mapped = ggml_nbytes(model->tok_embd);
     }
     alloc_ctx(ctx_loaded, buft_default);
+    if (ctx_device && ggml_get_first_tensor(ctx_device)) {
+        ggml_backend_buffer_t b = ggml_backend_alloc_ctx_tensors_from_buft(ctx_device, buft_device);
+        if (!b) {
+            // no silent host fallback: the scheduler would copy every large-batch matmul's weight to the device
+            // on each pass (op_offload) and run the rest on the CPU. The caller decides (--decision-device auto
+            // falls back to the CPU model, gpu fails).
+            size_t need = 0;
+            for (ggml_tensor * t = ggml_get_first_tensor(ctx_device); t; t = ggml_get_next_tensor(ctx_device, t)) {
+                need += ggml_nbytes(t);
+            }
+            throw std::runtime_error("cannot allocate " + std::to_string(need / 1048576) + " MiB of weights in the " +
+                                     ggml_backend_buft_name(buft_device) + " buffer");
+        }
+        ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        model->bufs.emplace_back(b);
+    }
     for (const auto & e : ctx_extra) {
         alloc_ctx(e.second, e.first);
     }
@@ -1023,6 +1266,8 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
             }
             if (ggml_backend_buffer_get_type(cur->buffer) == buft_default) {
                 model->n_bytes_loaded += num_bytes;
+            } else if (buft_device && ggml_backend_buffer_get_type(cur->buffer) == buft_device) {
+                model->n_bytes_device += num_bytes;
             } else {
                 model->n_bytes_repacked += num_bytes;
                 model->n_repacked++;
@@ -1037,13 +1282,21 @@ laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_
             ok = model->mapping.locked;
         }
         for (const auto & b : model->bufs) {
-            if (ggml_backend_buffer_get_base(b.get()) != model->mapping.data()) {
+            if (ggml_backend_buffer_is_host(b.get()) && ggml_backend_buffer_get_base(b.get()) != model->mapping.data()) {
                 ok = laya_mlock(ggml_backend_buffer_get_base(b.get()), ggml_backend_buffer_get_size(b.get())) && ok;
             }
         }
         if (!ok) {
             laya_log("%s: warning: failed to lock the model in RAM (RLIMIT_MEMLOCK / working set too small?)\n", __func__);
         }
+    }
+
+    model->n_host_weights = n_host_fallback;
+    if (model->dev_gpu) {
+        laya_log("%s: device %s (%s): %.1f MiB of weights in device memory, %.1f MiB in host memory, %.1f MiB mapped, %d weights kept on the host\n",
+                 __func__, laya_device_name(model->dev_gpu).c_str(), ggml_backend_dev_description(model->dev_gpu),
+                 model->n_bytes_device / 1048576.0, model->n_bytes_loaded / 1048576.0, model->n_bytes_mapped / 1048576.0, n_host_fallback);
+        laya_warn_unverified(model.get());
     }
 
     // the header, the vocab strings and the merges are no longer needed
@@ -1068,11 +1321,62 @@ const laya_hparams & laya_model_hparams(const laya_model * model) {
 
 laya_model_memory laya_model_memory_info(const laya_model * model) {
     laya_model_memory m;
+    m.device     = model->n_bytes_device;
     m.loaded     = model->n_bytes_loaded;
     m.mapped     = model->n_bytes_mapped;
     m.repacked   = model->n_bytes_repacked;
     m.n_repacked = model->n_repacked;
     return m;
+}
+
+std::vector<ggml_backend_dev_t> laya_gpu_devices() {
+    // llama.cpp order: the GPUs, then the iGPUs
+    std::vector<ggml_backend_dev_t> gpus, igpus;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        switch (ggml_backend_dev_type(d)) {
+            case GGML_BACKEND_DEVICE_TYPE_GPU:  gpus.push_back(d);  break;
+            case GGML_BACKEND_DEVICE_TYPE_IGPU: igpus.push_back(d); break;
+            default: break;
+        }
+    }
+    gpus.insert(gpus.end(), igpus.begin(), igpus.end());
+    return gpus;
+}
+
+ggml_backend_dev_t laya_device_select(const std::string & mode, int32_t gpu_index) {
+    if (mode == "cpu") {
+        return nullptr;
+    }
+    if (mode != "gpu" && mode != "auto") {
+        throw std::runtime_error("unknown device '" + mode + "' (cpu, gpu, auto)");
+    }
+    const std::vector<ggml_backend_dev_t> gpus = laya_gpu_devices();
+    if (gpu_index >= 0 && (size_t) gpu_index < gpus.size()) {
+        return gpus[gpu_index];
+    }
+    if (mode == "auto") {
+        if (gpus.empty()) {
+            laya_log("%s: auto: no GPU / iGPU device in this build and machine, using the CPU\n", __func__);
+        } else {
+            laya_log("%s: auto: no GPU device %d (have %zu), using the CPU\n", __func__, gpu_index, gpus.size());
+        }
+        return nullptr;
+    }
+    std::string have;
+    for (size_t i = 0; i < gpus.size(); ++i) {
+        have += (i ? ", " : "") + std::to_string(i) + " = " + ggml_backend_dev_name(gpus[i]);
+    }
+    throw std::runtime_error("no GPU device " + std::to_string(gpu_index) + " (this build and machine have " +
+                             (gpus.empty() ? std::string("none") : have) + ")");
+}
+
+std::string laya_device_name(ggml_backend_dev_t device) {
+    return device && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU ? ggml_backend_dev_name(device) : "cpu";
+}
+
+ggml_backend_dev_t laya_model_device(const laya_model * model) {
+    return model->dev_gpu;
 }
 
 int32_t laya_vocab_bos (const laya_model * model) { return model->bos_id; }
@@ -1453,6 +1757,7 @@ laya_context * laya_init_ext(const laya_model * model, const laya_context_params
     ctx->model     = model;
     ctx->n_threads = std::max(1, params.n_threads);
     ctx->qos       = params.qos;
+    ctx->precision = params.precision;
 
     ctx->backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
     if (!ctx->backend_cpu) {
@@ -1487,7 +1792,17 @@ laya_context * laya_init_ext(const laya_model * model, const laya_context_params
     }
 
     std::vector<ggml_backend_t> backends;
-    if (params.use_blas) {
+    if (model->dev_gpu) {
+        if (params.use_blas) {
+            throw std::runtime_error("BLAS kernels are CPU-only, the model was loaded for the device " + laya_device_name(model->dev_gpu));
+        }
+        ctx->backend_gpu = ggml_backend_dev_init(model->dev_gpu, nullptr);
+        if (!ctx->backend_gpu) {
+            throw std::runtime_error("failed to initialize the backend of the device " + laya_device_name(model->dev_gpu));
+        }
+        ctx->backend = ctx->backend_gpu;
+        backends.push_back(ctx->backend_gpu);
+    } else if (params.use_blas) {
         ggml_backend_dev_t blas = ggml_backend_dev_by_name("BLAS");
         ctx->backend_blas = blas ? ggml_backend_dev_init(blas, nullptr) : nullptr;
         if (!ctx->backend_blas) {
@@ -1516,6 +1831,32 @@ laya_context * laya_init_ext(const laya_model * model, const laya_context_params
         throw std::runtime_error("failed to initialize backend scheduler");
     }
 
+    if (!params.trace_dir.empty()) {
+        ctx->trace_dir   = params.trace_dir;
+        ctx->trace_index = ggml_fopen((ctx->trace_dir + "/trace.jsonl").c_str(), "wb");
+        if (ctx->trace_index) {
+            ggml_backend_sched_set_eval_callback(ctx->sched.get(), laya_trace_eval, ctx.get());
+            laya_log("%s: layer trace into %s\n", __func__, ctx->trace_dir.c_str());
+        } else {
+            laya_log("%s: trace dir %s: cannot create trace.jsonl there, no trace\n", __func__, ctx->trace_dir.c_str());
+        }
+    }
+
+    laya_placement_probe(ctx.get());
+    laya_log("%s: placement %s\n", __func__, laya_placement_str(ctx->placement).c_str());
+    if (params.strict_placement && ctx->placement.cpu_fallback > 0) {
+        std::string ops;
+        for (const std::string & o : ctx->placement.fallback_ops) {
+            ops += (ops.empty() ? "" : ", ") + o;
+        }
+        throw std::runtime_error("strict placement: " + std::to_string(ctx->placement.cpu_fallback) +
+                                 " graph nodes would run on the CPU instead of " + ctx->placement.device + ": " + ops);
+    }
+    if (params.strict_placement && ctx->placement.host_weights > 0) {
+        throw std::runtime_error("strict placement: " + std::to_string(ctx->placement.host_weights) +
+                                 " weights stay in host memory instead of " + ctx->placement.device);
+    }
+
     return ctx.release();
 }
 
@@ -1524,6 +1865,12 @@ void laya_free(laya_context * ctx) {
         return;
     }
     ctx->sched.reset();
+    if (ctx->trace_index) {
+        fclose(ctx->trace_index);
+    }
+    if (ctx->backend_gpu) {
+        ggml_backend_free(ctx->backend_gpu);
+    }
     if (ctx->backend_blas) {
         ggml_backend_free(ctx->backend_blas);
     }
@@ -1538,6 +1885,12 @@ void laya_free(laya_context * ctx) {
 }
 
 std::string laya_context_kernels(const laya_context * ctx) {
+    if (ctx->backend_gpu) {
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ctx->model->dev_gpu);
+        std::string s = reg ? ggml_backend_reg_name(reg) : laya_device_name(ctx->model->dev_gpu);
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char) std::tolower(c); });
+        return s == "mtl" ? "metal" : s;  // the Metal registry is called "MTL"
+    }
     std::string s = "cpu";
     if (ctx->model->n_repacked > 0) {
         s += "+repack";
@@ -1548,40 +1901,92 @@ std::string laya_context_kernels(const laya_context * ctx) {
     return s;
 }
 
+laya_placement laya_context_placement(const laya_context * ctx) {
+    return ctx->placement;
+}
+
+std::string laya_placement_str(const laya_placement & p) {
+    std::string s = p.device + ": " + std::to_string(p.n_nodes) + " nodes (";
+    for (size_t i = 0; i < p.backends.size(); ++i) {
+        s += (i ? ", " : "") + p.backends[i].first + " " + std::to_string(p.backends[i].second);
+    }
+    s += "), " + std::to_string(p.n_splits) + (p.n_splits == 1 ? " split" : " splits") + ", cpu fallback " + std::to_string(p.cpu_fallback);
+    if (p.host_weights > 0) {
+        s += ", host weights " + std::to_string(p.host_weights);
+    }
+    for (size_t i = 0; i < p.fallback_ops.size(); ++i) {
+        s += (i ? ", " : " (") + p.fallback_ops[i] + (i + 1 == p.fallback_ops.size() ? ")" : "");
+    }
+    return s;
+}
+
 int32_t laya_context_n_threads_blas(const laya_context * ctx) {
     return ctx->backend_blas ? ctx->n_threads_blas : 0;
 }
 
-int laya_warmup(laya_context * ctx, int32_t n_tokens) {
-    // >= 32 tokens: the BLAS backend (min batch 32) takes its matmuls too
-    const laya_model * model = ctx->model;
+laya_precision laya_context_precision(const laya_context * ctx) {
+    return ctx->precision;
+}
+
+const char * laya_precision_name(laya_precision precision) {
+    return precision == LAYA_PRECISION_STRICT ? "strict" : "default";
+}
+
+bool laya_precision_from_name(const std::string & name, laya_precision & precision) {
+    if (name == "default") {
+        precision = LAYA_PRECISION_DEFAULT;
+        return true;
+    }
+    if (name == "strict") {
+        precision = LAYA_PRECISION_STRICT;
+        return true;
+    }
+    return false;
+}
+
+// the warm-up input: n tokens (8 .. max_len) of one sequence, two markers
+struct laya_probe_input {
+    std::vector<int32_t> tokens, pos, seq, qtype, marker_pos, marker_mask;
+    int32_t              seq_start = 0;
+    laya_batch           batch;
+};
+
+static void laya_probe_input_init(const laya_model * model, int32_t n_tokens, laya_probe_input & in) {
     const int32_t n = std::max(8, std::min(n_tokens, model->hparams.max_len > 0 ? model->hparams.max_len : 1024));
-    std::vector<int32_t> tokens(n, model->sep_id), pos(n), seq(n, 0), qtype(n, 0);
-    std::vector<int32_t> marker_pos(LAYA_MAX_MARKERS, 0), marker_mask(LAYA_MAX_MARKERS, 0);
-    tokens[0] = model->bos_id;
+    in.tokens.assign(n, model->sep_id);
+    in.pos.resize(n);
+    in.seq.assign(n, 0);
+    in.qtype.assign(n, 0);
+    in.marker_pos.assign(LAYA_MAX_MARKERS, 0);
+    in.marker_mask.assign(LAYA_MAX_MARKERS, 0);
+    in.tokens[0] = model->bos_id;
     for (int32_t i = 0; i < n; ++i) {
-        pos[i] = i;
+        in.pos[i] = i;
     }
     for (int32_t m = 0; m < 2; ++m) {
-        tokens[n - 3 + m] = model->mask_id;
-        marker_pos[m]     = n - 3 + m;
-        marker_mask[m]    = 1;
+        in.tokens[n - 3 + m] = model->mask_id;
+        in.marker_pos[m]     = n - 3 + m;
+        in.marker_mask[m]    = 1;
     }
-    const int32_t seq_start = 0;
+    in.seq_start = 0;
 
-    laya_batch batch;
-    batch.n_tokens    = n;
-    batch.n_seqs      = 1;
-    batch.tokens      = tokens.data();
-    batch.positions   = pos.data();
-    batch.seq_id      = seq.data();
-    batch.qtype       = qtype.data();
-    batch.marker_pos  = marker_pos.data();
-    batch.marker_mask = marker_mask.data();
-    batch.seq_start   = &seq_start;
+    in.batch.n_tokens    = n;
+    in.batch.n_seqs      = 1;
+    in.batch.tokens      = in.tokens.data();
+    in.batch.positions   = in.pos.data();
+    in.batch.seq_id      = in.seq.data();
+    in.batch.qtype       = in.qtype.data();
+    in.batch.marker_pos  = in.marker_pos.data();
+    in.batch.marker_mask = in.marker_mask.data();
+    in.batch.seq_start   = &in.seq_start;
+}
 
+int laya_warmup(laya_context * ctx, int32_t n_tokens) {
+    // >= 32 tokens: the BLAS backend (min batch 32) takes its matmuls too
+    laya_probe_input in;
+    laya_probe_input_init(ctx->model, n_tokens, in);
     laya_result res;
-    return laya_encode(ctx, batch, res);
+    return laya_encode(ctx, in.batch, res);
 }
 
 std::string laya_blas_description() {
@@ -1697,23 +2102,113 @@ static ggml_tensor * laya_norm(ggml_context * ctx0, ggml_tensor * cur,
     return cur;
 }
 
+// Every matmul of the graph goes through laya_mm (14 sites: KQ and PV in laya_attn; QKV, Wo, FFN up
+// and down of each encoder and head layer; scorer.1, scorer.3, act_head.0, act_head.2).
+// LAYA_MM_ACT: both operands are F32 activations (KQ: src0 = K, PV: src0 = V^T). CUDA runs an F32
+// src0 without tensor cores only at GGML_PREC_F32_PEDANTIC (with GGML_PREC_F32 cuBLAS still uses
+// TF32), so these always ask for PEDANTIC. LAYA_MM_WEIGHT: src0 is a weight matrix; GGML_PREC_F32
+// keeps F16 / quantized weights at F32 accumulation, strict asks for PEDANTIC here too (an F32 GGUF
+// then runs without TF32). The CPU and BLAS backends ignore prec: both modes are bitwise equal there.
+enum laya_mm_kind {
+    LAYA_MM_ACT,
+    LAYA_MM_WEIGHT,
+};
+
+static ggml_tensor * laya_mm(ggml_context * ctx0, laya_precision precision, laya_mm_kind kind, ggml_tensor * a, ggml_tensor * b) {
+    ggml_tensor * cur = ggml_mul_mat(ctx0, a, b);
+    const bool pedantic = kind == LAYA_MM_ACT || precision == LAYA_PRECISION_STRICT;
+    ggml_mul_mat_set_prec(cur, pedantic ? GGML_PREC_F32_PEDANTIC : GGML_PREC_F32);
+    return cur;
+}
+
+// Precision fixes for the stock CUDA backend (Phase 4b step 6, localized with the layer trace). Both
+// only add stock ops to the graph, and only when the compute device is CUDA: the CPU, Metal and
+// Vulkan graphs are unchanged.
+// - Weights (laya_cuda_upcast): ggml-cuda honours GGML_PREC_F32_PEDANTIC for an F32 src0 only. An F16
+//   weight under PEDANTIC keeps cuBLAS in F16 compute, worse than GGML_PREC_F32, and a Q8_0 weight
+//   goes through MMQ / MMVQ, which quantize the activations to 8-bit blocks: the massive-activation
+//   channel of this model family (|x| ~ 1e4 from layer 10 on) then takes the precision of the
+//   other 31 values of its block, and CUDA and the CPU (which quantizes too) fail in different
+//   items. Such a weight is dequantized to F32 in the graph (exact for F16 and Q8_0), so the matmul
+//   is F32 x F32: strict does it for F16 and Q8_0 weights, default for Q8_0 (F16 stays at
+//   GGML_PREC_F32, which passes f16-class). The f16-class baseline of a Q8_0 run on CUDA is then the
+//   CPU run with F32 activations (blas / auto). Other quantized types keep the CUDA kernels. The
+//   dequantization is ggml_get_rows over all rows: ggml_cast would be a CPY, and the CUDA CPY kernel
+//   for Q8_0 -> F32 runs one thread per block (it made a Q8_0 corpus run about 3x slower).
+// - RoPE (laya_rope_host, strict only): ggml-cuda is built with -use_fast_math, so its rope kernel
+//   takes sin / cos / pow from the fast intrinsics, whose error grows with the angle; in F32 the
+//   layer-0 difference to the CPU grew about 5x from position 0 to 1000. Strict computes the
+//   rotary tables on the host (laya_rope_tables) and applies them with mul / sub / add / concat.
+// ggml-cuda registers as "CUDA", or "ROCm" / "MUSA" when built for HIP / MUSA: the same kernels (MMQ on
+// quantized weights, PEDANTIC for an F32 src0 only), so the same graph changes; only CUDA has parity runs
+// (laya_warn_unverified says so at load).
+static bool laya_dev_is_cuda(ggml_backend_dev_t dev) {
+    if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+        return false;
+    }
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    const char * name = reg ? ggml_backend_reg_name(reg) : "";
+    return strcmp(name, "CUDA") == 0 || strcmp(name, "ROCm") == 0 || strcmp(name, "MUSA") == 0;
+}
+
+static bool laya_cuda_upcast(laya_precision precision, ggml_type type) {
+    return type == GGML_TYPE_Q8_0 || (type == GGML_TYPE_F16 && precision == LAYA_PRECISION_STRICT);
+}
+
+bool laya_weight_dequantized(ggml_backend_dev_t device, laya_precision precision, ggml_type type) {
+    return laya_dev_is_cuda(device) && laya_cuda_upcast(precision, type);
+}
+
+// rotary tables as the PyTorch reference computes them in float32 (transformers ModernBERT:
+// inv_freq = 1 / base^(arange(0, d, 2) / d), angle = pos * inv_freq, then cos / sin), one row of
+// n_dims/2 values per token. The idea of host tables is from laya.cpp (MIT, Lars Karlslund).
+static void laya_rope_tables(const laya_batch & batch, float freq_base, int n_dims,
+                             std::vector<float> & cos_t, std::vector<float> & sin_t) {
+    const int half = n_dims / 2;
+    std::vector<float> inv_freq(half);
+    for (int i = 0; i < half; ++i) {
+        const float e = (float) (2*i) / (float) n_dims;
+        inv_freq[i] = 1.0f / (float) std::pow((double) freq_base, (double) e);
+    }
+    cos_t.resize((size_t) half * batch.n_tokens);
+    sin_t.resize((size_t) half * batch.n_tokens);
+    for (int32_t t = 0; t < batch.n_tokens; ++t) {
+        const float p = (float) batch.positions[t];
+        for (int i = 0; i < half; ++i) {
+            const float a = p * inv_freq[i];
+            cos_t[(size_t) t*half + i] = (float) std::cos((double) a);
+            sin_t[(size_t) t*half + i] = (float) std::sin((double) a);
+        }
+    }
+}
+
+// GPT-NeoX rotation of x [n_dims, n_head, n_tokens] with tables [n_dims/2, 1, n_tokens], in the
+// order of the reference: out0 = x0*cos - x1*sin, out1 = x1*cos + x0*sin
+static ggml_tensor * laya_rope_host(ggml_context * ctx0, ggml_tensor * x, ggml_tensor * cos_t, ggml_tensor * sin_t) {
+    const int64_t half = x->ne[0] / 2;
+    ggml_tensor * x0 = ggml_view_3d(ctx0, x, half, x->ne[1], x->ne[2], x->nb[1], x->nb[2], 0);
+    ggml_tensor * x1 = ggml_view_3d(ctx0, x, half, x->ne[1], x->ne[2], x->nb[1], x->nb[2], half*ggml_element_size(x));
+    ggml_tensor * o0 = ggml_sub(ctx0, ggml_mul(ctx0, x0, cos_t), ggml_mul(ctx0, x1, sin_t));
+    ggml_tensor * o1 = ggml_add(ctx0, ggml_mul(ctx0, x1, cos_t), ggml_mul(ctx0, x0, sin_t));
+    return ggml_concat(ctx0, o0, o1, 0);
+}
+
 // bidirectional multi-head attention without KV cache.
 // q/k/v: [n_embd_head, n_head, n_tokens]; mask: [n_tokens, n_tokens, 1, 1]
 // returns [n_embd, n_tokens]
-static ggml_tensor * laya_attn(ggml_context * ctx0,
+static ggml_tensor * laya_attn(ggml_context * ctx0, laya_precision precision,
                                ggml_tensor * Qcur, ggml_tensor * Kcur, ggml_tensor * Vcur,
                                ggml_tensor * kq_mask, float kq_scale) {
     ggml_tensor * q = ggml_permute(ctx0, Qcur, 0, 2, 1, 3);   // [n_embd_head, n_tokens, n_head, 1]
     ggml_tensor * k = ggml_permute(ctx0, Kcur, 0, 2, 1, 3);
     ggml_tensor * v = ggml_permute(ctx0, Vcur, 0, 2, 1, 3);
 
-    ggml_tensor * kq = ggml_mul_mat(ctx0, k, q);              // [n_tokens, n_tokens, n_head, 1]
-    ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+    ggml_tensor * kq = laya_mm(ctx0, precision, LAYA_MM_ACT, k, q); // [n_tokens, n_tokens, n_head, 1]
     kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, 0.0f);
 
     v = ggml_cont(ctx0, ggml_transpose(ctx0, v));             // [n_tokens, n_embd_head, n_head, 1]
 
-    ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);            // [n_embd_head, n_tokens, n_head, 1]
+    ggml_tensor * kqv = laya_mm(ctx0, precision, LAYA_MM_ACT, v, kq); // [n_embd_head, n_tokens, n_head, 1]
     ggml_tensor * cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);  // [n_embd_head, n_head, n_tokens, 1]
     cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]); // [n_embd, n_tokens]
 
@@ -1807,14 +2302,16 @@ struct laya_graph {
     ggml_tensor * marker_pos  = nullptr;
     ggml_tensor * marker_mask = nullptr;
     ggml_tensor * seq_start   = nullptr;
+    ggml_tensor * rope_cos[2] = { nullptr, nullptr };  // host rotary tables (laya_rope_host): global, sliding-window layers
+    ggml_tensor * rope_sin[2] = { nullptr, nullptr };
+    std::vector<ggml_tensor *> row_ids;                // 0..n-1 for the weight dequantization (laya_cuda_upcast)
 
     ggml_tensor * logits     = nullptr;
     ggml_tensor * act_logits = nullptr;
 
 };
 
-static laya_graph laya_graph_build(const laya_model * model, const laya_batch & batch,
-                                   ggml_tensor * out_logits, ggml_tensor * out_act) {
+static laya_graph laya_graph_build(const laya_model * model, const laya_batch & batch, laya_precision precision) {
     const auto & hp = model->hparams;
     const int64_t n_tokens = batch.n_tokens;
     const int64_t n_seqs   = batch.n_seqs;
@@ -1829,6 +2326,25 @@ static laya_graph laya_graph_build(const laya_model * model, const laya_batch & 
     g.ctx.reset(ggml_init(params));
     ggml_context * ctx0 = g.ctx.get();
     g.gf = ggml_new_graph_custom(ctx0, 8192, false);
+
+    const bool cuda      = laya_dev_is_cuda(model->dev_gpu);
+    const bool rope_host = cuda && precision == LAYA_PRECISION_STRICT;
+
+    // weight matmul (src0 = w)
+    std::map<int64_t, ggml_tensor *> row_ids;  // by row count
+    const auto mm = [&](ggml_tensor * w, ggml_tensor * x) {
+        if (cuda && laya_cuda_upcast(precision, w->type)) {
+            ggml_tensor *& ids = row_ids[w->ne[1]];
+            if (!ids) {
+                ids = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, w->ne[1]);
+                ggml_format_name(ids, "row_ids-%lld", (long long) w->ne[1]);
+                ggml_set_input(ids);
+                g.row_ids.push_back(ids);
+            }
+            w = ggml_get_rows(ctx0, w, ids);  // [ne0, ne1] F32
+        }
+        return laya_mm(ctx0, precision, LAYA_MM_WEIGHT, w, x);
+    };
 
     const float kq_scale = 1.0f / sqrtf((float) hp.n_embd_head);
     const int   n_ctx_orig = 8192;
@@ -1866,6 +2382,17 @@ static laya_graph laya_graph_build(const laya_model * model, const laya_batch & 
     ggml_set_name(g.seq_start, "seq_start");
     ggml_set_input(g.seq_start);
 
+    if (rope_host) {
+        for (int k = 0; k < 2; ++k) {
+            g.rope_cos[k] = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, hp.n_embd_head / 2, 1, n_tokens);
+            g.rope_sin[k] = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, hp.n_embd_head / 2, 1, n_tokens);
+            ggml_format_name(g.rope_cos[k], "rope_cos-%d", k);
+            ggml_format_name(g.rope_sin[k], "rope_sin-%d", k);
+            ggml_set_input(g.rope_cos[k]);
+            ggml_set_input(g.rope_sin[k]);
+        }
+    }
+
     ggml_tensor * cur;
     ggml_tensor * inpL;
 
@@ -1889,26 +2416,34 @@ static laya_graph laya_graph_build(const laya_model * model, const laya_batch & 
             cur = laya_norm(ctx0, inpL, layer.attn_norm, nullptr, hp.norm_eps);
         }
 
-        ggml_tensor * qkv_full = ggml_mul_mat(ctx0, layer.wqkv, cur); // [3*n_embd, n_tokens]
+        ggml_tensor * qkv_full = mm(layer.wqkv, cur); // [3*n_embd, n_tokens]
         auto qkv = laya_qkv_views(ctx0, qkv_full, hp.n_embd_head, hp.n_head, n_tokens);
-        laya_rope(ctx0, &qkv[0], &qkv[1], g.inp_pos, hp.n_embd_head, freq_base, n_ctx_orig);
+        if (rope_host) {
+            const int k = is_swa ? 1 : 0;
+            qkv[0] = laya_rope_host(ctx0, qkv[0], g.rope_cos[k], g.rope_sin[k]);
+            qkv[1] = laya_rope_host(ctx0, qkv[1], g.rope_cos[k], g.rope_sin[k]);
+        } else {
+            laya_rope(ctx0, &qkv[0], &qkv[1], g.inp_pos, hp.n_embd_head, freq_base, n_ctx_orig);
+        }
 
-        cur = laya_attn(ctx0, qkv[0], qkv[1], qkv[2],
+        cur = laya_attn(ctx0, precision, qkv[0], qkv[1], qkv[2],
                         is_swa ? g.kq_mask_swa : g.kq_mask, kq_scale);
-        cur = ggml_mul_mat(ctx0, layer.wo, cur);           // attn output projection (Wo)
+        cur = mm(layer.wo, cur);           // attn output projection (Wo)
 
         ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpL);
 
         cur = laya_norm(ctx0, ffn_inp, layer.ffn_norm, nullptr, hp.norm_eps);
-        cur = ggml_mul_mat(ctx0, layer.ffn_up, cur);      // [2*n_ff, n_tokens]
+        cur = mm(layer.ffn_up, cur);      // [2*n_ff, n_tokens]
         cur = ggml_geglu_erf(ctx0, cur);                  // GeGLU with erf GELU, matching PyTorch
-        cur = ggml_mul_mat(ctx0, layer.ffn_down, cur);    // [n_embd, n_tokens]
+        cur = mm(layer.ffn_down, cur);    // [n_embd, n_tokens]
 
         inpL = ggml_add(ctx0, cur, ffn_inp);
+        ggml_format_name(inpL, "l_out-%d", il);  // traced (trace_dir): the residual output of the layer
     }
 
     if (model->output_norm) {
         inpL = laya_norm(ctx0, inpL, model->output_norm, nullptr, hp.norm_eps);
+        ggml_set_name(inpL, "enc_out");
     }
 
     // ---- type embedding ----
@@ -1923,15 +2458,15 @@ static laya_graph laya_graph_build(const laya_model * model, const laya_batch & 
         // attn pre-norm
         cur = laya_norm(ctx0, inpL, layer.attn_norm, layer.attn_norm_b, hp.norm_eps_layer);
 
-        ggml_tensor * qkv_full = ggml_mul_mat(ctx0, layer.wqkv, cur);
+        ggml_tensor * qkv_full = mm(layer.wqkv, cur);
         if (layer.wqkv_b) {
             qkv_full = ggml_add(ctx0, qkv_full, layer.wqkv_b);
         }
         auto qkv = laya_qkv_views(ctx0, qkv_full, hp.n_embd_head, hp.n_head, n_tokens);
         // full self-attention, no RoPE, pad mask only
-        cur = laya_attn(ctx0, qkv[0], qkv[1], qkv[2], g.kq_mask, kq_scale);
+        cur = laya_attn(ctx0, precision, qkv[0], qkv[1], qkv[2], g.kq_mask, kq_scale);
 
-        cur = ggml_mul_mat(ctx0, layer.wo, cur);
+        cur = mm(layer.wo, cur);
         if (layer.wo_b) {
             cur = ggml_add(ctx0, cur, layer.wo_b);
         }
@@ -1940,17 +2475,18 @@ static laya_graph laya_graph_build(const laya_model * model, const laya_batch & 
 
         // ffn pre-norm + FFN (ReLU, like nn.TransformerEncoderLayer default)
         cur = laya_norm(ctx0, res_inp, layer.ffn_norm, layer.ffn_norm_b, hp.norm_eps_layer);
-        cur = ggml_mul_mat(ctx0, layer.ffn_up, cur);      // [4*d, n_tokens]
+        cur = mm(layer.ffn_up, cur);      // [4*d, n_tokens]
         if (layer.ffn_up_b) {
             cur = ggml_add(ctx0, cur, layer.ffn_up_b);
         }
         cur = ggml_relu(ctx0, cur);
-        cur = ggml_mul_mat(ctx0, layer.ffn_down, cur);    // [d, n_tokens]
+        cur = mm(layer.ffn_down, cur);    // [d, n_tokens]
         if (layer.ffn_down_b) {
             cur = ggml_add(ctx0, cur, layer.ffn_down_b);
         }
 
         inpL = ggml_add(ctx0, cur, res_inp);
+        ggml_format_name(inpL, "head_out-%d", il);
     }
 
     // ---- gather hidden states at marker positions ----
@@ -1966,12 +2502,12 @@ static laya_graph laya_graph_build(const laya_model * model, const laya_batch & 
 
     // ---- scorer: LayerNorm -> Linear -> GELU -> Linear(1) ----
     cur = laya_norm(ctx0, markers, model->scorer_0, model->scorer_0_b, hp.norm_eps_layer);
-    cur = ggml_mul_mat(ctx0, model->scorer_1, cur);
+    cur = mm(model->scorer_1, cur);
     if (model->scorer_1_b) {
         cur = ggml_add(ctx0, cur, model->scorer_1_b);
     }
     cur = ggml_gelu_erf(ctx0, cur);
-    cur = ggml_mul_mat(ctx0, model->scorer_3, cur);       // [1, n_markers, n_seqs]
+    cur = mm(model->scorer_3, cur);       // [1, n_markers, n_seqs]
     if (model->scorer_3_b) {
         cur = ggml_add(ctx0, cur, model->scorer_3_b);
     }
@@ -2032,12 +2568,12 @@ static laya_graph laya_graph_build(const laya_model * model, const laya_batch & 
     ggml_tensor * act_in = ggml_concat(ctx0, pooled, feats, 0);
 
     // act head: Linear(d+4, 256) -> GELU -> Linear(256, n_act)
-    cur = ggml_mul_mat(ctx0, model->act_head_0, act_in);
+    cur = mm(model->act_head_0, act_in);
     if (model->act_head_0_b) {
         cur = ggml_add(ctx0, cur, model->act_head_0_b);
     }
     cur = ggml_gelu_erf(ctx0, cur);
-    cur = ggml_mul_mat(ctx0, model->act_head_2, cur);
+    cur = mm(model->act_head_2, cur);
     if (model->act_head_2_b) {
         cur = ggml_add(ctx0, cur, model->act_head_2_b);
     }
@@ -2046,23 +2582,136 @@ static laya_graph laya_graph_build(const laya_model * model, const laya_batch & 
     ggml_set_name(g.act_logits, "act_logits");
 
     g.logits = logits;
-    // copy the results into pre-allocated output tensors: the scheduler may
-    // reuse the compute buffers of intermediate nodes, so reading the graph
-    // tensors directly after compute is not safe. ggml_cpy keeps the values
-    // in the dedicated output buffer.
-    if (out_logits && out_act) {
-        ggml_build_forward_expand(g.gf, ggml_cpy(ctx0, logits, out_logits));
-        ggml_build_forward_expand(g.gf, ggml_cpy(ctx0, cur, out_act));
-    }
-
+    // the two results are graph outputs: the allocator never frees or reuses the memory of an
+    // output node (ggml-alloc.c, ggml_gallocr_free_node), so laya_encode reads them from the compute
+    // buffer after the compute, without an output buffer and copy nodes of its own
+    ggml_set_output(g.logits);
+    ggml_set_output(g.act_logits);
+    ggml_build_forward_expand(g.gf, g.logits);
+    ggml_build_forward_expand(g.gf, g.act_logits);
 
     return g;
+}
+
+// nodes that compute nothing (a view of their source)
+static bool laya_is_view_op(const ggml_tensor * t) {
+    return t->op == GGML_OP_NONE || t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE ||
+           t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE;
+}
+
+// a graph input, or a view of one
+static bool laya_is_input(const ggml_tensor * t) {
+    while (t->view_src) {
+        t = t->view_src;
+    }
+    return (t->flags & GGML_TENSOR_FLAG_INPUT) != 0;
+}
+
+// may this node of a device context run on the CPU? (laya_placement)
+static bool laya_cpu_allowed(const laya_model * model, const ggml_tensor * t) {
+    const auto is_embd_rows = [&](const ggml_tensor * n) {
+        return n && n->op == GGML_OP_GET_ROWS && n->src[0] == model->tok_embd;
+    };
+    if (is_embd_rows(t)) {
+        return true;  // token_embd is in host memory by design (laya_model_params.device)
+    }
+    // ggml_cast is a CPY: the input casts (marker_mask to F32) and the upcast of the embedding rows
+    return t->op == GGML_OP_CPY && t->src[0] && (laya_is_input(t->src[0]) || is_embd_rows(t->src[0]));
+}
+
+static void laya_placement_probe(laya_context * ctx) {
+    const laya_model * model = ctx->model;
+    ggml_backend_sched_t sched = ctx->sched.get();
+
+    laya_probe_input in;
+    laya_probe_input_init(model, 64, in);
+    ggml_backend_sched_reset(sched);
+    laya_graph g = laya_graph_build(model, in.batch, ctx->precision);
+    if (!ggml_backend_sched_alloc_graph(sched, g.gf)) {
+        throw std::runtime_error("failed to allocate the compute graph");
+    }
+
+    laya_placement p;
+    p.device   = laya_device_name(model->dev_gpu);
+    p.n_splits = ggml_backend_sched_get_n_splits(sched);
+    p.host_weights = model->n_host_weights;
+    const int n_backends = ggml_backend_sched_get_n_backends(sched);
+    std::vector<int32_t> per_backend(n_backends, 0);
+    int32_t n_unassigned = 0;
+    std::map<std::string, int32_t> fallback;
+    for (int i = 0; i < ggml_graph_n_nodes(g.gf); ++i) {
+        ggml_tensor * t = ggml_graph_node(g.gf, i);
+        if (laya_is_view_op(t)) {
+            continue;
+        }
+        p.n_nodes++;
+        ggml_backend_t b = ggml_backend_sched_get_tensor_backend(sched, t);
+        int ib = 0;
+        while (ib < n_backends && ggml_backend_sched_get_backend(sched, ib) != b) {
+            ib++;
+        }
+        if (ib == n_backends) {
+            n_unassigned++;
+            continue;
+        }
+        per_backend[ib]++;
+        if (ctx->backend_gpu && b == ctx->backend_cpu && !laya_cpu_allowed(model, t)) {
+            p.cpu_fallback++;
+            fallback[ggml_op_desc(t)]++;
+        }
+    }
+    for (int ib = 0; ib < n_backends; ++ib) {
+        p.backends.emplace_back(ggml_backend_name(ggml_backend_sched_get_backend(sched, ib)), per_backend[ib]);
+    }
+    if (n_unassigned > 0) {
+        p.backends.emplace_back("none", n_unassigned);
+    }
+    for (const auto & f : fallback) {
+        p.fallback_ops.push_back(f.first + " x" + std::to_string(f.second));
+    }
+    ggml_backend_sched_reset(sched);
+    ctx->placement = std::move(p);
+}
+
+// the indices of a batch within the tensors they index (laya_encode)
+static bool laya_batch_check(const laya_model * model, const laya_batch & batch) {
+    const int64_t n_rows  = model->tok_embd->ne[1];
+    const int64_t n_types = model->type_emb->ne[1];
+    const int32_t n       = batch.n_tokens;
+    for (int32_t i = 0; i < n; ++i) {
+        if (batch.tokens[i] < 0 || batch.tokens[i] >= n_rows) {
+            laya_log("laya_encode: token %d at %d is outside the %lld token_embd rows\n", batch.tokens[i], i, (long long) n_rows);
+            return false;
+        }
+        if (batch.qtype[i] < 0 || batch.qtype[i] >= n_types) {
+            laya_log("laya_encode: qtype %d at %d is outside the %lld type_emb rows\n", batch.qtype[i], i, (long long) n_types);
+            return false;
+        }
+    }
+    for (int32_t s = 0; s < batch.n_seqs; ++s) {
+        if (batch.seq_start[s] < 0 || batch.seq_start[s] >= n) {
+            laya_log("laya_encode: seq_start %d of sequence %d is outside [0, %d)\n", batch.seq_start[s], s, n);
+            return false;
+        }
+        // every slot is gathered, masked ones too
+        for (int32_t m = 0; m < LAYA_MAX_MARKERS; ++m) {
+            const int32_t v = batch.marker_pos[(size_t) s * LAYA_MAX_MARKERS + m];
+            if (v < 0 || v >= n) {
+                laya_log("laya_encode: marker_pos %d (sequence %d, slot %d) is outside [0, %d)\n", v, s, m, n);
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 int laya_encode(laya_context * ctx, const laya_batch & batch, laya_result & result) {
     const laya_model * model = ctx->model;
 
     if (batch.n_tokens <= 0 || batch.n_seqs <= 0) {
+        return 1;
+    }
+    if (!laya_batch_check(model, batch)) {
         return 1;
     }
 
@@ -2078,28 +2727,12 @@ int laya_encode(laya_context * ctx, const laya_batch & batch, laya_result & resu
     }
 #endif
 
-    laya_graph g;
-
-    // dedicated output buffers (not reused by the scheduler)
-    ggml_context_ptr out_ctx;
-    ggml_backend_buffer_ptr out_buf;
-    ggml_tensor * out_logits = nullptr;
-    ggml_tensor * out_act    = nullptr;
-    {
-        struct ggml_init_params op = {
-            /*.mem_size =*/ 8 * ggml_tensor_overhead(),
-            /*.mem_buffer =*/ nullptr,
-            /*.no_alloc =*/ true,
-        };
-        out_ctx.reset(ggml_init(op));
-        out_logits = ggml_new_tensor_2d(out_ctx.get(), GGML_TYPE_F32, LAYA_MAX_MARKERS, batch.n_seqs);
-        out_act    = ggml_new_tensor_2d(out_ctx.get(), GGML_TYPE_F32, model->hparams.n_act, batch.n_seqs);
-        ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(ctx->backend);
-        out_buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(out_ctx.get(), buft));
-    }
-
     ggml_backend_sched_reset(ctx->sched.get());
-    g = laya_graph_build(model, batch, out_logits, out_act);
+    laya_graph g = laya_graph_build(model, batch, ctx->precision);
+    if (ctx->trace_index) {
+        ctx->trace_call++;
+        ctx->trace_seq = 0;
+    }
 
     if (!ggml_backend_sched_alloc_graph(ctx->sched.get(), g.gf)) {
         laya_log("%s: failed to allocate compute graph\n", __func__);
@@ -2108,8 +2741,9 @@ int laya_encode(laya_context * ctx, const laya_batch & batch, laya_result & resu
 
     // debug: verify input buffers
     {
-        ggml_tensor * inps[] = { g.inp_tokens, g.inp_pos, g.inp_qtype, g.kq_mask, g.kq_mask_swa,
-                                 g.marker_pos, g.marker_mask, g.seq_start };
+        // with host rotary tables inp_pos feeds no op (rope_cos-0 takes its place)
+        ggml_tensor * inps[] = { g.inp_tokens, g.rope_cos[0] ? g.rope_cos[0] : g.inp_pos, g.inp_qtype,
+                                 g.kq_mask, g.kq_mask_swa, g.marker_pos, g.marker_mask, g.seq_start };
         for (auto * t : inps) {
             if (!t->buffer) {
                 laya_log("%s: input tensor '%s' has no buffer\n", __func__, t->name);
@@ -2124,7 +2758,9 @@ int laya_encode(laya_context * ctx, const laya_batch & batch, laya_result & resu
     };
 
     set_input(g.inp_tokens, batch.tokens);
-    set_input(g.inp_pos,    batch.positions);
+    if (!g.rope_cos[0]) {
+        set_input(g.inp_pos, batch.positions);
+    }
     set_input(g.inp_qtype,  batch.qtype);
     set_input(g.marker_pos,  batch.marker_pos);
     set_input(g.marker_mask, batch.marker_mask);
@@ -2135,6 +2771,27 @@ int laya_encode(laya_context * ctx, const laya_batch & batch, laya_result & resu
     laya_build_masks(batch, model->hparams.n_swa, mask, mask_swa);
     set_input(g.kq_mask, mask.data());
     set_input(g.kq_mask_swa, mask_swa.data());
+
+    for (ggml_tensor * ids : g.row_ids) {
+        std::vector<int32_t> rows((size_t) ids->ne[0]);
+        for (size_t i = 0; i < rows.size(); ++i) {
+            rows[i] = (int32_t) i;
+        }
+        set_input(ids, rows.data());
+    }
+
+    if (g.rope_cos[0]) {
+        const auto & hp = model->hparams;
+        std::vector<float> cos_t, sin_t;
+        for (int k = 0; k < 2; ++k) {
+            if (!g.rope_cos[k]->buffer) {
+                continue;  // a model without sliding-window layers uses only the global tables
+            }
+            laya_rope_tables(batch, k == 0 ? hp.rope_freq_base : hp.rope_freq_base_swa, hp.n_embd_head, cos_t, sin_t);
+            set_input(g.rope_cos[k], cos_t.data());
+            set_input(g.rope_sin[k], sin_t.data());
+        }
+    }
 
     const auto status = ggml_backend_sched_graph_compute(ctx->sched.get(), g.gf);
     if (status != GGML_STATUS_SUCCESS) {
@@ -2150,8 +2807,11 @@ int laya_encode(laya_context * ctx, const laya_batch & batch, laya_result & resu
     result.logits.resize((size_t) LAYA_MAX_MARKERS * batch.n_seqs);
     result.act_logits.resize((size_t) model->hparams.n_act * batch.n_seqs);
 
-    ggml_backend_tensor_get(out_logits, result.logits.data(), 0, ggml_nbytes(out_logits));
-    ggml_backend_tensor_get(out_act, result.act_logits.data(), 0, ggml_nbytes(out_act));
+    GGML_ASSERT(g.logits->type == GGML_TYPE_F32 && ggml_nelements(g.logits) == (int64_t) result.logits.size());
+    GGML_ASSERT(g.act_logits->type == GGML_TYPE_F32 && ggml_nelements(g.act_logits) == (int64_t) result.act_logits.size());
+    GGML_ASSERT(ggml_is_contiguous(g.logits) && ggml_is_contiguous(g.act_logits));
+    ggml_backend_tensor_get(g.logits, result.logits.data(), 0, ggml_nbytes(g.logits));
+    ggml_backend_tensor_get(g.act_logits, result.act_logits.data(), 0, ggml_nbytes(g.act_logits));
 
     return 0;
 }
