@@ -29,14 +29,33 @@ different lengths (a tail-sensitive statistic), so the per-request ratios and th
 are the numbers to quote. With a PyTorch --router-mode batch result, "geomean vs best PyTorch fp32"
 takes the faster PyTorch mode per request. Then startup / memory (RSS and anon, file size from the
 `ls -l` listing) and the first request after idle (one sample each).
+
+Parity gate: no speed number without a passing parity check of the same identity. Every engine
+result (llama-decision-bench, llama-server) carries an "identity" (tests/laya/parity/identity.py);
+--parity takes gate JSONs of tests/laya/verify_reference.py compare --gate ... --json (files or
+folders, searched recursively). A row is printed only when a gate with verdict "pass" and no
+identity problems has, as its candidate, a run of the same build tree, GGUF and device
+(identity.speed_identity_problems); a CPU run also counts when it was the baseline of such a gate.
+Other rows are listed under "Refused by the parity gate" with the reason, without numbers.
+--allow-ungated-cpu prints CPU rows that have no parity record (marked "ungated"; for CPU-only
+folders measured before the gate existed); a GPU row is never printed without one.
+
+CPU vs GPU results of scripts/bench-decision-device.py (bench JSONs with an "ab" block, *__ready.json,
+*__machine.json) get their own section: latency per group and config pooled over the blocks,
+the paired speedup against --ref (default: the first config) per cycle, and resources (time to
+ready, RSS, GPU memory, weights in device memory, placement, GPU utilization and clocks, load).
 """
 
 import argparse
 import json
 import math
 import re
+import statistics
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests" / "laya" / "parity"))
+import identity as ident  # noqa: E402
 
 NAME_RE = re.compile(r"^(?P<host>.+?)__(?P<label>.+?)__(?P<stamp>\d{8}-\d{4})__(?P<rest>.+)$")
 
@@ -51,7 +70,8 @@ def collect(paths):
         m = NAME_RE.match(f.name)
         if not m:
             continue
-        run = runs.setdefault(m["stamp"], {"machine": {}, "bench": [], "server": [], "pytorch": [], "host": m["host"], "label": m["label"]})
+        run = runs.setdefault(m["stamp"], {"machine": {}, "bench": [], "server": [], "pytorch": [], "ab": [], "ready": [],
+                                           "machine_json": {}, "chat": None, "host": m["host"], "label": m["label"]})
         if m["rest"] == "machine.txt":
             run["machine"] = read_facts(f)
         elif f.suffix == ".json":
@@ -60,7 +80,15 @@ def collect(paths):
             except json.JSONDecodeError as e:
                 print(f"skip {f}: {e}", file=sys.stderr)
                 continue
-            if d.get("kind") == "server":
+            if m["rest"] == "machine.json":
+                run["machine_json"] = d
+            elif d.get("kind") == "ready":
+                run["ready"].append(d)
+            elif d.get("kind") == "chat":
+                run["chat"] = d
+            elif d.get("bench") == "llama-decision-bench" and d.get("ab"):
+                run["ab"].append(d)
+            elif d.get("kind") == "server":
                 run["server"].append(d)
             elif d.get("bench") == "llama-decision-bench":
                 run["bench"].append(d)
@@ -109,9 +137,12 @@ def pct(v, p):
     return v[lo] + (v[hi] - v[lo]) * (pos - lo)
 
 
-def report(run):
-    bench = sorted(run["bench"], key=lambda d: (Path(d["model"]).stem, d["n_threads"]))
-    server = sorted(run["server"], key=lambda d: (Path(d["model"]).stem, d["n_threads"]))
+def report(run, gate):
+    bench, refused = gate_rows(run["bench"], gate, col)
+    server, refused_s = gate_rows(run["server"], gate, lambda s: col(s) + " server")
+    refused += refused_s
+    bench = sorted(bench, key=lambda d: (Path(d["model"]).stem, d["n_threads"]))
+    server = sorted(server, key=lambda d: (Path(d["model"]).stem, d["n_threads"]))
     fx = run["machine"]
     out = [f"## Decision bench {run['host']} ({run['label']})", ""]
 
@@ -235,6 +266,11 @@ def report(run):
     if idle_rows:
         out += ["### K6 first request after idle (ms)", ""]
         out += [table(["config", "idle s", "request", "after idle", "warm p50", "ratio"], idle_rows), ""]
+    kept = [[col(d), d["_parity"]] for d in bench] + [[col(s) + " server", s["_parity"]] for s in server]
+    if kept:
+        out += ["### Parity of the rows above", "", table(["config", "parity"], kept), ""]
+    if refused:
+        out += ["### Refused by the parity gate (no numbers)", "", table(["config", "reason"], refused), ""]
     return "\n".join(out)
 
 
@@ -253,8 +289,12 @@ def pytorch_col(d):
     return f"PyTorch {d['family']} {d['dtype']}" + (" router-batch" if d.get("router_mode") == "batch" else "")
 
 
-def compare_report(run, pytorch, overrides):
+def compare_report(run, pytorch, overrides, gate):
     """Engine vs PyTorch reference: one table per request group and thread count."""
+    if run:
+        run = dict(run)
+        run["bench"], _ = gate_rows(run["bench"], gate, col)  # refused rows are listed in the run's own section
+        run["server"], _ = gate_rows(run["server"], gate, col)
     # newest PyTorch result per (family, dtype, router mode, threads)
     newest = {}
     for d in sorted(pytorch, key=lambda d: d["_stamp"]):
@@ -571,6 +611,273 @@ def summary_report(runs, checks, overrides, sizes):
     return "\n".join(out)
 
 
+#
+# parity gate
+#
+
+def load_parity(paths):
+    """Gate records from verify_reference.py compare --json files: {run name: {"gate": ..., "identity": ...}}."""
+    files = []
+    for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            files += sorted(x for x in p.rglob("*.json") if not x.name.endswith(".identity.json"))
+        elif p.is_file():
+            files.append(p)
+        else:
+            print(f"--parity {p}: not found", file=sys.stderr)
+    recs = []
+    for f in files:
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        for name, v in d.items():
+            if not (isinstance(v, dict) and isinstance(v.get("gate"), dict) and isinstance(v.get("identity"), dict)):
+                continue
+            g = v["gate"]
+            recs.append({"file": str(f), "name": name, "tier": g.get("tier"), "verdict": g.get("verdict"),
+                         "problems": v.get("identity_problems") or [], "candidate": v["identity"].get("candidate"),
+                         "baseline": v["identity"].get("baseline")})
+    return recs
+
+
+def closeness(why):
+    """Rank of a non-covering record for the "closest" reason: another GGUF or backend is far away."""
+    return sum(4 if w.startswith(("GGUF", "backend")) else 2 if w.startswith("device") else 1 for w in why)
+
+
+class ParityGate:
+    def __init__(self, recs, allow_ungated_cpu=False):
+        self.recs = recs
+        self.allow_ungated_cpu = allow_ungated_cpu
+
+    def check(self, run_id):
+        """(ok, text): the covering gate, or why the row is refused."""
+        if not run_id:
+            return False, "no identity record in the result"
+        near = None
+        for r in self.recs:
+            usable = r["verdict"] == "pass" and not r["problems"]
+            roles = [("candidate", r["candidate"])]
+            if (r["baseline"] or {}).get("runtime", {}).get("backend", "cpu") == "cpu":
+                roles.append(("baseline", r["baseline"]))
+            for role, pid in roles:
+                why = ident.speed_identity_problems(run_id, pid)
+                if not why:
+                    if usable:
+                        return True, f"{r['tier']} pass ({Path(r['file']).name}, {role})"
+                    why = [f"its gate {Path(r['file']).name} did not pass ({r['verdict']}" + (", identity problems" if r["problems"] else "") + ")"]
+                if near is None or closeness(why) < closeness(near):
+                    near = why
+        rt = run_id.get("runtime") or {}
+        if self.allow_ungated_cpu and rt.get("backend", "cpu") == "cpu":
+            return True, "ungated (CPU, --allow-ungated-cpu)"
+        if not self.recs:
+            return False, "no parity gate JSON given (--parity)"
+        return False, "no passing parity gate of this identity; closest: " + "; ".join(near or ["-"])
+
+
+def gate_rows(items, gate, label):
+    """Splits results into (kept, refused rows) by the parity gate."""
+    kept, refused = [], []
+    for d in items:
+        ok, why = gate.check(d.get("identity"))
+        if ok:
+            d["_parity"] = why
+            kept.append(d)
+        else:
+            refused.append([label(d), why])
+    return kept, refused
+
+
+#
+# CPU vs GPU (scripts/bench-decision-device.py)
+#
+
+def med(v):
+    v = [x for x in v if x is not None]
+    return statistics.median(v) if v else None
+
+
+def fmt(x, f="{:.0f}"):
+    return "-" if x is None else f.format(x)
+
+
+def device_report(run, gate, ref_name=None):
+    facts = run["machine_json"]
+    out = [f"## Decision bench CPU vs GPU {run['host']} ({run['label']})", ""]
+    rows = [(k, facts[k]) for k in ("date_utc", "host", "os", "cpu", "logical_cpus", "cgroup_cpu_max", "blocks", "repeat", "warmup",
+                                    "ready", "load_max", "foreign_max", "background", "chat_model", "loadavg_start", "loadavg_end")
+            if facts.get(k) is not None]
+    for g in facts.get("gpus") or []:
+        rows.append((f"gpu {g.get('index')}", f"{g.get('name')}, driver {g.get('driver')}, {g.get('memory_total_mib')} MiB, "
+                                              f"max SM {g.get('max_sm_mhz')} MHz / mem {g.get('max_mem_mhz')} MHz, power limit {g.get('power_limit_w')} W"))
+    out += [table(["fact", "value"], [(k, str(v).replace("|", "/")) for k, v in rows]), ""]
+    configs = facts.get("configs") or []
+    if configs:
+        out += [table(["config", "device", "gpu", "threads", "kernels", "precision", "env", "bin"],
+                      [[c["name"], c["device"], c.get("gpu") or "-", c.get("threads") or "-", c.get("kernels") or "-", c.get("precision") or "-",
+                        " ".join(f"{k}={v}" for k, v in (c.get("env") or {}).items()) or "-", c["bin"]] for c in configs]), ""]
+    names = [c["name"] for c in configs] or sorted({d["ab"]["config"]["name"] for d in run["ab"]})
+    ref_name = ref_name or (names[0] if names else None)
+
+    by = {}
+    for d in run["ab"]:
+        by.setdefault((Path(d["model"]).stem, d["ab"]["config"]["name"]), []).append(d)
+    ready = {(Path(r["model"]).stem, r["config"]["name"]): r for r in run["ready"]}
+    models = []
+    for (m, _c) in by:
+        if m not in models:
+            models.append(m)
+
+    # parity gate per (model, config): every block must be covered
+    status, refused = {}, []
+    for (m, c), ds in by.items():
+        checks = [gate.check(d.get("identity")) for d in ds]
+        bad = [w for ok, w in checks if not ok]
+        status[(m, c)] = (not bad, bad[0] if bad else checks[0][1])
+        if bad:
+            refused.append([m, c, bad[0]])
+    out += ["### Parity gate", "", table(["model", "config", "parity"],
+                                         [[m, c, ("" if ok else "REFUSED: ") + w] for (m, c), (ok, w) in status.items()]), ""]
+
+    for m in models:
+        cfgs = [c for c in names if (m, c) in by and status[(m, c)][0]]
+        if not cfgs:
+            continue
+        out += [f"### {m}", ""]
+        groups = []
+        for c in cfgs:
+            for d in by[(m, c)]:
+                for g in d["groups"]:
+                    if g["group"] not in groups:
+                        groups.append(g["group"])
+
+        def pooled(c, g):
+            v = []
+            for d in by[(m, c)]:
+                for r in d["requests"]:
+                    if r["group"] == g:
+                        v += r["runs_total_ms"]
+            return v
+
+        def block_p50(c, g):
+            res = {}
+            for d in by[(m, c)]:
+                v = [x for r in d["requests"] if r["group"] == g for x in r["runs_total_ms"]]
+                if v:
+                    res[d["ab"]["block"]] = pct(v, 50)
+            return res
+
+        n_blocks = max(len(by[(m, c)]) for c in cfgs)
+        out += [f"Latency per request, ms: p50 / p95 over requests x repeats x {n_blocks} blocks (in process, llama-decision-bench).", ""]
+        rows = []
+        for g in groups:
+            row = [g]
+            for c in cfgs:
+                v = pooled(c, g)
+                row.append("-" if not v else f"{pct(v, 50):.1f} / {pct(v, 95):.1f}")
+            rows.append(row)
+        out += [table(["group"] + cfgs, rows), ""]
+
+        if ref_name in cfgs and len(cfgs) > 1:
+            others = [c for c in cfgs if c != ref_name]
+            out += [f"Speedup against {ref_name}: {ref_name} p50 / config p50 of the same cycle; median (min - max) over the cycles. "
+                    "Above 1: faster than the reference.", ""]
+            rows = []
+            for g in groups:
+                rb = block_p50(ref_name, g)
+                row = [g]
+                for c in others:
+                    cb = block_p50(c, g)
+                    r = [rb[b] / cb[b] for b in sorted(rb) if b in cb and cb[b] > 0]
+                    row.append("-" if not r else f"{statistics.median(r):.2f}x ({min(r):.2f} - {max(r):.2f}, n={len(r)})")
+                rows.append(row)
+            out += [table(["group"] + [f"{c} vs {ref_name}" for c in others], rows), ""]
+
+        rows = []
+        for c in cfgs:
+            ds = by[(m, c)]
+            att = [a for d in ds for a in d["ab"]["attempts"]]
+            final = [d["ab"]["attempts"][-1] for d in ds]
+            gpu = []
+            for a in final:
+                gs = (a.get("gpu") or {}).get("gpus") or {}
+                if gs:  # the GPU this config kept busy
+                    gpu.append(max(gs.values(), key=lambda x: (x.get("util") or {}).get("mean") or 0))
+                elif (a.get("gpu") or {}).get("kind") == "ioreg":  # macOS: the whole GPU, no clocks or power
+                    gpu.append({"util": a["gpu"].get("Device Utilization %")})
+            gmem = [(a.get("gpu") or {}).get("process_mem_mib_max") for a in final]
+            # macOS: memory the GPU driver has in use, all processes (ioreg "In use system memory")
+            gmem += [x["max"] / 1048576 for x in [((a.get("gpu") or {}).get("In use system memory")) for a in final] if x]
+            rd = ready.get((m, c), {}).get("runs", [])
+            rd_ok = [r for r in rd if "ready_ms" in r]
+            props = (rd_ok[0].get("props") if rd_ok else None) or {}
+            wdev = ((props.get("memory") or ds[0].get("memory") or {}).get("weights_device_bytes"))
+            pl = ds[0].get("placement") or props.get("placement") or {}
+            cpu_n = (pl.get("backends") or {}).get("CPU")
+            hashes = {d["suite_hash"] for d in ds}
+            det = all(d["deterministic"] for d in ds) and len(hashes) == 1
+            la = [a["loadavg_before"][0] for a in final if a.get("loadavg_before")]
+            fc = [a.get("foreign_cores") for a in final if a.get("foreign_cores") is not None]
+            util = [x["util"]["mean"] for x in gpu if x.get("util")]
+            sm = [x["sm_mhz"]["median"] for x in gpu if x.get("sm_mhz")]
+            mm = [x["mem_mhz"]["median"] for x in gpu if x.get("mem_mhz")]
+            pw = [x["power_w"]["mean"] for x in gpu if x.get("power_w")]
+            def cpu_per_req(group):
+                return med([g["cpu_s"]["mean"] for d in ds for g in d["groups"] if g["group"] == group])
+            on_gpu = ds[0].get("device", "cpu") != "cpu"
+
+            def g_only(x):
+                return x if on_gpu else "-"
+            rows.append([c, fmt(med([d["load"]["ms"] for d in ds])),
+                         fmt(med([r["ready_ms"] for r in rd_ok])) + (f" (n={len(rd_ok)})" if rd_ok else ""),
+                         fmt(med([r.get("first_so1_ms") for r in rd_ok]), "{:.1f}"),
+                         f"{mib(med([d['memory']['after_load']['rss'] for d in ds]))} / {mib(med([d['memory']['end']['rss_peak'] for d in ds]))}",
+                         fmt(med([r.get("rss_kb_ready") for r in rd_ok]) and med([r.get("rss_kb_ready") for r in rd_ok]) / 1024),
+                         g_only(fmt(max([x for x in gmem if x is not None], default=None))),
+                         mib(wdev) if wdev else "0",
+                         f"{pl.get('nodes', '-')} / {pl.get('splits', '-')} / {cpu_n if cpu_n is not None else '-'}",
+                         g_only(fmt(med(util))), g_only(f"{fmt(med(sm))} / {fmt(med(mm))}"), g_only(fmt(med(pw))),
+                         f"{fmt(cpu_per_req('systemone 1q'), '{:.3f}')} / {fmt(cpu_per_req('router N=8'), '{:.3f}')}",
+                         f"{min(la):.1f} - {max(la):.1f}" if la else "-", fmt(max(fc) if fc else None, "{:.2f}"),
+                         str(len(att) - len(final)), "yes" if det else "NO"])
+        out += ["Resources: load = in-process model load (median over blocks); ready = llama-server --decision spawn -> /health 200, "
+                "first = the first so-1q-noul request after ready (HTTP); RSS MiB after load / peak (bench) and at ready (server); "
+                "GPU MiB = the most nvidia-smi showed for the bench process (macOS: the most ioreg showed in use by the GPU driver, all processes); weights = weights in device memory (/props); placement "
+                "= graph nodes / splits / nodes on the CPU (64-token graph); util %, SM / memory MHz and W: GPU samples every 200 ms "
+                "during the blocks (median of the block means; GPU configs only); CPU s = process CPU seconds per request of "
+                "systemone 1q / router N=8 (median of the block means); "
+                "load = 1-minute load average before the blocks; foreign = cores other processes used (max over blocks); re-run = "
+                "disturbed blocks measured again; det = the same logits hash in every run of every block.", ""]
+        out += [table(["config", "load ms", "ready ms", "first ms", "RSS", "RSS ready", "GPU MiB", "weights MiB", "placement",
+                       "util %", "SM / mem MHz", "W", "CPU s 1q / N=8", "load", "foreign", "re-run", "det"], rows), ""]
+        chat = run.get("chat")
+        if chat and chat.get("samples"):
+            alone = [x["tg_ts"] for x in chat["samples"] if x["phase"] == "alone" and x.get("tg_ts")]
+            rows = []
+            for c in cfgs:
+                win = [(a["t_start"], a["t_start"] + a["wall_s"]) for d in by[(m, c)] for a in d["ab"]["attempts"][-1:]]
+                v = [x["tg_ts"] for x in chat["samples"] if x["phase"] == "load" and x.get("tg_ts")
+                     and any(t0 <= x["t0"] and x["t1"] <= t1 for t0, t1 in win)]
+                rows.append([c, fmt(med(v), "{:.1f}") + f" (n={len(v)})",
+                             "-" if not v or not alone else f"{med(v) / med(alone):.2f}x"])
+            out += [f"Chat model ({Path(chat['model']).name}, {chat['n_predict']} tokens per completion, -ngl {chat['ngl']}) generating "
+                    f"the whole time: generation tokens/s of the completions that ran entirely inside the blocks of a config "
+                    f"(median); alone: {fmt(med(alone), '{:.1f}')} tokens/s (n={len(alone)}, before the blocks).", ""]
+            out += [table(["config", "chat tokens/s during the blocks", "vs alone"], rows), ""]
+        hs = {c: {d["suite_hash"] for d in by[(m, c)]} for c in cfgs}
+        out += ["Suite logits hash over the blocks: " + ", ".join(f"{c} {sorted(h)[0][:12]}" + ("" if len(h) == 1 else f" (+{len(h) - 1} more)")
+                                                              for c, h in hs.items())
+                + ". Different devices compute different bits; agreement is the parity gate's job.", ""]
+    if refused:
+        out += ["### Refused by the parity gate (no numbers)", "", table(["model", "config", "reason"], refused), ""]
+    return "\n".join(out)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="+")
@@ -580,6 +887,11 @@ def main():
     ap.add_argument("--summary", action="store_true",
                     help="engine vs PyTorch across every run in the paths (all stamps), plus equal-input checks")
     ap.add_argument("--model-sizes", metavar="FILE", help="--summary: `ls -l` of the model files (file MiB column)")
+    ap.add_argument("--parity", action="append", default=[], metavar="PATH",
+                    help="parity gate JSON or folder (verify_reference.py compare --json); repeatable")
+    ap.add_argument("--allow-ungated-cpu", action="store_true",
+                    help="print CPU rows without a parity record, marked ungated (never GPU rows)")
+    ap.add_argument("--ref", help="reference config of the CPU vs GPU speedups (default: the first config)")
     args = ap.parse_args()
     overrides = {}
     for f in args.family:
@@ -603,17 +915,21 @@ def main():
         sizes = read_sizes(args.model_sizes) if args.model_sizes else {}
         print(summary_report(runs, collect_checks(args.paths), overrides, sizes))
         return 0
+    gate = ParityGate(load_parity(args.parity), args.allow_ungated_cpu)
     pytorch = [d for r in runs.values() for d in r["pytorch"]]
-    engine_runs = [s for s, r in runs.items() if r["bench"] or r["server"]]
+    engine_runs = [s for s, r in runs.items() if r["bench"] or r["server"] or r["ab"]]
     stamp = args.stamp or (max(engine_runs) if engine_runs else None)
     if stamp is not None and stamp not in runs:
         print(f"no run with stamp {stamp}; have {', '.join(sorted(runs))}", file=sys.stderr)
         return 1
     parts = []
     if stamp is not None:
-        parts.append(report(runs[stamp]))
+        if runs[stamp]["bench"] or runs[stamp]["server"]:
+            parts.append(report(runs[stamp], gate))
+        if runs[stamp]["ab"]:
+            parts.append(device_report(runs[stamp], gate, args.ref))
     if pytorch:
-        parts.append(compare_report(runs.get(stamp), pytorch, overrides))
+        parts.append(compare_report(runs.get(stamp), pytorch, overrides, gate))
     print("\n\n".join(parts))
     return 0
 
