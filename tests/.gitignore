@@ -5,6 +5,9 @@
 !laya/golden/
 !laya/convert/
 !laya/convert/**/
+!laya/parity/
+!laya/parity/text/
+!laya/parity/results/
 !decision/
 !decision/golden/
 !decision/bench/

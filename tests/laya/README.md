@@ -166,8 +166,9 @@ python3  tests/laya/verify_reference.py server build/bin/llama-server laya-en-f1
 python3  tests/laya/verify_reference.py compare ref.jsonl cli_f32.jsonl server_f16.jsonl
 ```
 
-`cli` packs all questions of an item into one graph (`llama-laya-cli`, default kernels);
-`server` sends each item to one `llama-server --decision` process over HTTP, which runs the
+`cli` packs all questions of an item into one graph (`llama-laya-cli`, default kernels;
+`--plan sequential` runs one graph per question as the server does, which a device run needs to
+match the server bit for bit, see DECISION.md "Compute device"); `server` sends each item to one `llama-server --decision` process over HTTP, which runs the
 plan `sequential` (one graph per question) with the server's default threads and kernels
 (`--kernels` / `-t` override them), i.e. what a client of the server gets.
 
@@ -212,3 +213,18 @@ Python; `test-laya-convert-py` (`--check`) regenerates both sides.
 python tests/laya/make_tiny_hf_laya.py --golden                                    # rewrite fixtures + golden.sha256
 LAYA_REF_PYTHON=~/.cache/laya-ref/.venv/bin/python python tests/laya/make_tiny_hf_laya.py --check build/bin/llama-laya-convert
 ```
+
+## Backend parity (`parity/`)
+
+The parity corpus, the public-output gate and the identity records of Phase 4b (DECISION.md,
+"Backend parity tiers").
+
+| file | role |
+|---|---|
+| `parity/gen_corpus.py` | writes the corpus (`items.jsonl`, not committed) from `parity/text/` only; `--check` compares with `parity/corpus.json` |
+| `parity/text/prose.txt`, `parity/text/lexicon.json` | the only inputs of the generator, written for this corpus |
+| `parity/parity_gate.py` | the gate behind `verify_reference.py compare --gate` (port of the laya.cpp float-boundary rule, MIT) |
+| `parity/tiers.json` | pre-registered tiers and thresholds |
+| `parity/derive_tiers.py` | derives the thresholds from CPU runs and checks `tiers.json` |
+| `parity/identity.py` | identity records: build tree, GGUF, corpus, runtime, host; also used by `scripts/bench-decision.sh` |
+| `parity/test_parity_*.py` | offline tests (CI `decision-tests` job): `python -m pytest -q tests/laya/parity` |

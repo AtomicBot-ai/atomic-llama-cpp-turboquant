@@ -1,0 +1,45 @@
+{
+ "schema": "laya-parity-tiers/2",
+ "version": 2,
+ "registered": "2026-09-30, before any GPU run (DECISION.md, Backend parity tiers)",
+ "revisions": [
+  {"version": 1, "registered": "2026-09-30T17:37+03:00",
+   "note": "the numbers below, with the v1 rules: strict public numbers compared raw at 1e-4 (score unscaled, a server answer unrounded), q8_0 row = the q8_0 derivation, server_no_act_head allowed in both tiers, a missing public answer only counted; every gate JSON written before v2 used them"},
+  {"version": 2, "registered": "2026-10-01T12:45+03:00",
+   "before": "the v2 re-gate of the saved runs and the step-8 runs (build-4b/parity/v2)",
+   "changes": [
+    "strict-f32 public numbers: a candidate number whose reference number is 4-digit (the reference rounds its answers, a server answer is not rounded) is rounded with Python round(x, 4) first; a score error is divided by K - 1 (its range), as the derivation and the f16-class report always did; public_atol stays 1e-4 (both sides 4-digit: the error is a whole number of 1e-4 steps, the boundary rule passes one step)",
+    "server_no_act_head: dropped from strict-f32; in f16-class it passes only for a whole run without act logits (a server build before debug.act_logits), never for some questions of a run that has them",
+    "a missing public answer fails (v1 only counted it)",
+    "f16-class q8_0 row = the f16 row: no device quantizes activations (CUDA dequantizes Q8_0 since step 6), so a Q8_0 device run is gated against a CPU baseline with F32 activations by the f16 numbers; the v1 q8_0 numbers move to activation_quantized and apply only to a candidate that quantizes activations, against a baseline that quantizes them the same way",
+    "the baseline activation class is enforced from the identity records (check_identity)",
+    "max_abs_dp is a sanity bound for gross errors (it does not discriminate between backends; the mean bound and the flip rule carry f16-class)"
+   ]}
+ ],
+ "derivation": "python3 tests/laya/parity/derive_tiers.py --p4 <Phase 4 parity outputs> --check tests/laya/parity/tiers.json; each number = 2 x the largest value seen in the CPU pairs of its class, rounded up to one significant digit",
+ "tiers": {
+  "strict-f32": {
+   "baseline": "PyTorch fp32 reference on the CPU (verify_reference.py ref), same checkpoint revision as the GGUF",
+   "candidate_weights": ["f32"],
+   "candidate_backends": {"cpu": "any", "cuda": "strict"},
+   "argmax": "exact",
+   "public_rule": "round4-like-reference, score / (K - 1)",
+   "public_atol": 0.0001,
+   "act_max_rel_dlogit": 0.0002,
+   "known_differences": ["null_state_refused", "server_answer_shape"]
+  },
+  "f16-class": {
+   "baseline": "CPU run of the same GGUF whose activations are F32: kernels blas (or auto resolving to cpu+blas), or any CPU kernels on an F32 GGUF. A candidate that quantizes activations (identity runtime.activations, or CPU default / repack kernels on a quantized GGUF) needs a baseline that quantizes them the same way and the activation_quantized numbers",
+   "argmax": "a flip passes only when the baseline top-2 probability gap (softmax of the raw scorer logits, T = 1) is below flip_max_gap",
+   "known_differences": ["server_no_act_head"],
+   "weights": {
+    "f16": {"flip_max_gap": 0.009, "max_flip_fraction": 0.003, "max_abs_dp": 0.5, "mean_abs_dp": 0.002, "act_max_rel_dlogit": 0.2},
+    "f32": {"flip_max_gap": 0.009, "max_flip_fraction": 0.003, "max_abs_dp": 0.5, "mean_abs_dp": 0.002, "act_max_rel_dlogit": 0.2},
+    "q8_0": {"flip_max_gap": 0.009, "max_flip_fraction": 0.003, "max_abs_dp": 0.5, "mean_abs_dp": 0.002, "act_max_rel_dlogit": 0.2}
+   },
+   "activation_quantized": {
+    "q8_0": {"flip_max_gap": 0.4, "max_flip_fraction": 0.02, "max_abs_dp": 0.5, "mean_abs_dp": 0.005, "act_max_rel_dlogit": 0.3}
+   }
+  }
+ }
+}

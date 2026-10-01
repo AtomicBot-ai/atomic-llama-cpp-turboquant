@@ -1,0 +1,106 @@
+The community garden on the east side of the river opens at seven in the morning from April to October. Members sign the logbook at the shed before they take tools, and they write down which beds they watered. The water tank holds about two thousand liters, so on hot weeks we ask everyone to water early and to skip the paths. Last season the tomatoes in beds four to nine caught blight after a wet August, and the committee decided to rotate them to the south rows this year.
+
+Maintenance note for the harbor light, unit 3. The lamp assembly was cleaned on the second of the month and the lens showed two small chips near the lower rim. They do not affect the beam yet, but the inspector wants a photo every quarter. The backup battery tested at 12.4 volts under load, which is inside the range. The door seal on the lantern room is cracked and lets in salt spray during storms; a new seal is on order and should arrive within three weeks.
+
+Starting on the first Monday of next month, route 14 will no longer stop at the old market square. The stop moves two hundred meters north, in front of the post office. Buses leave the depot every twelve minutes during the morning peak and every twenty minutes after nine. The last bus on weekdays leaves at 23:40. Riders with a monthly pass do not need to do anything; single tickets bought on the old app keep working until the end of the year.
+
+Release notes, version 2.7.0. The export dialog now remembers the last folder. Large spreadsheets open about thirty percent faster because the parser reads rows lazily. We fixed a crash when a file name contained two dots in a row, and a bug where dark mode made the chart legend unreadable. The command line tool gained a --dry-run flag. Deprecated: the old XML config format; it will be removed in version 3.0, and a converter ships with this release.
+
+To make the weekend loaf, mix 500 grams of flour, 350 grams of water, 10 grams of salt and 100 grams of active starter. Rest the dough for thirty minutes, then fold it four times at half hour intervals. Let it rise until it has grown by about half, shape it, and keep it in the fridge overnight. Bake in a covered pot at 250 degrees for twenty minutes, then uncover and bake for another twenty to twenty five minutes, until the crust is deep brown.
+
+The lending policy of the branch library changed in January. Adults may borrow up to twenty items at a time, children up to ten. Books go out for three weeks and can be renewed twice unless someone else has placed a hold. Films and games go out for one week. There are no late fees any more, but an item that is sixty days overdue is marked as lost and the replacement cost is added to the account until the item comes back.
+
+Weather station 7 sits on a flat roof at 312 meters above sea level. It records air temperature, humidity, pressure, wind speed and direction, and rainfall every ten minutes. The rain gauge has a heater, so snow is measured as melt water. In the last calibration the humidity sensor read three percent high; the correction is applied in the data pipeline, not in the logger, so the raw files still show the old values.
+
+Warehouse safety checklist for the night shift. Walk the aisles before you start the forklift and look for pallets that stick out. Check that the emergency exits are clear and the doors open from the inside. Charge the handheld scanners at the end of the shift, not at the start. Report any spill on the floor at once, even if it looks small, and put a cone next to it. Never climb the racks; use the order picker and wear the harness.
+
+Room 5 of the museum holds the collection of clocks. The oldest piece is a wall clock with a single hand, made by a village smith who also repaired ploughs. It loses about fifteen minutes a day, which was considered acceptable at the time because the church bell set the hour anyway. Next to it stands a tall case clock with a painted moon disc that shows the phase of the moon. Please do not touch the cases; the mechanisms are wound by staff on Tuesdays.
+
+Minutes of the residents meeting, block C. Twenty two households attended. The elevator was out of service for nine days in March; the management company says the replacement part came from abroad and promises a maintenance contract with a two day response time. Residents asked for a second bicycle room. The proposal to paint the stairwell a lighter color passed with eighteen votes in favor and four abstentions. The next meeting is in June.
+
+The river cleanup started at the old railway bridge at nine. Thirty one volunteers collected forty seven bags of litter over a stretch of about two kilometers. Most of it was plastic bottles and food packaging, but we also pulled out two shopping carts, a car tire and a surprisingly intact office chair. The city picked up the bags on Monday. Thanks to the bakery on Mill Street for the free coffee and rolls.
+
+Onboarding guide for new support staff. In your first week you shadow a senior agent and read the tickets they answer. Do not close a ticket until the customer has confirmed the fix or has not replied for five working days. Use the macros for refunds and password resets, but always read the whole thread first: a quarter of the refund requests we see are really questions about a charge the customer does not recognise. If you are unsure, ask in the team channel instead of guessing.
+
+The chess club meets on Thursday evenings in the back room of the community center. Beginners are welcome; we keep a few boards aside for teaching and there is always someone happy to explain openings. Rapid games use a fifteen minute clock with a ten second increment. The spring tournament has seven rounds over seven weeks, and the pairing follows the Swiss system. Bring your own clock if you have one; the club owns only six.
+
+Hiking trail notes, ridge loop. The loop is 14 kilometers long with about 700 meters of climbing. The first section follows a forest road and is easy. After the second bridge the path gets steep and rocky for about two kilometers, and in wet weather the roots are slippery. There is no water on the ridge. The hut at the saddle is open on weekends from June to September and sells soup, tea and cake. Allow five to six hours.
+
+Printer troubleshooting. If the printer shows as offline, first check that it is on the same network as your laptop; the guest network cannot reach it. Then open the print queue and remove any stuck jobs. If pages come out with faint stripes, run the head cleaning program from the maintenance menu once, not more, because every cycle uses ink. Paper jams in tray 2 usually mean the paper guides are too tight. Call the help desk only if none of this works.
+
+The quarterly report shows revenue of 1.84 million, up six percent on the same quarter last year, mainly from the new service contracts. Costs grew faster than revenue because we hired four people ahead of the autumn season. The gross margin fell from 41 to 38 percent. Cash on hand is enough for about eleven months at the current burn rate. The board asked for a plan to bring the margin back above forty percent by the end of next year.
+
+Instructions for the shared kitchen. Label your food with your name and the date. The fridge is cleared every Friday afternoon, and anything without a label goes in the bin. Run the dishwasher when it is full, and empty it if you find it clean. Please do not leave pots soaking in the sink overnight. The coffee machine needs descaling once a month; the schedule is on the door of the cupboard above it.
+
+Field notes, bird survey, transect B. Clear sky, light wind from the west, eleven degrees at the start. We counted 64 individuals of 19 species along the two kilometer line. Highlights were a pair of stonechats on the fence near the second gate and a kestrel hunting over the meadow. The reed bed held at least four singing warblers, but we could not see them well enough to separate the two similar species, so they are recorded as unidentified.
+
+## Deployment checklist
+
+- Tag the release in the repository and wait for the build to finish.
+- Copy the archive to the staging server and run the smoke tests.
+- Check the dashboard for error rates for at least fifteen minutes.
+- Switch the load balancer to the new version one zone at a time.
+- Keep the old version ready for a rollback until the next morning.
+
+| Zone | Status | Error rate | Notes |
+|------|--------|-----------:|-------|
+| a | done | 0.02% | normal |
+| b | done | 0.03% | one slow node restarted |
+| c | pending | - | waiting for approval |
+
+```
+$ ./deploy.sh --zone c --version 2.7.0 --dry-run
+checking archive ... ok
+checking config  ... ok
+would switch 12 nodes
+```
+
+Frequently asked questions. Can I change my delivery address after ordering? Yes, as long as the order has not been packed; open the order page and choose edit address. Why was my card charged twice? Usually one of the charges is a temporary hold that disappears within five working days. Do you ship abroad? We ship to most countries in Europe; delivery takes four to ten days. How do I return an item? Print the label from your account and drop the parcel at any partner shop.
+
+The school trip to the science park leaves at 8:15 from the main entrance and returns at about 16:30. Pupils need a packed lunch, a water bottle and a rain jacket. The park has a planetarium show at eleven and a workshop on simple circuits after lunch. Teachers will split the class into four groups of seven. Parents who have not yet returned the consent form should send it by Wednesday at the latest.
+
+Instructions for the lab centrifuge. Always balance the rotor: tubes opposite each other must have the same volume, within half a milliliter. Close the lid until it clicks before you start the run. Do not open the lid while the rotor is still turning, even if the display says zero. Wipe any spill inside the chamber with the approved disinfectant and write it in the log. The rotor has a service life of ten thousand runs; the counter is on the side panel.
+
+Neighborhood news. The corner shop on Linden Road reopens next week under new owners, who promise longer opening hours and fresh bread every morning. The playground behind the school gets new swings and a rubber floor over the summer holidays. Road works on the bridge will close one lane for about six weeks from mid July. The street festival is planned for the last Saturday in August, and the organisers are still looking for volunteers to run the lemonade stand.
+
+A short history of the mill. The first water mill on this site ground grain for the surrounding farms. In the nineteenth century it was rebuilt in brick and fitted with a larger wheel, and later with a turbine that also produced electricity for the village. Milling stopped after the last miller retired, and the building stood empty for many years. A local trust bought it, repaired the roof and the wheel, and now runs it as a small museum that grinds flour on open days.
+
+Service desk policy for hardware requests. Laptops are replaced every four years or earlier if repair would cost more than half of a new device. Monitors and docking stations are ordered through the portal and usually arrive within a week. Personal devices may connect to the guest network only. Lost or stolen equipment must be reported within twenty four hours so the device can be locked remotely. Keep the original box for returns during the first thirty days.
+
+The choir rehearses on Monday evenings in the hall of the old school. This term we are preparing a program of folk songs from several countries for the winter concert. Singers get the sheet music by email a week before each rehearsal and are asked to listen to the practice recordings at home. We need two more tenors. No audition is required, but new members should be able to hold a part in a group after a few weeks of practice.
+
+Allotment rules, summary. Keep at least three quarters of your plot under cultivation. Paths between plots must stay clear and be mowed regularly. Bonfires are allowed only between November and February, and never when the wind blows towards the houses. Hosepipes may be used only in the evening. Sheds may not be taller than two meters. A plot left untended for a whole season can be offered to the next person on the waiting list.
+
+Installation notes. Download the archive for your platform and unpack it into a folder without spaces in the path. On first start the program creates a settings file in your home folder and asks for the data directory. If you use a proxy, set it in the settings file under the network section; the program does not read the system proxy. To update, replace the program folder but keep the settings file. Uninstalling does not remove your data.
+
+Customer interview summary. The customer runs three small cafes and uses the booking tool mainly for table reservations on weekends. She likes the calendar view but finds the reminder emails too long. Staff often forget to mark no-shows, so the statistics look better than reality. She would pay more for a simple loyalty feature, but not for the marketing module. She asked twice whether the tool works offline, because the internet in one of the cafes is unreliable.
+
+Water supply notice. On Tuesday between nine and three the water will be turned off in the streets north of the canal while a main valve is replaced. Please fill a few bottles in advance. After the supply returns, the water may look cloudy for a short time because of air in the pipes; let the cold tap run for a minute until it clears. The works were announced by letter, but several residents said they did not receive it, so we are repeating the notice here.
+
+A note on the bicycle repair workshop. Every second Saturday, volunteers help people fix their own bikes. We have tools, a stand and some common spare parts such as tubes, brake pads and cables at cost price. We do not repair bikes for you, but we will show you how. Children must come with an adult. Last month we fixed twenty three bikes, mostly punctures and gears that would not shift cleanly.
+
+Das Gemeindezentrum bleibt vom 24. Dezember bis zum 2. Januar geschlossen. In dieser Zeit finden keine Kurse statt, und die Sporthalle kann nicht gemietet werden. Die Anmeldung für die Frühjahrskurse beginnt am 8. Januar; die Plätze werden in der Reihenfolge der Anmeldungen vergeben. Wer einen Kurs nicht mehr besuchen möchte, meldet sich bitte bis zum ersten Kurstag ab, damit Personen auf der Warteliste nachrücken können.
+
+La bibliothèque municipale propose désormais des ateliers d'écriture le mercredi après-midi, pour les adolescents de douze à seize ans. Les places sont limitées à quinze participants par séance. Les textes écrits pendant l'année seront réunis dans un petit recueil imprimé au mois de juin. L'inscription se fait à l'accueil ou par téléphone, et la participation est gratuite pour les abonnés.
+
+El taller de reparación de bicicletas abre los sábados por la mañana en el patio del centro cultural. Los voluntarios enseñan a cambiar una cámara, ajustar los frenos y engrasar la cadena. Las piezas pequeñas se venden a precio de coste. Por favor, traigan la bicicleta limpia y lleguen antes de las once, porque a partir de esa hora ya no aceptamos nuevas reparaciones.
+
+Уважаемые жильцы! В четверг с десяти до шестнадцати часов в подъезде будут менять почтовые ящики. Просим освободить свои ящики заранее и забрать ключи у старшего по дому после окончания работ. Если вы не успеете, письма на это время будут храниться у консьержа. Приносим извинения за неудобства и благодарим за понимание.
+
+Il mercato contadino si sposta dalla piazza al parco della stazione per tutto il mese di luglio, a causa dei lavori sulla pavimentazione. Gli orari restano gli stessi, dalle otto alle tredici del sabato. I produttori chiedono di portare borse proprie e contenitori per le uova. Il parcheggio del parco è gratuito il sabato mattina.
+
+A associação de moradores organiza um mutirão de limpeza da praça no próximo domingo, às nove horas. Haverá luvas, sacos e água para todos. Depois da limpeza, vamos plantar dez mudas de árvores doadas pelo viveiro municipal. Crianças são bem-vindas, desde que acompanhadas por um adulto responsável.
+
+社区图书馆从下个月开始延长开放时间，周一到周五晚上开到九点，周末开到六点。新的自助借还机放在一楼入口旁边，使用读者证就可以操作。如果您的读者证已经过期，请带身份证件到服务台办理续期。儿童阅览室的故事会每周六上午十点举行，欢迎家长带孩子参加。
+
+市民センターの工作教室は、毎月第二土曜日の午後に開かれます。今月は木の小箱を作ります。材料費は三百円で、道具はセンターで用意します。定員は十二名で、先着順です。小学生は保護者と一緒に参加してください。作品は当日持ち帰ることができます。
+
+주민센터에서 다음 주부터 노인을 위한 스마트폰 교실을 운영합니다. 수업은 매주 화요일과 목요일 오전 열 시에 시작하며, 한 반에 여덟 명까지 참여할 수 있습니다. 문자 보내기, 사진 찍기, 영상 통화 같은 기본 기능을 배웁니다. 신청은 전화나 방문으로 가능합니다.
+
+يعلن النادي الرياضي عن بدء التسجيل في دورة السباحة للأطفال خلال العطلة الصيفية. تستمر الدورة أربعة أسابيع، بمعدل ثلاث حصص في الأسبوع. يرجى إحضار شهادة طبية حديثة عند التسجيل. عدد المقاعد محدود، والأولوية لأعضاء النادي.
+
+सामुदायिक बगीचे में इस रविवार सुबह पौधारोपण का कार्यक्रम है। सभी सदस्यों से अनुरोध है कि वे अपने दस्ताने और पानी की बोतल साथ लाएं। कार्यक्रम के बाद चाय और नाश्ते की व्यवस्था की गई है। बच्चों के लिए चित्रकला प्रतियोगिता भी आयोजित होगी।
+
+Belediye, önümüzdeki ay mahalle parkına yeni oyun alanı ve bisiklet yolu yapacağını duyurdu. Çalışmalar sırasında parkın kuzey girişi kapalı olacak. Yürüyüş yolu açık kalacak, ancak ziyaretçilerin uyarı levhalarına dikkat etmesi rica ediliyor. İşlerin sonbahar başında bitmesi bekleniyor.
+
+Spółdzielnia mieszkaniowa informuje, że w przyszłym tygodniu odbędzie się przegląd instalacji gazowej. Technik odwiedzi każde mieszkanie między ósmą a szesnastą. Jeśli nie będzie Państwa w domu, prosimy o kontakt z administracją w celu ustalenia innego terminu. Przegląd jest obowiązkowy i bezpłatny.
