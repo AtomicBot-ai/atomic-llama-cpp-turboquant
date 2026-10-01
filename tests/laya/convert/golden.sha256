@@ -1,0 +1,8 @@
+# sha256 of convert_hf_to_gguf.py output (this tree's gguf-py): <file> <fixture> <outtype> <model-name|-> <bytes> <sha256>
+laya-tiny-ms-v0.1-8M-f32.gguf laya-tiny-ms-v0.1-8M f32 - 136128 f339add27ed35e9db4c09af1f17a032237c7cfa5d83dd5d0b95038a84fc6642f
+laya-tiny-ms-v0.1-8M-f16.gguf laya-tiny-ms-v0.1-8M f16 - 73216 f184dd89d6d3561b50eda74fc3591d34e3eebdc524c2b42935f7d38dfb56f8a4
+laya-tiny-ms-v0.1-8M-q8_0.gguf laya-tiny-ms-v0.1-8M q8_0 - 45312 8206ec12b7c7a3927476b74e99c5e387239cb5767300f3bb985efca4af11e89f
+laya-tiny-ms-v0.1-8M-f16-name.gguf laya-tiny-ms-v0.1-8M f16 tiny-ms 73184 b0f919489693d0d0486399adb7cd77d60ee16d15c82d8d85f204e2a2cb58c742
+laya-bl-tiny-instruct-30K-f32.gguf laya-bl-tiny-instruct-30K f32 - 119840 bfae31fd0c366ae43f7a5a676ee7b74238833df485da9e54cfe955a81acec45c
+laya-bl-tiny-instruct-30K-f16.gguf laya-bl-tiny-instruct-30K f16 - 64192 da6fbc25ff90641d739d78fcc1ad511bb2b9c9df52486cdd1d6f1b6e8374891b
+laya-bl-tiny-instruct-30K-q8_0.gguf laya-bl-tiny-instruct-30K q8_0 - 40192 b596ad082b41d7526a679374771f23968cb153083faa7346bfb9bd51fe309c31

@@ -16,6 +16,10 @@
 //       Kernels change the logits slightly.
 //   llama-laya-cli -m laya-f16.gguf --tokenize strings.jsonl   (one JSON string per line;
 //       prints the token ids of each, add_special_tokens=False, for tests/laya/verify_tokenizer.py)
+//   -m may also be a laya Hugging Face checkpoint directory: it is converted once into the GGUF
+//       cache and the cached GGUF is loaded (as llama-server --decision -m DIR, see
+//       tools/decision/decision-checkpoint.h); --decision-convert-cache DIR, --decision-convert-type
+//       f16|f32 (default f16). "model" in the output is -m as given.
 //
 // input.json format (same as the golden fixtures under tests/laya/golden):
 //   {
@@ -34,6 +38,7 @@
 #include "laya.h"
 #include "laya-decide.h"
 #include "decision.h"
+#include "decision-checkpoint.h"
 #include "decision-json.h"
 
 #include <algorithm>
@@ -109,6 +114,8 @@ int main(int argc, char ** argv) {
     int n_bench   = 0; // >0: repeat the forward pass in-process for timing/stability
     std::string kernels = "default";
     laya_model_params mparams;
+    decision_checkpoint_params cparams;
+    bool convert_opts = false; // --decision-convert-* given
 
     // Windows: argv is in the ANSI code page; paths go on as UTF-8 (ggml_fopen, gguf, laya)
     const std::vector<std::string> args = decision_utf8_args(argc, argv);
@@ -130,13 +137,30 @@ int main(int argc, char ** argv) {
                 fprintf(stderr, "laya: --kernels must be auto, default, repack, blas or repack+blas\n");
                 return 1;
             }
+        } else if (arg == "--decision-convert-cache") {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "laya: --decision-convert-cache needs a value\n");
+                return 1;
+            }
+            cparams.cache_dir = args[++i];
+            convert_opts      = true;
+        } else if (arg == "--decision-convert-type") {
+            const std::string t = i + 1 < argc ? args[++i] : "";
+            if (t != "f16" && t != "f32") {
+                fprintf(stderr, "laya: --decision-convert-type must be f16 or f32\n");
+                return 1;
+            }
+            laya_convert_parse_outtype(t, cparams.outtype);
+            convert_opts = true;
         } else if (arg == "--no-mmap") {
             mparams.use_mmap = false;
         } else if (arg == "--mlock") {
             mparams.use_mlock = true;
         } else if (arg == "-h" || arg == "--help") {
             printf("Usage: %s -m <laya-f16.gguf> -f <input.json> [-t threads] [-b bench_runs] [--kernels default|auto|repack|blas|repack+blas] [--no-mmap] [--mlock]\n"
-                   "       %s -m <laya-f16.gguf> --tokenize <strings.jsonl>\n", argv[0], argv[0]);
+                   "       %s -m <laya-f16.gguf> --tokenize <strings.jsonl>\n"
+                   "       -m <checkpoint-dir> [--decision-convert-cache DIR] [--decision-convert-type f16|f32]: convert once into the GGUF cache, then load\n",
+                   argv[0], argv[0]);
             return 0;
         } else {
             fprintf(stderr, "laya: unknown argument: %s\n", arg.c_str());
@@ -152,6 +176,20 @@ int main(int argc, char ** argv) {
     // DL builds have no static CPU backend
     ggml_backend_load_all();
 
+    // -m DIR: convert once into the GGUF cache (or reuse it), then load that GGUF
+    decision_model_source source;
+    if (convert_opts && !decision_path_is_dir(model_path)) {
+        fprintf(stderr, "laya: warning: --decision-convert-cache/--decision-convert-type apply to -m DIR only and are ignored for a GGUF file\n");
+    }
+    {
+        cparams.log = [](const std::string & msg) { fprintf(stderr, "laya: %s\n", msg.c_str()); };
+        std::string err;
+        if (!decision_model_source_resolve(model_path, cparams, source, err)) {
+            fprintf(stderr, "laya: failed to load model: %s\n", err.c_str());
+            return 1;
+        }
+    }
+
     // load the self-contained model
     laya_model * model = nullptr;
     try {
@@ -159,7 +197,7 @@ int main(int argc, char ** argv) {
             kernels = laya_blas_description() == "Accelerate" ? "blas" : "default";
         }
         mparams.use_extra_bufts = kernels == "repack" || kernels == "repack+blas";
-        model = laya_model_load_from_file_ext(model_path.c_str(), mparams);
+        model = laya_model_load_from_file_ext(source.gguf_path.c_str(), mparams);
     } catch (const std::exception & e) {
         fprintf(stderr, "laya: failed to load model: %s\n", e.what());
         return 1;

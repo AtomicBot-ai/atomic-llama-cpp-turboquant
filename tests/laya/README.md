@@ -194,3 +194,21 @@ plan `sequential` (one graph per question) with the server's default threads and
   the dense `kq` matrix grows quadratically with total tokens. For a handful
   of questions, call the model once per question.
 
+## Converter fixtures (`convert/`)
+
+`make_tiny_hf_laya.py` writes two tiny laya HF checkpoints with the layout of the real ones, for
+`llama-laya-convert` (`tools/laya/laya-convert.h`):
+
+| directory | family | weights |
+|---|---|---|
+| `laya-tiny-ms-v0.1-8M` | metaspace BPE with byte fallback (mmBERT) | F16, one shard |
+| `laya-bl-tiny-instruct-30K` | byte-level BPE, NFC (ModernBERT) | F32 / F16 / BF16 / F64, two shards + index, NaN / inf / subnormal / F16-tie values |
+
+`convert/golden.sha256` holds the SHA-256 of the Python converter's GGUF for 7 cases (f32 / f16 /
+q8_0, one with `--model-name`). `test-laya-convert` checks the C++ output against it without
+Python; `test-laya-convert-py` (`--check`) regenerates both sides.
+
+```bash
+python tests/laya/make_tiny_hf_laya.py --golden                                    # rewrite fixtures + golden.sha256
+LAYA_REF_PYTHON=~/.cache/laya-ref/.venv/bin/python python tests/laya/make_tiny_hf_laya.py --check build/bin/llama-laya-convert
+```
