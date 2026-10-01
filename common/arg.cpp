@@ -1479,6 +1479,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             if (params.cpuparams.n_threads <= 0) {
                 params.cpuparams.n_threads = std::thread::hardware_concurrency();
             }
+            params.decision.threads_set = true;
         }
     ).set_env("LLAMA_ARG_THREADS"));
     add_opt(common_arg(
@@ -3395,6 +3396,137 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.pooling_type = LLAMA_POOLING_TYPE_RANK;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_RERANKING"));
+    add_opt(common_arg(
+        {"--decision"},
+        "serve a decision model (Decision API v1, see DECISION.md) instead of chat; requires -m (a GGUF file or a laya\n"
+        "Hugging Face checkpoint directory, converted once into a GGUF cache) (default: disabled)",
+        [](common_params & params) {
+            params.decision.enabled = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION"));
+    add_opt(common_arg(
+        {"--decision-convert-cache"}, "DIR",
+        "-m DIR (a laya Hugging Face checkpoint directory): where the converted GGUF is cached\n"
+        "(default: $LLAMA_CACHE/laya/gguf-cache, else the user cache: macOS ~/Library/Caches/llama.cpp/laya/gguf-cache,\n"
+        "Linux $XDG_CACHE_HOME or ~/.cache + /llama.cpp/laya/gguf-cache, Windows %LOCALAPPDATA%\\llama.cpp\\laya\\gguf-cache)",
+        [](common_params & params, const std::string & value) {
+            params.decision.convert_cache = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_CONVERT_CACHE"));
+    add_opt(common_arg(
+        {"--decision-convert-type"}, "TYPE",
+        string_format("-m DIR: weight type of the converted GGUF: f16 or f32 (default: %s; for Q8_0 quantize the f16 GGUF\n"
+                      "with tests/laya/quantize.sh, which keeps the precision-sensitive tensors at F16)", params.decision.convert_type.c_str()),
+        [](common_params & params, const std::string & value) {
+            if (value != "f16" && value != "f32") {
+                throw std::invalid_argument("--decision-convert-type must be f16 or f32");
+            }
+            params.decision.convert_type = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_CONVERT_TYPE"));
+    add_opt(common_arg(
+        {"--decision-spec"}, "FNAME",
+        "decision spec JSON that replaces the decision.spec of the GGUF (default: from the GGUF)",
+        [](common_params & params, const std::string & value) {
+            params.decision.spec_path = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_SPEC"));
+    add_opt(common_arg(
+        {"--decision-plan"}, "NAME",
+        "decision compute plan; laya: sequential, packed (default: from the spec)",
+        [](common_params & params, const std::string & value) {
+            params.decision.plan = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_PLAN"));
+    add_opt(common_arg(
+        {"--decision-kernels"}, "NAME",
+        "decision matmul kernels; laya: auto (blas when the BLAS backend is Accelerate, else default), default (ggml CPU),\n"
+        "repack (CPU repack buffers), blas (BLAS backend), repack+blas; kernels change the logits slightly\n"
+        "(default: from the spec, then auto)",
+        [](common_params & params, const std::string & value) {
+            if (value != "auto" && value != "default" && value != "repack" && value != "blas" && value != "repack+blas") {
+                throw std::invalid_argument("--decision-kernels must be auto, default, repack, blas or repack+blas");
+            }
+            params.decision.kernels = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_KERNELS"));
+    add_opt(common_arg(
+        {"--decision-precision"}, "{default,strict}",
+        "decision matmul precision request; default: F32 accumulation (PEDANTIC for the activation x activation\n"
+        "matmuls), strict: GGML_PREC_F32_PEDANTIC on every matmul (strict-f32 parity mode, slower on CUDA);\n"
+        "the CPU and BLAS kernels compute the same bits in both modes (default: default)",
+        [](common_params & params, const std::string & value) {
+            if (value != "default" && value != "strict") {
+                throw std::invalid_argument("--decision-precision must be default or strict");
+            }
+            params.decision.precision = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_PRECISION"));
+    add_opt(common_arg(
+        {"--decision-device"}, "{cpu,gpu,auto}",
+        "decision compute device; cpu, gpu (the GPU / iGPU device of --decision-gpu, an error when there is none)\n"
+        "or auto (that device when it exists, else the CPU); a device takes --decision-kernels auto or default\n"
+        "(default: cpu)",
+        [](common_params & params, const std::string & value) {
+            if (value != "cpu" && value != "gpu" && value != "auto") {
+                throw std::invalid_argument("--decision-device must be cpu, gpu or auto");
+            }
+            params.decision.device = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_DEVICE"));
+    add_opt(common_arg(
+        {"--decision-gpu"}, "N",
+        string_format("GPU / iGPU device for --decision-device gpu or auto, 0 = the first (discrete GPUs before integrated ones)\n"
+                      "(default: %d)", params.decision.gpu),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--decision-gpu must be >= 0");
+            }
+            params.decision.gpu = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_GPU"));
+    add_opt(common_arg(
+        {"--decision-strict-placement"},
+        "with a decision device: fail at load when a graph node outside the allowlist would run on the CPU\n"
+        "(default: disabled, such nodes run on the CPU)",
+        [](common_params & params) {
+            params.decision.strict_placement = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_STRICT_PLACEMENT"));
+    add_opt(common_arg(
+        {"--decision-queue"}, "N",
+        string_format("decision requests that may wait before new ones get 429 (default: %d)", params.decision.queue),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--decision-queue must be >= 0");
+            }
+            params.decision.queue = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_QUEUE"));
+    add_opt(common_arg(
+        {"--decision-max-items"}, "N",
+        string_format("max questions per /v1/systemone request and candidates per /v1/router/score request (default: %d)", params.decision.max_items),
+        [](common_params & params, int value) {
+            if (value < 1) {
+                throw std::invalid_argument("--decision-max-items must be >= 1");
+            }
+            params.decision.max_items = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_MAX_ITEMS"));
+    add_opt(common_arg(
+        {"--decision-allow-uncalibrated"},
+        "serve /v1/router/score without a router calibration: calibrated=false, p = sigmoid(logit) (default: disabled)",
+        [](common_params & params) {
+            params.decision.allow_uncalibrated = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_ALLOW_UNCALIBRATED"));
+    add_opt(common_arg(
+        {"--decision-debug"},
+        "decision debug mode: raw logits and token ids in answers, POST /v1/decision/render, request logging (default: disabled)",
+        [](common_params & params) {
+            params.decision.debug = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_DEBUG"));
     add_opt(common_arg(
         {"--api-key"}, "KEY",
         "API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)",

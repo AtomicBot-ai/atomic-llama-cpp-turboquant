@@ -1,0 +1,14 @@
+{
+ "items_sha256": "2d719419ed7eac4b18eff04ae8301f9d9177f529ced78d1f88487269144b1aa7",
+ "bytes": 3272474,
+ "items": 915,
+ "questions": 2579,
+ "english_items": 635,
+ "english_questions": 1816,
+ "question_types": {
+  "choice": 911,
+  "noul": 846,
+  "score": 822
+ },
+ "seed": 20260930
+}
