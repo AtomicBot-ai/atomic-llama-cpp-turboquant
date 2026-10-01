@@ -138,6 +138,7 @@ def test_props():
     assert d["calibration"]["calibrated"] is True  # tiny model has laya.temperature != 1
     assert d["router"]["available"] is False
     assert d["plan"]["name"] == "sequential" and d["plan"]["n_threads"] == 2
+    assert d["plan"]["precision"] == "default"
     # the tiny vocabulary has no added "\n\n" token, so splitting router states is not exact
     assert d["plan"]["state_split"] is False
     assert d["device"] == "cpu"
@@ -225,6 +226,136 @@ def test_load_modes_same_answers(load_mode, no_warmup):
     assert mem["weights_mapped_bytes"] == (518 * 64 * 2 if load_mode.startswith("mmap") else 0), mem
     assert systemone_answers(other) == ref
     other.stop()
+
+
+# the CPU and BLAS kernels ignore the matmul precision request: strict computes the same bits
+@pytest.mark.parametrize("kernels", ["default", "auto"])
+def test_precision_strict_same_bits(kernels):
+    server.decision_debug = True
+    server.decision_kernels = kernels
+    server.start()
+    ref = systemone_answers(server)
+    server.stop()
+    other = tiny_laya_decision_server()
+    other.decision_debug = True
+    other.decision_kernels = kernels
+    other.decision_precision = "strict"
+    other.start()
+    assert other.make_request("GET", "/props").body["decision"]["plan"]["precision"] == "strict"
+    assert systemone_answers(other) == ref
+    other.stop()
+
+
+# an unexpected exception (on the worker or on the HTTP thread) is a 500 with a fixed message; its
+# text goes to the server log only
+@pytest.mark.parametrize("where", ["worker", "http"])
+def test_internal_error_hides_details(where, tmp_path):
+    server.decision_debug = True
+    server.extra_env = {"LLAMA_DECISION_DEBUG_THROW": where}
+    server.log_path = os.path.join(tmp_path, "server.log")
+    server.start()
+    res = server.make_request("POST", "/v1/systemone", data={"state": "x", "questions": {"q": QUESTIONS["refund"]}})
+    assert res.status_code == 500, res.body
+    err = res.body["error"]
+    assert err["code"] == 500 and err["reason"] == "INTERNAL", err
+    assert err["message"] == "internal error while processing the request (details in the server log)", err
+    assert "secret" not in json.dumps(res.body)
+    # the other routes keep working
+    assert server.make_request("GET", "/health").status_code == 200
+    server.stop()
+    with open(server.log_path, errors="replace") as f:
+        assert "debug: injected failure at /private/decision-debug-secret" in f.read()
+
+
+def laya_cli_path():
+    srv = os.environ.get("LLAMA_SERVER_BIN_PATH") or ("../../../build/bin/Release/llama-server.exe" if os.name == "nt" else "../../../build/bin/llama-server")
+    return os.path.join(os.path.dirname(srv), "llama-laya-cli" + (".exe" if os.name == "nt" else ""))
+
+
+def test_act_probability():
+    # the reference Agent's action head: act_probability = round(softmax(act logits)[0], 4), in systemone
+    # answers only; --decision-debug adds the raw act logits
+    server.decision_debug = True
+    server.decision_allow_uncalibrated = True
+    server.start()
+    answers = systemone_answers(server)
+    for qid, a in answers.items():
+        p = a["action"]["act_probability"]
+        assert 0.0 <= p <= 1.0 and round(p, 4) == p, (qid, a)
+        z = a["debug"]["act_logits"]
+        assert len(z) == 2 and all(math.isfinite(x) for x in z), (qid, a)
+        e = [math.exp(x - max(z)) for x in z]
+        assert abs(e[0] / sum(e) - p) <= 5e-5 + 1e-6, (qid, z, p)
+    # router scores have no action and no act logits
+    score = server.make_request("POST", "/v1/router/score", data=router_body("a")).body["scores"][0]
+    assert "action" not in score and "act_logits" not in score["debug"], score
+    server.stop()
+    # without --decision-debug: the action stays, the debug block goes
+    server.decision_debug = False
+    server.start()
+    assert all("action" in a and "debug" not in a for a in systemone_answers(server).values())
+
+
+def test_act_probability_matches_cli(tmp_path):
+    # one question per request and per CLI run: the same graph on both sides (the CLI packs a file's
+    # questions into one graph), default kernels on both, so the act logits and act_probability are
+    # bitwise the llama-laya-cli values
+    cli = laya_cli_path()
+    if not os.path.exists(cli):
+        pytest.skip("no llama-laya-cli next to llama-server")
+    server.decision_debug = True
+    server.decision_kernels = "default"
+    server.start()
+    for qid, q in QUESTIONS.items():
+        body = {"state": "Billed twice, please refund", "questions": {qid: q}}
+        a = server.make_request("POST", "/v1/systemone", data=body).body["answers"][qid]
+        path = os.path.join(tmp_path, qid + ".json")
+        with open(path, "w") as f:
+            json.dump(body, f)
+        out = subprocess.run([cli, "-m", server.model_file, "-f", path, "-t", "2"], capture_output=True, check=True)
+        d = json.loads(out.stdout)
+        pq, ca = d["per_question"][qid], d["answers"][qid]
+        assert pq["input_ids"] == a["debug"]["tokens"], qid
+        assert pq["raw_logits"] == a["debug"]["logits"], qid
+        assert pq["act_raw_logits"] == a["debug"]["act_logits"], qid
+        assert ca["action"] == a["action"], (qid, ca["action"], a["action"])
+
+
+def test_cli_plan_sequential_matches_server(tmp_path):
+    # llama-laya-cli --plan sequential: one graph per question, as the server runs them, so a file with
+    # several questions gives the server's bits (default kernels on both sides); --plan packed (the default)
+    # keeps the input ids and answers keys, and a bad plan name is refused
+    cli = laya_cli_path()
+    if not os.path.exists(cli):
+        pytest.skip("no llama-laya-cli next to llama-server")
+    server.decision_debug = True
+    server.decision_kernels = "default"
+    server.start()
+    body = {"state": "Billed twice, please refund", "questions": QUESTIONS}
+    answers = server.make_request("POST", "/v1/systemone", data=body).body["answers"]
+    path = os.path.join(tmp_path, "all.json")
+    with open(path, "w") as f:
+        json.dump(body, f)
+    runs = {}
+    for plan in ("sequential", "packed"):
+        out = subprocess.run([cli, "-m", server.model_file, "-f", path, "-t", "2", "--plan", plan], capture_output=True, check=True)
+        runs[plan] = json.loads(out.stdout)
+        assert '"plan":"%s"' % plan in out.stderr.decode("utf-8")
+    for qid, a in answers.items():
+        pq = runs["sequential"]["per_question"][qid]
+        assert pq["input_ids"] == a["debug"]["tokens"], qid
+        assert pq["raw_logits"] == a["debug"]["logits"], qid
+        assert pq["act_raw_logits"] == a["debug"]["act_logits"], qid
+        assert runs["packed"]["per_question"][qid]["input_ids"] == pq["input_ids"], qid
+    assert runs["packed"]["answers"].keys() == runs["sequential"]["answers"].keys()
+    bad = subprocess.run([cli, "-m", server.model_file, "-f", path, "--plan", "rows"], capture_output=True)
+    assert bad.returncode != 0 and b"--plan must be packed or sequential" in bad.stderr
+
+
+def test_unknown_precision_fails():
+    server.decision_precision = "fast"
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
 
 
 def apple_silicon() -> bool:
@@ -708,7 +839,10 @@ def test_router_unknown_fields_warn():
 def test_unknown_routes_404():
     server.start()
     for path in ["/v1/chat/completions", "/completion", "/v1/embeddings", "/v1/decision/render"]:
-        res = server.make_request("POST", path, data={})
+        # no body: httplib answers an unknown route without reading it and closes the connection
+        # (Connection: close on >= 400); on Windows closing a socket with unread data sends RST,
+        # which can reach the client before the 404 and fail the request (WinError 10054)
+        res = server.make_request("POST", path, data=None)
         assert res.status_code == 404, path
     assert server.make_request("GET", "/metrics").status_code == 404
     assert server.make_request("GET", "/").status_code == 404
@@ -911,6 +1045,154 @@ def test_metrics():
 
 
 #
+# compute device (--decision-device, --decision-gpu, --decision-strict-placement)
+#
+
+def device_props(srv: ServerProcess) -> dict:
+    return srv.make_request("GET", "/props").body["decision"]
+
+
+def assert_cpu_placement(d: dict):
+    # every compute node on the CPU backend (BLAS for its matmuls), no fallback, nothing in device memory
+    p = d["placement"]
+    assert d["device"] == "cpu" and d["device_description"] == ""
+    assert p["nodes"] > 0 and p["splits"] >= 1, p
+    assert set(p["backends"]) <= {"CPU", "BLAS"} and sum(p["backends"].values()) == p["nodes"], p
+    assert p["cpu_fallback"] == 0 and p["fallback_ops"] == [], p
+    assert p["host_weights"] == 0, p
+    assert d["memory"]["weights_device_bytes"] == 0
+
+
+def test_props_placement_cpu():
+    server.start()
+    d = device_props(server)
+    assert_cpu_placement(d)
+    assert d["placement"]["strict"] is False
+    # the ggml CPU kernels: one backend, one split
+    if d["plan"]["kernels"] == "cpu":
+        assert d["placement"]["splits"] == 1 and list(d["placement"]["backends"]) == ["CPU"]
+
+
+def test_device_cpu_explicit_same_bits():
+    # --decision-device cpu is the default; strict placement has nothing to refuse on the CPU
+    server.start()
+    ref = systemone_answers(server)
+    server.stop()
+    other = tiny_laya_decision_server()
+    other.decision_device = "cpu"
+    other.decision_strict_placement = True
+    other.start()
+    d = device_props(other)
+    assert_cpu_placement(d)
+    assert d["placement"]["strict"] is True
+    assert systemone_answers(other) == ref
+    other.stop()
+
+
+def test_device_auto():
+    # auto: the first GPU / iGPU of the build and machine, else the CPU; either way it answers
+    server.decision_device = "auto"
+    server.decision_debug = True
+    server.start()
+    d = device_props(server)
+    if d["device"] == "cpu":
+        assert_cpu_placement(d)
+    else:
+        # a device context: its own kernels, weights in device memory, most nodes on the device
+        p = d["placement"]
+        assert d["plan"]["kernels"] not in ("cpu", "cpu+blas", "cpu+repack", "cpu+repack+blas"), d["plan"]
+        assert d["device_description"] != ""
+        assert d["memory"]["weights_device_bytes"] > 0
+        assert p["backends"].get(d["device"], 0) > p["backends"].get("CPU", 0), p
+    for a in systemone_answers(server).values():
+        assert all(math.isfinite(x) for x in a["debug"]["logits"]), a
+        assert 0.0 <= a["confidence"] <= 1.0 and 0.0 <= a["action"]["act_probability"] <= 1.0, a
+
+
+def test_device_auto_without_that_gpu_is_cpu(tmp_path):
+    # auto with an absent device index uses the CPU and says so in the log
+    server.decision_device = "auto"
+    server.decision_gpu = 99
+    server.log_path = os.path.join(tmp_path, "server.log")
+    server.start()
+    assert_cpu_placement(device_props(server))
+    server.stop()
+    with open(server.log_path, errors="replace") as f:
+        log = f.read()
+    assert "using the CPU" in log, log[-2000:]
+
+
+def test_device_auto_cpu_kernels_use_cpu():
+    # auto with CPU-only kernels: the CPU (gpu refuses them, test_device_gpu_cpu_kernels_fail)
+    server.decision_device = "auto"
+    server.decision_kernels = "repack"
+    server.start()
+    d = device_props(server)
+    assert_cpu_placement(d)
+    assert d["plan"]["kernels"].startswith("cpu"), d["plan"]
+
+
+def test_device_gpu_missing_fails(tmp_path):
+    # an explicit device that does not exist: no silent CPU run
+    server.decision_device = "gpu"
+    server.decision_gpu = 99
+    server.log_path = os.path.join(tmp_path, "server.log")
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
+    with open(server.log_path, errors="replace") as f:
+        log = f.read()
+    assert "no GPU device 99" in log, log[-2000:]
+
+
+@pytest.mark.parametrize("kernels", ["blas", "repack"])
+def test_device_gpu_cpu_kernels_fail(kernels):
+    # repack and BLAS are CPU-only: refused with a device (and without a device, gpu itself fails)
+    server.decision_device = "gpu"
+    server.decision_kernels = kernels
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
+
+
+def test_unknown_device_fails():
+    server.decision_device = "tpu"
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
+
+
+def test_laya_cli_jsonl_matches_files(tmp_path):
+    # --jsonl: one load, one line per input; every line is the -f output of that input (compact), and a
+    # refused input is {"error": <the message -f prints>} without stopping the others
+    cli = laya_cli_path()
+    if not os.path.exists(cli):
+        pytest.skip("no llama-laya-cli next to llama-server")
+    model = server.model_file
+    inputs = [{"state": "Billed twice, please refund", "questions": {qid: q}} for qid, q in QUESTIONS.items()]
+    inputs.append({"state": "Billed twice, please refund", "questions": QUESTIONS})
+    inputs.append({"state": None, "questions": QUESTIONS})
+    inputs.append({"state": "x", "questions": {}})
+    lines = [json.dumps(x) for x in inputs]
+    lines.insert(2, "")
+    lines.insert(3, "{not json")
+    path = os.path.join(tmp_path, "in.jsonl")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    out = subprocess.run([cli, "-m", model, "--jsonl", path, "-t", "2"], capture_output=True, check=True)
+    got = out.stdout.decode("utf-8").split("\n")
+    assert got[-1] == "" and len(got) == len(lines) + 1, got
+    for i, line in enumerate(lines):
+        assert "\n" not in got[i]
+        one = os.path.join(tmp_path, "one.json")
+        with open(one, "w") as f:
+            f.write(line)
+        r = subprocess.run([cli, "-m", model, "-f", one, "-t", "2"], capture_output=True)
+        if r.returncode == 0:
+            assert json.loads(got[i]) == json.loads(r.stdout), i
+        else:
+            msg = [x for x in r.stderr.decode("utf-8").splitlines() if x.startswith("laya: ")][-1][len("laya: "):]
+            assert json.loads(got[i]) == {"error": "empty line" if line == "" else msg}, (i, got[i], msg)
+
+
+#
 # start-up checks
 #
 
@@ -938,6 +1220,28 @@ def test_marker_mismatch_fails(english):
     server.model_file = tiny_laya_gguf(english, marker_mismatch=True)
     with pytest.raises(RuntimeError):
         server.start(timeout_seconds=10)
+
+
+# load-time checks of tools/laya: keys without a safe default, the activation, tensor shapes against
+# the hparams, token ids and question types that would index past token_embd / type_emb
+@pytest.mark.parametrize("broken,message", [
+    ("no-sliding-window", "missing GGUF key: laya.attention.sliding_window (reconvert"),
+    ("no-swa-pattern", "missing GGUF key: laya.attention.sliding_window_pattern"),
+    ("no-freq-base", "missing GGUF key: laya.rope.freq_base (reconvert"),
+    ("no-freq-base-swa", "missing GGUF key: laya.rope.freq_base_swa"),
+    ("relu", "laya.hidden_activation 'relu' is not supported"),
+    ("wqkv-shape", "tensor blk.1.attn_qkv.weight has shape [64, 128, 1, 1], expected [64, 192]"),
+    ("vocab-rows", "the tokenizer has 518 tokens, token_embd.weight only 517 rows"),
+    ("qtype-rows", "laya.n_qtype 4 does not fit type_emb.weight (3 rows)"),
+])
+def test_invalid_model_fails(broken, message, tmp_path):
+    server.model_file = tiny_laya_gguf(broken=broken)
+    server.log_path = os.path.join(tmp_path, "server.log")
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
+    with open(server.log_path, errors="replace") as f:
+        log = f.read()
+    assert message in log, log[-2000:]
 
 
 def test_unknown_plan_fails():

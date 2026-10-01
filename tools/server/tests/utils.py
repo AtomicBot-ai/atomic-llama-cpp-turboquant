@@ -129,6 +129,10 @@ class ServerProcess:
     decision_kernels: str | None = None
     decision_convert_cache: str | None = None
     decision_convert_type: str | None = None
+    decision_precision: str | None = None
+    decision_device: str | None = None
+    decision_gpu: int | None = None
+    decision_strict_placement: bool = False
     load_mode: str | None = None
     no_warmup: bool = False
     extra_env: dict | None = None
@@ -309,6 +313,14 @@ class ServerProcess:
             server_args.extend(["--decision-convert-cache", self.decision_convert_cache])
         if self.decision_convert_type:
             server_args.extend(["--decision-convert-type", self.decision_convert_type])
+        if self.decision_precision:
+            server_args.extend(["--decision-precision", self.decision_precision])
+        if self.decision_device:
+            server_args.extend(["--decision-device", self.decision_device])
+        if self.decision_gpu is not None:
+            server_args.extend(["--decision-gpu", self.decision_gpu])
+        if self.decision_strict_placement:
+            server_args.append("--decision-strict-placement")
         if self.load_mode:
             server_args.extend(["--load-mode", self.load_mode])
         if self.no_warmup:
@@ -536,24 +548,25 @@ class ServerProcess:
 server_instances: Set[ServerProcess] = set()
 
 
-def tiny_laya_gguf(english: bool = False, marker_mismatch: bool = False, q8: bool = False) -> str:
+def tiny_laya_gguf(english: bool = False, marker_mismatch: bool = False, q8: bool = False, broken: str | None = None) -> str:
     """ Random tiny laya GGUF for the decision tests, generated offline (numpy + gguf-py).
         english: the bytelevel-bpe tokenizer and temperature buckets of the English checkpoints.
         marker_mismatch: laya.marker_token_id != the mask token id (must not load).
         q8: Q8_0 encoder matmul weights (something for the CPU repack buffers).
+        broken: a make_tiny_laya.py --break kind (a GGUF the load-time checks must refuse).
         The cache folder carries a hash of the generator, so a changed generator makes a new file
         (the file name itself stays: the server derives the default model name from it). """
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../tests/decision/make_tiny_laya.py")
     with open(script, "rb") as f:
         gen_hash = hashlib.sha256(f.read()).hexdigest()[:12]
     name = "tiny-laya-decision" + ("-en" if english else "") + ("-badmarker" if marker_mismatch else "") + \
-           ("-q8" if q8 else "") + ".gguf"
+           ("-q8" if q8 else "") + ("-broken-" + broken if broken else "") + ".gguf"
     folder = os.path.join(TMP_DIR, "tiny-laya-" + gen_hash)
     path = os.path.join(folder, name)
     if not os.path.exists(path):
         os.makedirs(folder, exist_ok=True)
         flags = (["--english"] if english else []) + (["--marker-mismatch"] if marker_mismatch else []) + \
-                (["--q8"] if q8 else [])
+                (["--q8"] if q8 else []) + (["--break", broken] if broken else [])
         subprocess.run([sys.executable, script, path + ".tmp", "512", "256"] + flags, check=True)
         os.replace(path + ".tmp", path)
     return path
