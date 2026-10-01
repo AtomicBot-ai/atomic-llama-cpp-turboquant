@@ -79,6 +79,16 @@ Ignored with a warning: `--parallel`, `-ctk/-ctv`, `--ctx-checkpoints`, `--spec-
 A laya GGUF or checkpoint directory started without `--decision` fails fast with a hint. `--decision` inside a
 router-mode child instance is rejected: run a separate process.
 
+Laya repackagings from Hugging Face that this engine cannot load fail with a hint to use the official
+checkpoint (`llama-server --decision -m <checkpoint dir>`) instead of a bare "not a laya GGUF":
+`ggmlc` files (`mys/laya-*-GGUF`, compiled graphs for the [ggmlc](https://github.com/monatis/ggmlc)
+runtime; also without `--decision`), encoder-only `modern-bert` files whose decision head ships
+separately (`Weidows/*`, `fr0stbit3/*`; with `--decision` only, without it they are ordinary
+embedding models) and `laya-head` files (the head half of `wigcheng5566/laya-neutron-gguf`). The
+weights inside are the official checkpoints (the F16 encoders and heads are byte-equal to our
+conversion), so nothing is lost; their quantized files keep `token_embd` quantized, below the tiers
+this document measures.
+
 ## API
 
 Auth is the usual middleware: `Authorization: Bearer <key>` when `--api-key` is set.
@@ -1168,8 +1178,21 @@ differ.
 - `general.*` follows gguf-py: `--model-name`, the README front matter (a YAML subset), and the
   directory name. Like Python, an HF snapshot directory whose hash starts with a digit gives
   `general.finetune=<hash>`, and without `--model-name` the name is the title-cased hash.
+- Community fine-tunes: a root `config.json` next to `rl_agent_config.json` and
+  `encoder/config.json` is ignored (they ship HF wrapper configs or copies of
+  `rl_agent_config.json` there; the laya reference never reads it), and so is a
+  `tokenizer/special_tokens_map.json` that only restates the special tokens of
+  `tokenizer_config.json` (same content; in the AddedToken form, the same flags as that added token
+  in `tokenizer.json`). The Python converter does the same (`ModelBase.load_hparams` hands that
+  layout to the laya loader before AutoConfig, `LayaModel.prepare_metadata` keeps the root config out
+  of the name heuristics), and the output equals the conversion of the same directory without those
+  files (both converters, checked by `test-laya-convert` and `test-laya-convert-py`). Without
+  `encoder/config.json`, a root `config.json` is still refused, as is a `special_tokens_map.json`
+  that names another token, a token `tokenizer_config.json` does not set,
+  `additional_special_tokens`, other flags or unknown fields.
 - Inputs the port does not cover are refused with a message instead of giving a different file:
-  a root `config.json`, `pytorch_model*.bin` (also a `model.safetensors.index.json` without any
+  a root `config.json` without `encoder/config.json`, `hf_quant_config.json`, `added_tokens.json`,
+  `pytorch_model*.bin` (also a `model.safetensors.index.json` without any
   `model*.safetensors` file: Python then takes the `.bin` path), non-float dtypes, tensor names
   outside the laya table, rope scaling / experts / `quantization_config` / `id2label` in the
   encoder config, `modules.json`, a `tokenizer_class` other than `PreTrainedTokenizerFast` /

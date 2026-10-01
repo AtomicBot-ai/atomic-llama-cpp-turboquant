@@ -15,7 +15,11 @@
 //   README.md front matter (YAML subset), generation_config.json
 //   the directory name                               general.name / finetune / basename / version / size_label
 // Refuses (clear error) what the port does not cover instead of writing a different file:
-//   a root config.json (Python would not use the laya loader), pytorch_model*.bin (also a
+//   a root config.json without encoder/config.json (Python would not use the laya loader; next to
+//   rl_agent_config.json + encoder/config.json it is ignored, as in Python), hf_quant_config.json,
+//   added_tokens.json, a special_tokens_map.json that does more than restate tokenizer_config.json
+//   (same content, AddedToken flags equal to tokenizer.json; such a file is ignored, as by
+//   AutoTokenizer), pytorch_model*.bin (also a
 //   model.safetensors.index.json without any model*.safetensors file), non-float dtypes,
 //   tensor names outside the laya table (Python also accepts aliases of other architectures),
 //   modules.json (sentence-transformers pooling), a tokenizer_class other than
