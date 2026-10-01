@@ -10,7 +10,7 @@ commit list underneath.
 
 Releases before `b10269-1.5.0` predate this file; see the git history.
 
-## Unreleased
+## b10269-1.7.0
 
 ### Added
 
