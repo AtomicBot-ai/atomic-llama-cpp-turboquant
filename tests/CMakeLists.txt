@@ -238,6 +238,28 @@ if (LLAMA_BUILD_TOOLS AND NOT EMSCRIPTEN)
     foreach (test_target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference)
         target_link_libraries(${test_target} PRIVATE decision)
     endforeach()
+
+    # llama-laya-cli -m <checkpoint dir>: GGUF cache (converted, then cache hit), Python bytes, same output as -m GGUF
+    add_test(NAME test-decision-checkpoint-cli
+             COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:llama-laya-cli> -DFIXTURES=${PROJECT_SOURCE_DIR}/tests/laya/convert
+                     "-DINPUTS=${PROJECT_SOURCE_DIR}/tests/laya/demo_input.json|${PROJECT_SOURCE_DIR}/tests/laya/golden/score_en.json"
+                     -DWORK=${CMAKE_CURRENT_BINARY_DIR}/decision-checkpoint-cli
+                     -P ${PROJECT_SOURCE_DIR}/tests/decision/checkpoint-cli.cmake)
+    set_tests_properties(test-decision-checkpoint-cli PROPERTIES LABELS main)
+
+    # laya HF checkpoint -> GGUF converter (tools/laya/laya-convert): tiny fixtures vs Python golden sha256
+    llama_build_and_test(test-laya-convert.cpp ${PROJECT_SOURCE_DIR}/examples/gguf-hash/deps/sha256/sha256.c
+                         ARGS ${PROJECT_SOURCE_DIR}/tests/laya/convert ${CMAKE_CURRENT_BINARY_DIR}/laya-convert-scratch)
+    target_link_libraries     (test-laya-convert PRIVATE laya-convert)
+    target_include_directories(test-laya-convert PRIVATE ${PROJECT_SOURCE_DIR}/vendor ${PROJECT_SOURCE_DIR}/examples/gguf-hash/deps)
+
+    # the same cases against a fresh Python conversion (exit 77 = skip without torch / transformers; LAYA_REF_PYTHON picks the interpreter)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if (Python3_Interpreter_FOUND)
+        add_test(NAME test-laya-convert-py
+                 COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/laya/make_tiny_hf_laya.py --check $<TARGET_FILE:llama-laya-convert>)
+        set_tests_properties(test-laya-convert-py PROPERTIES LABELS python SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 llama_build_and_test(

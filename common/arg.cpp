@@ -3453,11 +3453,32 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_RERANKING"));
     add_opt(common_arg(
         {"--decision"},
-        "serve a decision model (Decision API v1, see DECISION.md) instead of chat; requires -m (default: disabled)",
+        "serve a decision model (Decision API v1, see DECISION.md) instead of chat; requires -m (a GGUF file or a laya\n"
+        "Hugging Face checkpoint directory, converted once into a GGUF cache) (default: disabled)",
         [](common_params & params) {
             params.decision.enabled = true;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION"));
+    add_opt(common_arg(
+        {"--decision-convert-cache"}, "DIR",
+        "-m DIR (a laya Hugging Face checkpoint directory): where the converted GGUF is cached\n"
+        "(default: $LLAMA_CACHE/laya/gguf-cache, else the user cache: macOS ~/Library/Caches/llama.cpp/laya/gguf-cache,\n"
+        "Linux $XDG_CACHE_HOME or ~/.cache + /llama.cpp/laya/gguf-cache, Windows %LOCALAPPDATA%\\llama.cpp\\laya\\gguf-cache)",
+        [](common_params & params, const std::string & value) {
+            params.decision.convert_cache = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_CONVERT_CACHE"));
+    add_opt(common_arg(
+        {"--decision-convert-type"}, "TYPE",
+        string_format("-m DIR: weight type of the converted GGUF: f16 or f32 (default: %s; for Q8_0 quantize the f16 GGUF\n"
+                      "with tests/laya/quantize.sh, which keeps the precision-sensitive tensors at F16)", params.decision.convert_type.c_str()),
+        [](common_params & params, const std::string & value) {
+            if (value != "f16" && value != "f32") {
+                throw std::invalid_argument("--decision-convert-type must be f16 or f32");
+            }
+            params.decision.convert_type = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_DECISION_CONVERT_TYPE"));
     add_opt(common_arg(
         {"--decision-spec"}, "FNAME",
         "decision spec JSON that replaces the decision.spec of the GGUF (default: from the GGUF)",

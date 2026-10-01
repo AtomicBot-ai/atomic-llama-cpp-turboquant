@@ -428,6 +428,8 @@ struct common_params_decision {
     bool        debug              = false; // raw logits, render endpoint, load delay for tests
     std::string kernels            = "";    // laya matmul kernels; empty: from the spec, then "auto" // NOLINT
     bool        threads_set        = false; // -t given: otherwise the engine runs on the performance cores
+    std::string convert_cache      = "";    // -m DIR: GGUF cache; empty: the user cache (llama.cpp/laya/gguf-cache) // NOLINT
+    std::string convert_type       = "f16"; // -m DIR: f16 or f32                                                  // NOLINT
 };
 
 // reasoning API response format (not to be confused as chat template's reasoning format)

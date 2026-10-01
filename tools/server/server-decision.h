@@ -17,6 +17,9 @@ bool server_decision_prepare(common_params & params);
 // general.architecture when it is the first GGUF key (as all writers do), else empty; for a quick hint only
 std::string server_decision_gguf_arch(const std::string & path);
 
+// true when path is a laya Hugging Face checkpoint directory (what --decision -m DIR converts); for a hint only
+bool server_decision_is_checkpoint_dir(const std::string & path);
+
 // register routes -> start HTTP -> load the model -> serve until the HTTP server stops.
 // register_signals (may be empty) is called once shutdown_handler is set.
 int server_decision_main(

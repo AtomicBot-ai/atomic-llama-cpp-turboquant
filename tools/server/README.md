@@ -207,7 +207,9 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--ui, --webui, --no-ui, --no-webui` | whether to enable the Web UI (default: enabled)<br/>(env: LLAMA_ARG_UI) |
 | `--embedding, --embeddings` | restrict to only support embedding use case; use only with dedicated embedding models (default: disabled)<br/>(env: LLAMA_ARG_EMBEDDINGS) |
 | `--rerank, --reranking` | enable reranking endpoint on server (default: disabled)<br/>(env: LLAMA_ARG_RERANKING) |
-| `--decision` | serve a decision model (Decision API v1, see DECISION.md) instead of chat; requires -m (default: disabled)<br/>(env: LLAMA_ARG_DECISION) |
+| `--decision` | serve a decision model (Decision API v1, see DECISION.md) instead of chat; requires -m (a GGUF file or a laya<br/>Hugging Face checkpoint directory, converted once into a GGUF cache) (default: disabled)<br/>(env: LLAMA_ARG_DECISION) |
+| `--decision-convert-cache DIR` | -m DIR (a laya Hugging Face checkpoint directory): where the converted GGUF is cached<br/>(default: $LLAMA_CACHE/laya/gguf-cache, else the user cache: macOS ~/Library/Caches/llama.cpp/laya/gguf-cache,<br/>Linux $XDG_CACHE_HOME or ~/.cache + /llama.cpp/laya/gguf-cache, Windows %LOCALAPPDATA%\llama.cpp\laya\gguf-cache)<br/>(env: LLAMA_ARG_DECISION_CONVERT_CACHE) |
+| `--decision-convert-type TYPE` | -m DIR: weight type of the converted GGUF: f16 or f32 (default: f16; for Q8_0 quantize the f16 GGUF<br/>with tests/laya/quantize.sh, which keeps the precision-sensitive tensors at F16)<br/>(env: LLAMA_ARG_DECISION_CONVERT_TYPE) |
 | `--decision-spec FNAME` | decision spec JSON that replaces the decision.spec of the GGUF (default: from the GGUF)<br/>(env: LLAMA_ARG_DECISION_SPEC) |
 | `--decision-plan NAME` | decision compute plan; laya: sequential, packed (default: from the spec)<br/>(env: LLAMA_ARG_DECISION_PLAN) |
 | `--decision-queue N` | decision requests that may wait before new ones get 429 (default: 4)<br/>(env: LLAMA_ARG_DECISION_QUEUE) |
