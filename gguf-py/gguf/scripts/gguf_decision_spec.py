@@ -8,6 +8,7 @@
 decision.spec is a UTF-8 JSON string (see DECISION.md). `set` stores the file bytes as-is,
 so its sha256 is the one llama-server --decision reports, and writes the mirror keys
 decision.spec_version / layout / model_id / model_version that the server checks against it.
+`get` writes the stored bytes and one "\n", without newline translation on any OS.
 
 `set` and `verify` apply the rules of the C++ loader (decision_spec_from_json in
 tools/decision/decision-spec.cpp), so a spec that passes here also loads in the server.
@@ -265,7 +266,11 @@ def cmd_get(args) -> int:
     if text is None:
         print(f"{args.model}: no {KEY_SPEC}", file=sys.stderr)
         return 1
-    print(text)
+    # the stored bytes plus one newline, on every OS: print() would turn each \n into \r\n on
+    # Windows, and "get > spec.json" would no longer hash to the spec_sha256 the server reports
+    sys.stdout.flush()
+    sys.stdout.buffer.write(text.encode("utf-8") + b"\n")
+    sys.stdout.flush()
     return 0
 
 

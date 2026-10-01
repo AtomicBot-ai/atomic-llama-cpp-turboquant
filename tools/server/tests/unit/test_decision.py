@@ -54,7 +54,7 @@ def assert_error(res: ServerResponse, status: int, reason: str):
 
 def write_spec(tmp_path, spec: dict) -> str:
     path = os.path.join(tmp_path, "spec.json")
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:  # the same bytes (and spec_sha256) on every OS
         json.dump(spec, f)
     return path
 
@@ -1066,13 +1066,13 @@ def test_escape_set_of_tiny_model():
 def test_router_spec_stamped_into_gguf(tmp_path):
     # the path fit-router-calibration.py prints: gguf_decision_spec.py set writes the spec into a
     # GGUF copy, which then loads without a sidecar; collect --spec takes the output of
-    # "gguf_decision_spec.py get model.gguf > spec.json" (print adds a newline)
+    # "gguf_decision_spec.py get model.gguf > spec.json" (get adds one newline)
     pytest.importorskip("tqdm")  # gguf_new_metadata, used by set
     spec = escape_router_spec()
     spec["router"]["calibration"] = {"method": "platt", "a": 0.75, "b": -0.25}
     spec["plan"] = {"name": "sequential", "kernels": "default"}
     spec_path = os.path.join(tmp_path, "spec-router.json")
-    with open(spec_path, "w", encoding="utf-8") as f:
+    with open(spec_path, "w", encoding="utf-8", newline="\n") as f:  # as fit --spec-out writes it: LF on every OS
         json.dump(spec, f, indent=1)
         f.write("\n")
     spec_tool = "gguf-py/gguf/scripts/gguf_decision_spec.py"
@@ -1084,11 +1084,12 @@ def test_router_spec_stamped_into_gguf(tmp_path):
     res = run_py(spec_tool, "get", stamped, text=False)
     with open(spec_path, "rb") as f:
         spec_bytes = f.read()
-    assert res.returncode == 0 and res.stdout.rstrip(b"\r\n") == spec_bytes.rstrip(b"\n"), res.stderr
+    assert b"\r" not in spec_bytes
+    # exactly the stored bytes and the newline get adds (collect must accept it), no \r\n on Windows
+    assert res.returncode == 0 and res.stdout == spec_bytes + b"\n", (res.stdout, res.stderr)
     spec_get = os.path.join(tmp_path, "spec-get.json")
     with open(spec_get, "wb") as f:
         f.write(res.stdout)
-    assert res.stdout != spec_bytes.rstrip(b"\n")  # the newline get adds: collect must accept it
 
     server.model_file = stamped
     server.start()

@@ -126,7 +126,12 @@ int llama_server(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
-    return llama_server(params, argc, argv);
+    const int ret = llama_server(params, argc, argv);
+    // drain the log worker before the process exits: the common_log singleton is never destroyed
+    // (see common_log_main), and on Windows exit terminates the worker thread with entries still
+    // queued, which lost the last lines, e.g. why a --decision or laya start failed
+    common_log_pause(common_log_main());
+    return ret;
 }
 
 int llama_server(common_params & params, int argc, char ** argv) {
