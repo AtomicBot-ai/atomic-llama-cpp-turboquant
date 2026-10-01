@@ -50,6 +50,19 @@ static server_http_res_ptr dec_error_res(const decision_error & err) {
     return res;
 }
 
+// the message of a 500 for an unexpected exception: its text can hold file paths, library internals
+// or fragments of the input, so it goes to the server log only
+static const char * DEC_INTERNAL_MESSAGE = "internal error while processing the request (details in the server log)";
+
+static server_http_res_ptr dec_internal_res(const char * what) {
+    SRV_ERR("decision: internal error: %s\n", what);
+    return dec_error_res(decision_error(DECISION_REASON_INTERNAL, DEC_INTERNAL_MESSAGE));
+}
+
+// --decision-debug with LLAMA_DECISION_DEBUG_THROW=worker|http: a systemone request throws this on the
+// worker / on the HTTP thread (tests of the 500 path)
+static const char * DEC_DEBUG_THROW_TEXT = "debug: injected failure at /private/decision-debug-secret";
+
 // accepted requests that were not run (server stop, client gone); no decision reason code
 static server_http_res_ptr dec_unavailable_res(const std::string & msg) {
     return dec_json_res(503, json{{"error", {
@@ -186,11 +199,9 @@ struct dec_worker {
         } catch (const decision_error & e) {
             return dec_error_res(e);
         } catch (const std::exception & e) {
-            SRV_ERR("decision: %s\n", e.what());
-            return dec_error_res(decision_error(DECISION_REASON_INTERNAL, e.what()));
+            return dec_internal_res(e.what());
         } catch (...) {
-            SRV_ERR("%s", "decision: unknown exception\n");
-            return dec_error_res(decision_error(DECISION_REASON_INTERNAL, "unknown error"));
+            return dec_internal_res("unknown exception");
         }
     }
 
@@ -256,6 +267,7 @@ struct server_decision {
     std::string                      calibration_id;
     std::string                      model_name;
     decision_model_source            source;   // -m FILE, or -m DIR and its cached GGUF
+    std::string                      debug_throw;   // LLAMA_DECISION_DEBUG_THROW (--decision-debug only)
 
     dec_worker        worker;
     dec_stats         stats;
@@ -290,6 +302,8 @@ struct server_decision {
             const char * load_delay = std::getenv("LLAMA_DECISION_DEBUG_LOAD_DELAY_MS");
             const char * job_delay  = std::getenv("LLAMA_DECISION_DEBUG_JOB_DELAY_MS");
             worker.delay_ms = job_delay ? std::max(0, atoi(job_delay)) : 0;
+            const char * throw_at = std::getenv("LLAMA_DECISION_DEBUG_THROW");
+            debug_throw = throw_at ? throw_at : "";
             const auto t_end = dec_clock::now() + std::chrono::milliseconds(load_delay ? atoi(load_delay) : 0);
             while (dec_clock::now() < t_end && !stopping.load()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -311,6 +325,15 @@ struct server_decision {
             eparams.n_threads = decision_cpu_perf_cores();
         }
         eparams.kernels    = params.decision.kernels;
+        eparams.precision  = params.decision.precision;
+        eparams.device     = params.decision.device;
+        eparams.gpu_index  = params.decision.gpu;
+        eparams.strict_placement = params.decision.strict_placement;
+        if (params.decision.debug) {
+            // the layer trace writes the activations of every request to disk: a debugging aid only
+            const char * trace_dir = std::getenv("LAYA_TRACE_DIR");
+            eparams.trace_dir = trace_dir ? trace_dir : "";
+        }
         eparams.use_mmap   = params.load_mode == LLAMA_LOAD_MODE_MMAP || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
         eparams.use_mlock  = params.load_mode == LLAMA_LOAD_MODE_MLOCK || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
         eparams.warmup     = params.warmup;
@@ -353,8 +376,8 @@ struct server_decision {
             calibration_id = "none";
         }
 
-        if (caps.device == "cpu" && !params.devices.empty() && params.devices[0] != nullptr) {
-            SRV_WRN("%s", "decision: the laya engine runs on the CPU only, --device is ignored\n");
+        if (!params.devices.empty() && params.devices[0] != nullptr) {
+            SRV_WRN("%s", "decision: --device is ignored, the decision engine takes --decision-device and --decision-gpu\n");
         }
         if (spec.plan.contains("n_threads") && spec.plan.at("n_threads").is_number_integer() &&
             spec.plan.at("n_threads").get<int64_t>() != caps.n_threads) {
@@ -362,11 +385,14 @@ struct server_decision {
                     (long long) spec.plan.at("n_threads").get<int64_t>(), caps.n_threads);
         }
 
-        SRV_INF("decision: model '%s' layout %s, format %s, plan %s, kernels %s, %d threads, spec %s (%s), calibration %s\n",
-                spec.model_id.c_str(), spec.layout.c_str(), caps.format.c_str(), caps.plan.c_str(), caps.kernels.c_str(), caps.n_threads,
-                spec.source.c_str(), spec.sha256.substr(0, 12).c_str(), calibration_id.c_str());
+        SRV_INF("decision: model '%s' layout %s, format %s, plan %s, kernels %s, precision %s, %d threads, spec %s (%s), calibration %s\n",
+                spec.model_id.c_str(), spec.layout.c_str(), caps.format.c_str(), caps.plan.c_str(), caps.kernels.c_str(), caps.precision.c_str(),
+                caps.n_threads, spec.source.c_str(), spec.sha256.substr(0, 12).c_str(), calibration_id.c_str());
         SRV_INF("decision: weights %.1f MiB loaded, %.1f MiB mapped (read-only, resident as used), %.1f MiB repacked, blas threads %d\n",
                 caps.weights_loaded / 1048576.0, caps.weights_mapped / 1048576.0, caps.weights_repacked / 1048576.0, caps.n_threads_blas);
+        SRV_INF("decision: device %s%s%s, %.1f MiB of weights in device memory, placement %s\n",
+                caps.device.c_str(), caps.device_description.empty() ? "" : " ", caps.device_description.c_str(),
+                caps.weights_device / 1048576.0, caps.placement.dump().c_str());
         if (!spec.calibration.calibrated) {
             SRV_WRN("%s", "decision: the model has no calibration, probabilities are softmax(logits) with T = 1\n");
         }
@@ -395,8 +421,9 @@ struct server_decision {
         };
     }
 
-    static json debug_block(const decision_output & o, double temperature) {
-        return json{
+    // with_act: systemone adds the raw act-head logits (the router has no action)
+    static json debug_block(const decision_output & o, double temperature, bool with_act = false) {
+        json d = {
             {"logits",      o.logits},
             {"temperature", temperature},
             {"tokens",      o.tokens},
@@ -405,6 +432,10 @@ struct server_decision {
             {"options_cut", o.options_cut},
             {"head_cut",    o.head_cut},
         };
+        if (with_act && !o.act_logits.empty()) {
+            d["act_logits"] = o.act_logits;
+        }
+        return d;
     }
 
     json limits_block() const {
@@ -468,6 +499,7 @@ struct server_decision {
                 {"n_threads", caps.n_threads},
                 {"kernels",   caps.kernels},
                 {"n_threads_blas", caps.n_threads_blas},
+                {"precision", caps.precision},
                 {"state_split", caps.state_split},
                 {"recipe",    spec.plan.contains("recipe") ? spec.plan.at("recipe") : json()},
                 {"fa",        nullptr},
@@ -475,11 +507,14 @@ struct server_decision {
                 {"n_ubatch",  nullptr},
             }},
             {"memory", {
+                {"weights_device_bytes",   caps.weights_device},
                 {"weights_loaded_bytes",   caps.weights_loaded},
                 {"weights_mapped_bytes",   caps.weights_mapped},
                 {"weights_repacked_bytes", caps.weights_repacked},
             }},
             {"device",         caps.device},
+            {"device_description", caps.device_description},
+            {"placement",      caps.placement},
             {"kv_type",        nullptr},
             {"queue_capacity", params.decision.queue},
             {"input_contract", spec.input_contract},
@@ -529,6 +564,9 @@ struct server_decision {
     }
 
     json run_systemone(const decision_request & req, dec_job & job) {
+        if (debug_throw == "worker") {
+            throw std::runtime_error(DEC_DEBUG_THROW_TEXT);
+        }
         const std::vector<decision_item> items = decision_request_items(req);
         std::vector<decision_output> outs;
         json timings;
@@ -546,8 +584,12 @@ struct server_decision {
             const decision_output   & o = outs[i];
             const double t = decision_temperature(spec.calibration, q.type, (int32_t) q.keys.size());
             json ans = decision_answer(q, decision_softmax(o.logits, t), confidence);
+            if (o.act_probability >= 0.0) {
+                // the reference Agent's action head, rounded to 4 digits like llama-laya-cli
+                ans["action"] = { {"act_probability", o.act_probability} };
+            }
             if (params.decision.debug) {
-                ans["debug"] = debug_block(o, t);
+                ans["debug"] = debug_block(o, t, true);
             }
             answers[q.id] = std::move(ans);
             n_input     += o.n_tokens;
@@ -688,10 +730,9 @@ struct server_decision {
             } catch (const decision_error & e) {
                 res = dec_error_res(e);
             } catch (const std::exception & e) {
-                SRV_ERR("decision: %s\n", e.what());
-                res = dec_error_res(decision_error(DECISION_REASON_INTERNAL, e.what()));
+                res = dec_internal_res(e.what());
             } catch (...) {
-                res = dec_error_res(decision_error(DECISION_REASON_INTERNAL, "unknown error"));
+                res = dec_internal_res("unknown exception");
             }
             if (res->status >= 400) {
                 stats.n_errors++;
@@ -774,6 +815,9 @@ struct server_decision {
             const auto t0 = dec_clock::now();
             stats.n_requests++;
             log_request(req);
+            if (debug_throw == "http") {
+                throw std::runtime_error(DEC_DEBUG_THROW_TEXT);
+            }
             const json body = decision_parse_body(req.body);
             auto parsed = std::make_shared<decision_request>(decision_parse_systemone(body, limits));
             auto job = std::make_shared<dec_job>();

@@ -1,11 +1,16 @@
 # tiny random laya GGUF (< 1 MB) for offline smoke tests of llama-laya-cli and the decision server
 # usage: python tests/decision/make_tiny_laya.py out.gguf [max_len [head_max_len]] [--english] [--marker-mismatch] [--q8]
+#            [--break KIND]
 # (the tokenizer has no merges, so every character is a token; the server tests use a longer max_len)
 # --english: the bytelevel-bpe tokenizer of the English checkpoints (NFC, [CLS]/[SEP]/[MASK] with
 # lstrip, no byte fallback) and their temperature_by_options buckets
 # --marker-mismatch: laya.marker_token_id != tokenizer.ggml.mask_token_id (a GGUF that must not load)
 # --q8: the encoder matmul weights in Q8_0 (the same random values), so the CPU repack buffers
 # have something to repack (rows are multiples of 4: the NEON dotprod / i8mm Q8_0 repack)
+# --break KIND: a GGUF the load-time checks of tools/laya must refuse (the values are random either way):
+#   no-sliding-window, no-swa-pattern, no-freq-base, no-freq-base-swa (a required key missing),
+#   relu (laya.hidden_activation != gelu), wqkv-shape (blk.1.attn_qkv.weight of the wrong size),
+#   vocab-rows (more tokenizer tokens than token_embd rows), qtype-rows (laya.n_qtype > type_emb rows)
 import sys
 from pathlib import Path
 
@@ -18,6 +23,13 @@ english = "--english" in sys.argv
 marker_mismatch = "--marker-mismatch" in sys.argv
 q8 = "--q8" in sys.argv
 argv = [a for a in sys.argv if a not in ("--english", "--marker-mismatch", "--q8")]
+broken = None
+if "--break" in argv:
+    i = argv.index("--break")
+    broken = argv[i + 1]
+    del argv[i:i + 2]
+    assert broken in ("no-sliding-window", "no-swa-pattern", "no-freq-base", "no-freq-base-swa", "relu", "wqkv-shape",
+                      "vocab-rows", "qtype-rows"), broken
 out = argv[1]
 max_len = int(argv[2]) if len(argv) > 2 else 128
 head_max_len = int(argv[3]) if len(argv) > 3 else 64
@@ -69,15 +81,21 @@ wr.add_embedding_length(d)
 wr.add_block_count(n_layer)
 wr.add_head_count(n_head)
 wr.add_feed_forward_length(n_ff)
-wr.add_vocab_size(n_vocab)
+wr.add_vocab_size(n_vocab - (1 if broken == "vocab-rows" else 0))
 wr.add_layer_norm_rms_eps(1e-5)
 wr.add_layer_norm_eps(1e-5)
-wr.add_rope_freq_base(160000.0)
-wr.add_sliding_window(8)
-wr.add_uint32("laya.attention.sliding_window_pattern", 3)
+if broken != "no-freq-base":
+    wr.add_rope_freq_base(160000.0)
+if broken != "no-freq-base-swa":
+    wr.add_rope_freq_base_swa(160000.0)
+if broken != "no-sliding-window":
+    wr.add_sliding_window(8)
+if broken != "no-swa-pattern":
+    wr.add_uint32("laya.attention.sliding_window_pattern", 3)
+wr.add_hidden_act("relu" if broken == "relu" else "gelu")
 ids = {t: i for i, t in enumerate(tokens)}
 wr.add_head_layers(n_head_layers)
-wr.add_n_qtype(3)
+wr.add_n_qtype(4 if broken == "qtype-rows" else 3)
 wr.add_marker_token_id((ids["[MASK]"] if english else 4) + (1 if marker_mismatch else 0))
 wr.add_max_len(max_len)
 wr.add_head_max_len(head_max_len)
@@ -114,13 +132,13 @@ else:
     wr.add_unk_token_id(3)
     wr.add_pad_token_id(0)
 
-wr.add_tensor("token_embd.weight", w(n_vocab, d, dtype=np.float16))
+wr.add_tensor("token_embd.weight", w(n_vocab - (1 if broken == "vocab-rows" else 0), d, dtype=np.float16))
 wr.add_tensor("token_embd_norm.weight", ones(d))
 wr.add_tensor("output_norm.weight", ones(d))
 for il in range(n_layer):
     p = f"blk.{il}."
     wr.add_tensor(p + "attn_norm.weight", ones(d))
-    add_matmul(p + "attn_qkv.weight", w(3 * d, d, dtype=np.float16))
+    add_matmul(p + "attn_qkv.weight", w((2 if broken == "wqkv-shape" and il == 1 else 3) * d, d, dtype=np.float16))
     add_matmul(p + "attn_output.weight", w(d, d, dtype=np.float16))
     add_matmul(p + "ffn_up.weight", w(2 * n_ff, d, dtype=np.float16))
     add_matmul(p + "ffn_down.weight", w(d, n_ff, dtype=np.float16))

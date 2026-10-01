@@ -28,6 +28,12 @@
 #
 # Close other apps first: the load average and the top CPU users are recorded before every
 # run, and a busy machine makes p95 meaningless.
+#
+# Every result JSON gets an "identity" key (tests/laya/parity/identity.py): sha256 of the build
+# tree (the tools, libggml* / libllama*, CMakeCache.txt), of the GGUF and of the suite, and the
+# runtime (the bench result or the server's /props). bench-decision-report.py prints a speed row
+# only when a passing parity gate of the same identity is given (--parity; DECISION.md "GPU
+# backends"). CPU vs GPU comparisons: scripts/bench-decision-device.py (paired blocks).
 
 set -uo pipefail
 
@@ -67,6 +73,8 @@ fi
 for m in $MODELS; do
   [[ -f "$m" ]] || { echo "error: model $m not found" >&2; exit 1; }
 done
+IDENTITY_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/laya/parity/identity.py"
+[[ -f "$IDENTITY_PY" ]] || { echo "error: $IDENTITY_PY not found" >&2; exit 1; }
 for tool in curl perl python3; do
   command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool is needed" >&2; exit 1; }
 done
@@ -175,6 +183,12 @@ for m in $MODELS; do
       echo "  llama-decision-bench failed (rc=$rc), see ${out%.json}.log" >&2
       rc_all=$rc
     fi
+    if [[ -f "$out" ]]; then
+      # llama-server and llama-laya-cli too: the parity runs of the same tree used them
+      exes=(--exe "$BIN_DIR/llama-decision-bench")
+      for x in llama-server llama-laya-cli; do [[ -x "$BIN_DIR/$x" ]] && exes+=(--exe "$BIN_DIR/$x"); done
+      python3 "$IDENTITY_PY" merge "$out" --kind bench "${exes[@]}" --model "$m" --corpus "$SUITE" || rc_all=1
+    fi
   done
 done
 
@@ -240,7 +254,8 @@ if [[ "$SERVER" == 1 ]]; then
         idle_rt4=$(post /v1/router/score "$tmp/idle4.json" "$tmp/rt4.json")
       fi
       read -r rss_end fp_end <<< "$(proc_mem "$pid")"
-      kernels=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/props" | python3 -c 'import json, sys; print(json.load(sys.stdin)["decision"]["plan"].get("kernels", ""))' 2>/dev/null)
+      curl -s --max-time 2 -o "$tmp/props.json" "http://127.0.0.1:$PORT/props"
+      kernels=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["decision"]["plan"].get("kernels", ""))' "$tmp/props.json" 2>/dev/null)
       kill -INT "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
       python3 - "$out" "$m" "$t" "$t0" "$t_listen" "$t_ready" "$rss_ready" "$fp_ready" "$rss_end" "$fp_end" \
@@ -277,6 +292,11 @@ json.dump({
 }, open(out, "w"), indent=1)
 print("  ready %.0f ms, rss %.0f MiB, footprint %.0f MiB" % ((float(t_ready) - float(t0)) * 1000, int(rss_ready) / 1024, int(fp_ready) / 1024), flush=True)
 EOF
+      if [[ -s "$tmp/props.json" ]]; then
+        python3 "$IDENTITY_PY" merge "$out" --kind server --exe "$BIN_DIR/llama-server" --model "$m" --corpus "$SUITE" --props "$tmp/props.json" || rc_all=1
+      else
+        python3 "$IDENTITY_PY" merge "$out" --kind server --exe "$BIN_DIR/llama-server" --model "$m" --corpus "$SUITE" --threads "$t" || rc_all=1
+      fi
     done
   done
   rm -rf "$tmp"

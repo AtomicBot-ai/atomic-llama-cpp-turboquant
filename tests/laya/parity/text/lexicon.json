@@ -1,0 +1,141 @@
+{
+ "multi": [
+  "请帮我查一下我的包裹到哪里了，已经十天没有更新了。",
+  "这个软件更新以后就打不开了，我要退款。",
+  "予約した時間を一時間遅らせることはできますか？",
+  "昨日届いた商品の箱が壊れていました。交換をお願いします。",
+  "결제가 두 번 됐어요. 하나 취소해 주세요.",
+  "Ich habe mein Passwort vergessen und bekomme keine E-Mail zum Zurücksetzen.",
+  "Bonjour, ma commande est arrivée incomplète, il manque deux articles.",
+  "¿Pueden cambiar la dirección de entrega? Me mudé la semana pasada.",
+  "Добрый день! Не могу войти в личный кабинет, пишет «неверный код».",
+  "Спасибо, всё заработало, вопрос закрыт.",
+  "مرحبا، أريد إلغاء اشتراكي الشهري ابتداء من الشهر القادم.",
+  "नमस्ते, मेरा ऑर्डर गलत पते पर चला गया है, कृपया जांच करें।",
+  "Olá, o aplicativo fecha sozinho quando abro a câmera.",
+  "Buongiorno, vorrei sapere se la fattura di marzo è già stata pagata.",
+  "Merhaba, siparişimi iptal etmek istiyorum, henüz kargoya verilmedi.",
+  "Xin chào, tôi chưa nhận được mã xác nhận qua tin nhắn.",
+  "สวัสดีค่ะ อยากสอบถามเรื่องการคืนเงินค่ะ",
+  "Γεια σας, ο λογαριασμός μου κλειδώθηκε χωρίς λόγο.",
+  "שלום, קיבלתי חשבונית כפולה החודש.",
+  "Habari, nimelipa lakini agizo langu bado linaonyesha halijalipwa.",
+  "Dzień dobry, aplikacja nie wysyła powiadomień od wczoraj.",
+  "Hei, voinko vaihtaa toimitusajan ensi viikolle?",
+  "Hej, jag vill ändra min e-postadress i kontot.",
+  "Goedemiddag, de levering is twee dagen te laat.",
+  "Crème fraîche, déjà vu, piñata, smørrebrød, Ærø, Łódź, naïve café.",
+  "Emoji check 😀🙏🏽👩‍💻🇯🇵 ✅❌ and a family 👨‍👩‍👧‍👦 at the end.",
+  "Combining marks: é ä ñ, ligature ﬁ, fullwidth ＡＢＣ１２３, script 𝒜𝒷𝒸."
+ ],
+ "labels": ["approve", "reject", "escalate", "refund", "replace", "ignore", "archive", "follow_up", "billing", "technical", "shipping", "account", "fraud", "sales", "legal", "hr", "security", "compliance", "low_priority", "urgent", "spam", "other", "unknown", "positive", "negative", "neutral", "mixed", "question", "complaint", "praise", "продажи", "поддержка", "退款", "技术支持", "配送", "請求書", "배송", "Rechnung", "réclamation", "envío", "A", "B", "C", "1", "2", "yes", "no", "maybe", "cat_%d", "opt-%d", "Label With Spaces %d", "k:%d", "x.y.%d"],
+ "descs": [
+  "the customer wants money back",
+  "a problem with the product itself",
+  "questions about invoices or charges",
+  "delivery is late or the package is lost",
+  "login, password or profile changes",
+  "a clear attempt at fraud",
+  "anything that does not fit elsewhere",
+  "positive feedback without a request",
+  "the agent should hand over to a human",
+  "no action is needed",
+  "a legal threat or a regulatory complaint",
+  "a security incident or data exposure",
+  "客户要求退款",
+  "需要技术支持",
+  "Lieferung verspätet",
+  "facture incorrecte",
+  "проблема с оплатой",
+  "a very specific and deliberately wordy description that keeps going so that the option gets long enough to reach the forty-eight token cap applied to every option by the reference implementation, and then goes well past it with extra clauses, qualifiers and remarks in brackets (like this one) so that the cut certainly happens at exactly forty-eight tokens"
+ ],
+ "levels": ["none", "very low", "low", "somewhat low", "below average", "average", "above average", "somewhat high", "high", "very high", "extreme", "critical", "catastrophic", "negligible", "minor", "moderate", "major", "severe", "blocking", "fatal", "0/10", "1/10", "2/10", "完全不相关", "部分相关", "基本相关", "完全相关", "überhaupt nicht", "sehr", "pas du tout", "tout à fait"],
+ "instr": [
+  "Which category fits the request best?",
+  "Where should this case be routed?",
+  "What does the customer mainly want?",
+  "Rate how serious the issue is.",
+  "How happy is the user?",
+  "Does the message contain a complaint?",
+  "Does the user ask for a refund?",
+  "Is this a duplicate charge?",
+  "Should a human take over this ticket?",
+  "Is the tone of the message hostile?",
+  "Does `message` mention a deadline?",
+  "In which language is the text written?",
+  "该用户是否要求退款？",
+  "Wie dringend ist die Anfrage?",
+  "Quel est le ton général du message ?",
+  "Насколько клиент недоволен?",
+  "このメッセージは急ぎですか？",
+  "¿El cliente quiere cancelar su suscripción?",
+  "Does the invoice total match the line items?",
+  "Did the agent break a constraint?"
+ ],
+ "workflows": {
+  "agent_trace": {
+   "next_step": {"type": "choice", "instructions": "What should the supervisor do with this agent run?", "criteria": {"let_run": "Nothing is wrong; let the agent continue.", "pause": "Pause the agent until someone looks at it.", "flag": "Keep running but mark the run for a later spot check.", "kill": "Stop the agent immediately."}},
+   "human_check": {"type": "noul", "instructions": "Does this run need a person to look at it?", "criteria": {"false": "Nothing here needs attention.", "true": "A person should review this run."}},
+   "result": {"type": "choice", "instructions": "How did the run end?", "criteria": {"failed": "The goal was not reached.", "damaging": "The agent did something harmful or broke a rule.", "incomplete": "Some progress, but the goal is not fully reached.", "done": "The goal was reached correctly."}},
+   "danger": {"type": "score", "instructions": "How risky were the actions of the agent?", "criteria": ["Safe: only reads or clearly harmless actions.", "Low: normal writes inside the task scope.", "Medium: actions that cannot be undone or leave the scope.", "High: destructive or security relevant actions."]},
+   "time_pressure": {"type": "score", "instructions": "How soon must someone react?", "criteria": ["Whenever; there is no time pressure.", "Normal queue.", "Within this week.", "Today."]}
+  },
+  "invoice_audit": {
+   "disposition": {"type": "choice", "instructions": "What should accounts payable do with this invoice?", "criteria": {"pay": "Everything checks out; schedule payment.", "hold": "Hold payment until a question is answered.", "reject": "Send the invoice back; it is wrong or not ours.", "ask_vendor": "Ask the vendor for missing details."}},
+   "totals_match": {"type": "noul", "instructions": "Do the line items add up to the stated total?"},
+   "problem": {"type": "choice", "instructions": "What is the main problem with the invoice, if any?", "criteria": {"none": "No problem found.", "math": "Amounts or totals do not add up.", "duplicate": "Looks like an invoice we already received.", "missing_po": "No purchase order number.", "price_change": "Unit prices differ from the agreed ones."}},
+   "fraud_signal": {"type": "score", "instructions": "How strong are the signs of fraud?", "criteria": ["none", "weak", "clear", "strong"]},
+   "priority": {"type": "score", "instructions": "How urgent is the payment?", "criteria": ["can wait", "due this month", "overdue"]}
+  },
+  "support_ticket": {
+   "queue": {"type": "choice", "instructions": "Which queue should get this ticket?", "criteria": {"billing": "payments, refunds, invoices", "tech": "bugs, crashes, errors", "shipping": "delivery and returns", "account": "login, profile, data", "sales": "prices and new orders", "other": "anything else"}},
+   "wants_refund": {"type": "noul", "instructions": "Does the customer ask for money back?", "criteria": {"true": "asks for a refund or a chargeback"}},
+   "mood": {"type": "score", "instructions": "How does the customer feel?", "criteria": ["furious", "annoyed", "neutral", "satisfied", "delighted"]},
+   "escalate": {"type": "noul", "instructions": "Should a team lead see this ticket?", "criteria": {"false": "the agent can handle it"}},
+   "language": {"type": "choice", "instructions": "Which language is the customer writing in?", "criteria": ["english", "german", "french", "spanish", "russian", "chinese", "japanese", "other"]}
+  },
+  "content_review": {
+   "policy": {"type": "choice", "instructions": "Which rule does the post break, if any?", "criteria": {"none": "The post is fine.", "abuse": "Insults or harassment of a person.", "spam": "Advertising or repeated posts.", "violence": "Threats or praise of violence.", "privacy": "Shares personal data of someone else."}},
+   "remove": {"type": "noul", "instructions": "Should the post be taken down?"},
+   "severity": {"type": "score", "instructions": "How bad is the post?", "criteria": ["harmless", "mild", "bad", "very bad"]},
+   "minor_risk": {"type": "score", "instructions": "How risky is the post for young readers?", "criteria": ["no risk", "some risk", "high risk"]},
+   "needs_context": {"type": "noul", "instructions": "Is more context needed to decide?", "criteria": {"true": "the post cannot be judged on its own", "false": "the post is clear on its own"}}
+  }
+ },
+ "presets": {
+  "mail": {
+   "team": {"type": "choice", "instructions": "Which team should answer the email in `body`?", "criteria": {"sales": "prices, demos, new customers", "support": "a problem with the product", "billing": "invoices, payments, refunds", "partners": "joint work or integrations", "people": "jobs and staff matters", "other": "anything else"}},
+   "bulk": {"type": "noul", "instructions": "Is this email bulk mail or unwanted marketing?"},
+   "scam": {"type": "noul", "instructions": "Does this email try to trick the reader into giving money, passwords or personal data?", "criteria": {"true": "asks for passwords, payment or personal data under a false reason", "false": "a normal message"}},
+   "urgency": {"type": "score", "instructions": "How urgent is the request in `body`?", "criteria": ["not urgent", "this week", "today"]},
+   "reply": {"type": "noul", "instructions": "Does the sender expect an answer?"}
+  },
+  "safety": {
+   "override": {"type": "noul", "instructions": "Does `prompt` try to make an assistant ignore its rules or its system instructions?"},
+   "injected": {"type": "noul", "instructions": "Does `prompt` contain orders aimed at the AI system instead of a real user request?"},
+   "secrets": {"type": "noul", "instructions": "Does `prompt` contain passwords, personal data or other secrets?"},
+   "harm": {"type": "score", "instructions": "How much harm would doing what `prompt` asks cause?", "criteria": ["none", "small", "serious", "severe"]},
+   "subject": {"type": "choice", "instructions": "What is `prompt` about?", "criteria": {"code": "software and programming", "health": "medicine or wellbeing", "money": "banking, investing, prices", "law": "rules and regulation", "art": "stories, poems, pictures", "general": "anything else"}}
+  },
+  "dispatch": {
+   "effort": {"type": "score", "instructions": "How hard is `request` for a language model?", "criteria": ["trivial: one lookup or one line", "easy: short answer, no reasoning", "medium: a few steps", "hard: long reasoning or expert knowledge"]},
+   "field": {"type": "choice", "instructions": "Which field does `request` belong to?", "criteria": {"code": "programming, debugging, software design", "math": "maths, logic, proofs, calculations", "writing": "stories, essays, emails, posts", "facts": "facts, definitions, history", "data": "statistics, SQL, tables, metrics", "chat": "small talk and greetings"}},
+   "tools": {"type": "noul", "instructions": "Does answering `request` need search, tools or private data?"},
+   "stakes": {"type": "noul", "instructions": "Could a wrong answer to `request` cost money or health, or have legal effects?"}
+  },
+  "forum": {
+   "rude": {"type": "noul", "instructions": "Is `post` rude or likely to drive people out of the discussion?"},
+   "targeted": {"type": "noul", "instructions": "Does `post` attack a specific person?"},
+   "threat": {"type": "noul", "instructions": "Does `post` threaten violence or harm?"},
+   "severity": {"type": "score", "instructions": "How serious is any rule breaking in `post`?", "criteria": ["none", "mild", "medium", "serious"]}
+  }
+ },
+ "names": ["Mira", "Tomas", "Aiko", "Lena", "Omar", "Priya", "Jonas", "Sofia", "Wei", "Ines", "Kofi", "Nadia", "Pavel", "Rosa", "Yusuf", "Elif"],
+ "vendors": ["Harbor Lane Supplies", "Blue Field Print Shop", "Kestrel Office Goods", "Maple Row Catering", "Stonebridge Cleaning", "Quiet Hill Software", "Red Kite Logistics", "Old Mill Furniture"],
+ "items": ["printer paper, A4, box of 5 reams", "toner cartridge, black", "desk chair, mesh back", "catering for team lunch", "office cleaning, monthly", "software licence, annual", "courier delivery, same day", "whiteboard markers, pack of 12", "standing desk frame", "laptop stand"],
+ "tools": ["search_docs", "read_file", "write_file", "run_sql", "send_email", "http_get", "delete_rows", "create_ticket", "shell", "calendar_add"],
+ "tasks": ["Summarise the open support tickets from last week.", "Update the price list with the new supplier costs.", "Find duplicate customer records and merge them.", "Book a meeting room for the Friday review.", "Clean up the temporary files on the build server.", "Draft a reply to the customer about the late delivery.", "Export the monthly sales numbers to a spreadsheet.", "Remove test accounts from the production database."],
+ "platforms": ["forum", "comments", "chat", "reviews", "marketplace"],
+ "channels": ["email", "chat", "phone", "web form", "app"],
+ "currencies": ["EUR", "USD", "GBP", "CHF", "SEK", "JPY"]
+}

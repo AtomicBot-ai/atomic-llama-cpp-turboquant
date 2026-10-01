@@ -15,8 +15,9 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
 ### Added
 
 - **Decision models in `llama-server`** (`--decision`, see `DECISION.md`). A
-  separate server mode for Jev-class decision models: no chat routes, one CPU
-  worker, calibrated probabilities instead of generated text.
+  separate server mode for Jev-class decision models: no chat routes, one
+  worker (on the CPU unless `--decision-device` says otherwise), calibrated
+  probabilities instead of generated text.
   - `POST /v1/systemone`: TypeSafe-compatible typed questions (noul, choice,
     score) over a state.
   - `POST /v1/router/score`: executor cards in, an independent calibrated
@@ -27,7 +28,56 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
     bounded queue (429 + `Retry-After`).
   - New flags: `--decision`, `--decision-spec`, `--decision-plan`,
     `--decision-queue`, `--decision-max-items`, `--decision-allow-uncalibrated`,
-    `--decision-debug`.
+    `--decision-debug`, `--decision-kernels`, `--decision-precision`,
+    `--decision-device`, `--decision-gpu`, `--decision-strict-placement`.
+  - `systemone` answers carry `action.act_probability` (the reference agent's
+    action head, `round(softmax(act logits)[0], 4)`); with `--decision-debug`
+    the raw act logits are in `debug.act_logits`. Router answers do not have it.
+  - An internal error answers 500 with a fixed message; the exception text goes
+    to the server log only.
+  - `--decision-precision default|strict`: the matmul precision request of the
+    laya graph. The CPU computes the same bits in both modes; on CUDA `strict`
+    is the parity-audit mode (PEDANTIC on every matmul, slower), not a serving
+    mode.
+  - Experimental: `--decision-device gpu|auto` (and `--decision-gpu`,
+    `--decision-strict-placement`) runs the laya graph on a GPU through the
+    stock ggml backends; the default stays `cpu`. `/props.decision` reports the
+    device and where the graph nodes run. Metal passes its parity tier
+    (`f16-class`) against the CPU on the full parity corpus; CUDA (RTX 4090)
+    passes its tiers, `--decision-precision strict` included, and Vulkan
+    (NVIDIA) passes `f16-class` on the multilingual model. On CUDA the graph
+    dequantizes Q8_0 weights to F32 (the quantized-activation kernels lose this
+    model's outliers) and, in `strict`, F16 weights too, and `strict` computes
+    the RoPE tables on the host.
+  - `--decision-device auto` uses the GPU when there is one and falls back to
+    the CPU, with a warning, when the device fails to load, initialize or warm
+    up, or when CPU-only kernels are requested. A device whose weight buffer
+    cannot be allocated now fails the load (`gpu`) or falls back (`auto`)
+    instead of computing from host memory; `/props.decision.placement` counts
+    weights the device cannot run (`host_weights`), and
+    `--decision-strict-placement` refuses them. ROCm / MUSA builds, other
+    backends and quantized types other than Q8_0 load with a warning: they have
+    no parity run.
+  - `llama-laya-cli` gets `--plan packed|sequential` (default `packed`;
+    `sequential` runs one graph per question, as the server does),
+    `--jsonl FILE` (one load, one output line per input line), `--device`,
+    `--gpu`, `--strict-placement` and `--precision`.
+  - `LAYA_TRACE_DIR=<dir>` dumps the per-layer outputs of every forward pass
+    (`tools/laya/trace_diff.py` compares two dumps) for `llama-laya-cli` and
+    `llama-decision-bench`; the server honours it only with `--decision-debug`,
+    since the dump holds the activations of every request.
+  - Measured on servers: an RTX 4090 answers 13-24x faster at p50 than 32
+    threads of a 64-core EPYC on `laya-multilingual` F16 (systemone with one
+    question: 7.1 vs 93.8 ms), an RTX 5060 Ti 9-13x faster than 28 threads of
+    an EPYC 9334, and the decision process then uses almost no CPU. Use an F16
+    GGUF on a GPU: Q8_0 is not faster there. `DECISION.md` ("GPU backends") has
+    the tables and the recommendation. Macs are not measured yet, so the app
+    default stays `cpu`.
+  - `scripts/bench-decision-device.py`: paired CPU vs GPU bench (alternating
+    blocks, load and GPU sampling, time to ready, optionally a chat model
+    generating on the same GPU). `scripts/bench-decision-report.py --parity`
+    prints a speed number only when a passing parity gate of the same build,
+    GGUF and device covers it.
 - **Laya decision model support** (`tools/laya`, `llama-laya-cli`), based on
   upstream PR #29363: converter for `laya-multilingual`, GGUF arch `laya`, a
   self-contained CPU graph, and a tokenizer that matches the HF tokenizer exactly.
@@ -114,8 +164,13 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
 
 ### Notes
 
-- Decision mode runs on the CPU backend only; start it with `--device none` next
-  to a GPU chat server.
+- Decision mode runs on the CPU by default (`--decision-device cpu`); next to a
+  GPU chat server keep it there and start it with `--device none`.
+- **Stricter laya GGUF checks**: a GGUF without `laya.attention.sliding_window`,
+  `laya.attention.sliding_window_pattern`, `laya.rope.freq_base` or
+  `laya.rope.freq_base_swa`, or with `laya.act_classes` below 1, no longer
+  loads. Every GGUF made by this converter has them; hand-made or older
+  third-party files may need reconversion.
 - A laya GGUF started without `--decision` fails fast with a hint.
 - **Decision server numerics on macOS change**: the default kernels there are now
   `cpu+blas` (Accelerate), so macOS server logits differ slightly from Phase 1 and
