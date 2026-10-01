@@ -7,6 +7,13 @@
 // note: almost all graphs require at least sqrtf, so include cmath globally
 #include <cmath>
 
+// ref: https://github.com/ggml-org/llama.cpp/pull/28068
+static inline ggml_tensor * build_gdn_l2_norm(ggml_context * ctx, ggml_tensor * x, float eps) {
+    const float n = x->ne[0];
+
+    return ggml_scale(ctx, ggml_rms_norm(ctx, x, eps/n), 1.0f/sqrtf(n));
+}
+
 //
 // base classes
 //

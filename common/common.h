@@ -414,6 +414,21 @@ struct common_params_diffusion {
     bool    add_gumbel_noise = false; // add gumbel noise to the logits if temp > 0.0
 };
 
+// llama-server --decision (see DECISION.md)
+struct common_params_decision {
+    bool        enabled            = false;
+    std::string spec_path          = "";    // sidecar decision.spec, replaces the one in the GGUF // NOLINT
+    std::string plan               = "";    // empty: plan from the spec                            // NOLINT
+    int32_t     queue              = 4;     // waiting requests before 429
+    int32_t     max_items          = 16;    // questions per systemone request, candidates per router request
+    bool        allow_uncalibrated = false; // router scores without a router calibration
+    bool        debug              = false; // raw logits, render endpoint, load delay for tests
+    std::string kernels            = "";    // laya matmul kernels; empty: from the spec, then "auto" // NOLINT
+    bool        threads_set        = false; // -t given: otherwise the engine runs on the performance cores
+    std::string convert_cache      = "";    // -m DIR: GGUF cache; empty: the user cache (llama.cpp/laya/gguf-cache) // NOLINT
+    std::string convert_type       = "f16"; // -m DIR: f16 or f32                                                  // NOLINT
+};
+
 // reasoning API response format (not to be confused as chat template's reasoning format)
 // only used by server
 enum common_reasoning_format {
@@ -499,6 +514,7 @@ struct common_params {
     struct common_params_speculative speculative;
     struct common_params_vocoder     vocoder;
     struct common_params_diffusion   diffusion;
+    struct common_params_decision    decision;
 
     struct common_params_model model;
 

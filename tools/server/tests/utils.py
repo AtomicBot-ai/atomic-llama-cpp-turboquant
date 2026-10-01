@@ -3,6 +3,7 @@
 
 # type: ignore[reportUnusedImport]
 
+import hashlib
 import subprocess
 import os
 
@@ -118,6 +119,19 @@ class ServerProcess:
     mcp_servers_config: str | None = None
     mcp_servers_json: str | None = None
     cors_origins: str | None = None
+    decision: bool = False
+    decision_spec: str | None = None
+    decision_plan: str | None = None
+    decision_queue: int | None = None
+    decision_max_items: int | None = None
+    decision_allow_uncalibrated: bool = False
+    decision_debug: bool = False
+    decision_kernels: str | None = None
+    decision_convert_cache: str | None = None
+    decision_convert_type: str | None = None
+    load_mode: str | None = None
+    no_warmup: bool = False
+    extra_env: dict | None = None
 
     # session variables
     process: subprocess.Popen | None = None
@@ -275,6 +289,32 @@ class ServerProcess:
             server_args.append("--backend_sampling")
         if self.gcp_compat:
             env["AIP_MODE"] = "PREDICTION"
+        if self.decision:
+            server_args.append("--decision")
+        if self.decision_spec:
+            server_args.extend(["--decision-spec", self.decision_spec])
+        if self.decision_plan:
+            server_args.extend(["--decision-plan", self.decision_plan])
+        if self.decision_queue is not None:
+            server_args.extend(["--decision-queue", self.decision_queue])
+        if self.decision_max_items is not None:
+            server_args.extend(["--decision-max-items", self.decision_max_items])
+        if self.decision_allow_uncalibrated:
+            server_args.append("--decision-allow-uncalibrated")
+        if self.decision_debug:
+            server_args.append("--decision-debug")
+        if self.decision_kernels:
+            server_args.extend(["--decision-kernels", self.decision_kernels])
+        if self.decision_convert_cache:
+            server_args.extend(["--decision-convert-cache", self.decision_convert_cache])
+        if self.decision_convert_type:
+            server_args.extend(["--decision-convert-type", self.decision_convert_type])
+        if self.load_mode:
+            server_args.extend(["--load-mode", self.load_mode])
+        if self.no_warmup:
+            server_args.append("--no-warmup")
+        if self.extra_env:
+            env.update(self.extra_env)
 
         args = [str(arg) for arg in [server_path, *server_args]]
         print(f"tests: starting server with: {' '.join(args)}")
@@ -494,6 +534,42 @@ class ServerProcess:
 
 
 server_instances: Set[ServerProcess] = set()
+
+
+def tiny_laya_gguf(english: bool = False, marker_mismatch: bool = False, q8: bool = False) -> str:
+    """ Random tiny laya GGUF for the decision tests, generated offline (numpy + gguf-py).
+        english: the bytelevel-bpe tokenizer and temperature buckets of the English checkpoints.
+        marker_mismatch: laya.marker_token_id != the mask token id (must not load).
+        q8: Q8_0 encoder matmul weights (something for the CPU repack buffers).
+        The cache folder carries a hash of the generator, so a changed generator makes a new file
+        (the file name itself stays: the server derives the default model name from it). """
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../tests/decision/make_tiny_laya.py")
+    with open(script, "rb") as f:
+        gen_hash = hashlib.sha256(f.read()).hexdigest()[:12]
+    name = "tiny-laya-decision" + ("-en" if english else "") + ("-badmarker" if marker_mismatch else "") + \
+           ("-q8" if q8 else "") + ".gguf"
+    folder = os.path.join(TMP_DIR, "tiny-laya-" + gen_hash)
+    path = os.path.join(folder, name)
+    if not os.path.exists(path):
+        os.makedirs(folder, exist_ok=True)
+        flags = (["--english"] if english else []) + (["--marker-mismatch"] if marker_mismatch else []) + \
+                (["--q8"] if q8 else [])
+        subprocess.run([sys.executable, script, path + ".tmp", "512", "256"] + flags, check=True)
+        os.replace(path + ".tmp", path)
+    return path
+
+
+def tiny_laya_decision_server(english: bool = False, q8: bool = False) -> ServerProcess:
+    """ llama-server --decision on the tiny laya GGUF. Not a ServerPreset: load_all() would build it for every test module. """
+    server = ServerProcess()
+    server.offline = True
+    server.model_hf_repo = None
+    server.model_hf_file = None
+    server.model_file = tiny_laya_gguf(english, q8=q8)
+    server.model_alias = "tiny-laya"
+    server.n_threads = 2
+    server.decision = True
+    return server
 
 
 class ServerPreset:

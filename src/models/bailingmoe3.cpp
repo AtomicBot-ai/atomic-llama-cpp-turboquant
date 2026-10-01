@@ -279,8 +279,8 @@ llama_model_bailingmoe3::graph::graph(const llama_model & model, const llm_graph
 
             const float eps_norm = hparams.f_norm_rms_eps;
 
-            Qcur = ggml_l2_norm(ctx0, Qcur, eps_norm);
-            Kcur = ggml_l2_norm(ctx0, Kcur, eps_norm);
+            Qcur = build_gdn_l2_norm(ctx0, Qcur, eps_norm);
+            Kcur = build_gdn_l2_norm(ctx0, Kcur, eps_norm);
 
             auto attn_out = build_delta_net(Qcur, Kcur, Vcur, g1, beta, state, il);
 

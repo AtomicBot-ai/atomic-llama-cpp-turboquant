@@ -1,0 +1,21 @@
+{
+  "bos_token": "<bos>",
+  "clean_up_tokenization_spaces": false,
+  "cls_token": "<bos>",
+  "eos_token": "<eos>",
+  "extra_special_tokens": {
+    "extra_0": "<start_of_turn>",
+    "extra_1": "<end_of_turn>"
+  },
+  "mask_token": "<mask>",
+  "model_input_names": [
+    "input_ids",
+    "attention_mask"
+  ],
+  "model_max_length": 128,
+  "pad_token": "<pad>",
+  "padding_side": "right",
+  "sep_token": "<eos>",
+  "tokenizer_class": "PreTrainedTokenizerFast",
+  "unk_token": "<unk>"
+}

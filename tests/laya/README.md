@@ -1,0 +1,214 @@
+# Laya multilingual golden fixtures
+
+Reference outputs produced by the PyTorch reference implementation
+(`laya.agent.Agent`, requires the `laya` package and PyTorch) for the laya
+multilingual checkpoint.
+
+## Fixtures
+
+`golden/<case>.json` — one file per fixed case. Each contains:
+
+- `state` / `questions` — the exact inputs fed to `Agent.system_one`.
+- `per_question.<qid>`:
+  - `qtype` — `choice` / `score` / `noul`
+  - `options` — rendered option texts in label-index order
+  - `input_ids` — tokenized sequence (build_sequence output)
+  - `marker_pos` — marker (option) positions in the sequence
+  - `raw_logits` — scorer logits at the marker positions (pre temperature)
+  - `act_logits` — raw action-head logits
+  - `act_probability` — softmax(act)[0]
+- `answers` — the post-processed `system_one` answer dict
+  (choice/score/noul + probabilities + confidence + action).
+
+`manifest.json` — case name -> file mapping.
+
+## Cases
+
+| case | qtype | lang | options |
+|---|---|---|---|
+| choice_single_zh | choice | zh | single (3 options) |
+| choice_multi_zh  | choice | zh | multi (3 options) |
+| score_zh         | score  | zh | 4 levels |
+| noul_zh          | noul   | zh | 2 (false/true) |
+| choice_single_en | choice | en | single (3 options) |
+| score_en         | score  | en | 4 levels |
+| noul_en          | noul   | en | 2 (false/true) |
+
+The `zh` cases specifically exercise the Chinese path; the `en` cases cover the
+English path. No case contains real brand or entity names.
+
+## Regenerating
+
+```bash
+python3 tests/laya/gen_fixtures.py
+```
+
+Requires the `laya` package and PyTorch (set `LAYA_PY` if the interpreter is
+not `python3` on `PATH`) and the multilingual checkpoint at `$LAYA_MODEL_DIR`.
+
+## Quantization
+
+Produce the F16 GGUF, then quantize with precision protection:
+
+```bash
+# 1. F16 GGUF
+python convert_hf_to_gguf.py "$LAYA_MODEL_DIR" \
+    --outfile laya-f16.gguf --outtype f16
+
+# 2. quantize (builds llama-quantize if needed)
+./tests/laya/quantize.sh
+```
+
+### Precision protection
+
+The following tensor families are never quantized (kept F16, or F32 where the
+conversion already emits F32 — norms and 1-D biases):
+
+- `token_embd.weight`
+- all `*_norm.weight` / `*_norm.bias` (encoder + decision-head LayerNorms)
+- `type_emb.weight`
+- `scorer.*` / `act_head.*`
+
+Everything else (encoder `blk.*` matrices and the decision-head transformer
+matrices `head.*.attn_qkv|attn_output|ffn_up|ffn_down`) is quantized with the
+standard k-quant mixture. This is enforced via
+
+```bash
+llama-quantize --token-embedding-type f16 \
+    --tensor-type 'type_emb\.weight=f16' \
+    --tensor-type 'scorer\..*\.weight=f16' \
+    --tensor-type 'act_head\..*\.weight=f16' \
+    laya-f16.gguf laya-q4_k_m.gguf Q4_K_M
+```
+
+### Verification
+
+`tests/laya/verify_quantize.py` checks tensor list/shape consistency, that no
+protected tensor got quantized, and reports per-tensor deviation
+(dequantized vs F16 reference):
+
+```bash
+PYTHONPATH=gguf-py "${LAYA_PY:-python3}" tests/laya/verify_quantize.py .
+```
+
+## End-to-end verification
+
+`tests/laya/e2e.sh` runs the whole chain
+(safetensors -> F16 GGUF -> k-quant -> inference -> checks):
+
+```bash
+./tests/laya/e2e.sh                 # full pipeline (idempotent, byte-reproducible)
+./tests/laya/e2e.sh --skip-convert  # reuse laya-f16.gguf
+```
+
+### Precision regression
+
+`tests/laya/verify_precision.py` runs `llama-laya-cli` on every golden case
+for the F16 model and each quantization tier and reports the deviation of the
+scorer logits, the answer probabilities, the decision fields
+(choice / score / noul) and the action-head probability, against the PyTorch
+reference and against F16 (the implementation-consistent baseline):
+
+```bash
+python3 tests/laya/verify_precision.py ./build/bin/llama-laya-cli
+```
+
+### Performance and stability
+
+`tests/laya/bench.py` uses the CLI's in-process `--bench N` mode to isolate
+the forward pass (model load excluded) and reports single-question and
+4-question latency, batching behaviour, thread scaling and determinism:
+
+```bash
+python3 tests/laya/bench.py ./build/bin/llama-laya-cli --runs 30
+```
+
+### Demo
+
+```bash
+./build/bin/llama-laya-cli -m laya-f16.gguf -f tests/laya/demo_input.json -t 8
+```
+
+`tests/laya/demo_input.json` holds a dialogue plus `choice` / `score` /
+`noul` questions; all three are answered from a single forward pass. The
+stdout JSON contains `answers` (per question), the raw per-question tensors
+(`per_question`) used for golden comparison, and, with `--bench`, a `bench`
+timing block. `-t` sets the CPU thread count.
+
+## English checkpoints (`laya`, `laya-typed-decisions`)
+
+`convaiinnovations/laya` (512 ctx, head budget 192) and
+`convaiinnovations/laya-typed-decisions` (1024 ctx, head budget 256) use a
+ModernBERT-large encoder (28 layers, d 1024, 421M parameters) and the
+ModernBERT / OLMo byte-level BPE (NFC, GPT-2 regex, `[CLS]` 50281, `[SEP]`
+50282, `[MASK]` 50284 with lstrip). The same converter handles them and writes
+`decision.laya.tokenizer = bytelevel-bpe` plus the temperature buckets
+(`laya.temperature_by_options.*`):
+
+```bash
+python convert_hf_to_gguf.py <snapshot of convaiinnovations/laya> --outfile laya-en-f16.gguf --outtype f16
+```
+
+Tokenizer parity (0 mismatches required; the corpus has an English-heavy
+section of at least 5000 strings):
+
+```bash
+python tests/laya/verify_tokenizer.py build/bin/llama-laya-cli laya-en-f16.gguf <snapshot>/tokenizer
+```
+
+Parity against the PyTorch reference on the English items of an item set
+(`tests/laya/verify_reference.py`; `ref` needs the `laya` package):
+
+```bash
+$LAYA_PY tests/laya/verify_reference.py ref <snapshot> items.jsonl ref.jsonl --english
+python3  tests/laya/verify_reference.py cli build/bin/llama-laya-cli laya-en-f32.gguf ref.jsonl cli_f32.jsonl
+python3  tests/laya/verify_reference.py server build/bin/llama-server laya-en-f16.gguf ref.jsonl server_f16.jsonl
+python3  tests/laya/verify_reference.py compare ref.jsonl cli_f32.jsonl server_f16.jsonl
+```
+
+`cli` packs all questions of an item into one graph (`llama-laya-cli`, default kernels);
+`server` sends each item to one `llama-server --decision` process over HTTP, which runs the
+plan `sequential` (one graph per question) with the server's default threads and kernels
+(`--kernels` / `-t` override them), i.e. what a client of the server gets.
+
+`tools/laya/gen-unicode-data.py` regenerates `tools/laya/laya-unicode-data.inc`
+(the NFC and regex tables of HF tokenizers) and checks it against HF.
+
+### Known deviations
+
+* Known fix: the encoder attention output projection (`attn_output.weight`
+  / `Wo`) was loaded but never applied in the encoder graph, which produced
+  O(1) wrong scorer logits and wrong choices. It is now applied, and the
+  multi-sequence marker gather is offset by each sequence's start
+  (`seq_start`) so batched/multi-question forwards read the right tokens.
+* Residual F16-vs-PyTorch scorer-logit deviation is 0.01-0.13 on the golden
+  cases. The encoder attention is extremely saturated (pre-softmax scores up
+  to ~55), so tiny summation-order differences are amplified; the decision
+  (argmax) is unaffected on every case and tier.
+* Quantization error is monotonic at the tensor level (max relative error
+  ~3.85% / 2.16% / 0.38% for Q4_K_M / Q5_K_M / Q8_0). At the logit level it
+  is not monotonic (a saturated attention position can swing), but
+  choice/argmax agrees with PyTorch on all cases for all tiers.
+* Batching several questions into one forward is not faster in this runtime:
+  the flattened encoder attends over the concatenation of all sequences, so
+  the dense `kq` matrix grows quadratically with total tokens. For a handful
+  of questions, call the model once per question.
+
+## Converter fixtures (`convert/`)
+
+`make_tiny_hf_laya.py` writes two tiny laya HF checkpoints with the layout of the real ones, for
+`llama-laya-convert` (`tools/laya/laya-convert.h`):
+
+| directory | family | weights |
+|---|---|---|
+| `laya-tiny-ms-v0.1-8M` | metaspace BPE with byte fallback (mmBERT) | F16, one shard |
+| `laya-bl-tiny-instruct-30K` | byte-level BPE, NFC (ModernBERT) | F32 / F16 / BF16 / F64, two shards + index, NaN / inf / subnormal / F16-tie values |
+
+`convert/golden.sha256` holds the SHA-256 of the Python converter's GGUF for 7 cases (f32 / f16 /
+q8_0, one with `--model-name`). `test-laya-convert` checks the C++ output against it without
+Python; `test-laya-convert-py` (`--check`) regenerates both sides.
+
+```bash
+python tests/laya/make_tiny_hf_laya.py --golden                                    # rewrite fixtures + golden.sha256
+LAYA_REF_PYTHON=~/.cache/laya-ref/.venv/bin/python python tests/laya/make_tiny_hf_laya.py --check build/bin/llama-laya-convert
+```
