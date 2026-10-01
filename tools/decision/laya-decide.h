@@ -143,6 +143,13 @@ struct laya_batch_data {
     laya_batch batch;
 };
 
+// softmax of n raw act-head logits in float (max-shifted), the way the reference Agent reads the act head;
+// act_probability is out[0]. llama-laya-cli and llama-server both compute it here.
+void laya_act_softmax(const float * act_logits, int32_t n, std::vector<float> & out);
+
+// Python round(x, 4) (correctly rounded on the exact binary value)
+double laya_py_round4(double x);
+
 // seqs must have at most LAYA_MAX_MARKERS markers each
 void laya_batch_pack(const std::vector<const laya_seq *> & seqs, laya_batch_data & out);
 

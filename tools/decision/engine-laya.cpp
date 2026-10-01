@@ -1,4 +1,5 @@
-// laya engine: tools/laya (own GGUF loader + ggml graph, CPU only) behind decision_engine.
+// laya engine: tools/laya (own GGUF loader + ggml graph; the CPU, or one GPU / iGPU device of the ggml
+// backend registry) behind decision_engine.
 //
 // Plans:
 //   sequential (default) - one graph per item; no state between calls, so results
@@ -17,6 +18,7 @@
 #include "laya-decide.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -35,6 +37,7 @@ struct engine_laya : decision_engine {
     laya_escape    esc;
     std::string    plan;
     int32_t        n_threads = 1;
+    bool           strict_placement = false;
     bool           split_exact = true; // tokenize(A + B) == tokenize(A) + tokenize(B) at the router split points (probed at init)
 
     // escaped state text -> tokens, for one evaluate call
@@ -59,10 +62,28 @@ struct engine_laya : decision_engine {
         c.max_options      = LAYA_MAX_MARKERS;
         c.max_tokens       = hp.max_len > 0 ? hp.max_len : 1024;
         c.n_threads        = n_threads;
-        c.device           = "cpu";
+        ggml_backend_dev_t dev = laya_model_device(model);
+        c.device           = laya_device_name(dev);
+        c.device_description = dev ? ggml_backend_dev_description(dev) : "";
+        const laya_placement pl = laya_context_placement(ctx);
+        json backends = json::object();
+        for (const auto & b : pl.backends) {
+            backends[b.first] = b.second;
+        }
+        c.placement = {
+            {"nodes",        pl.n_nodes},
+            {"splits",       pl.n_splits},
+            {"backends",     backends},
+            {"cpu_fallback", pl.cpu_fallback},
+            {"fallback_ops", pl.fallback_ops},
+            {"host_weights", pl.host_weights},
+            {"strict",       strict_placement},
+        };
         c.kernels          = laya_context_kernels(ctx);
         c.n_threads_blas   = laya_context_n_threads_blas(ctx);
+        c.precision        = laya_precision_name(laya_context_precision(ctx));
         const laya_model_memory mem = laya_model_memory_info(model);
+        c.weights_device   = mem.device;
         c.weights_loaded   = mem.loaded;
         c.weights_mapped   = mem.mapped;
         c.weights_repacked = mem.repacked;
@@ -118,7 +139,9 @@ struct engine_laya : decision_engine {
             const json q = { {"type", decision_qtype_name(item.q.type)}, {"criteria", item.q.criteria} };
             try {
                 options = laya_render_options(q);
-            } catch (const std::exception & e) {
+            } catch (const std::runtime_error & e) {
+                // laya_render_options' own validation messages; anything else (json type errors, bad_alloc)
+                // goes up to the fixed 500 message without its text
                 throw decision_error(DECISION_REASON_UNSUPPORTED_CRITERIA_VALUE, e.what(), param);
             }
         }
@@ -169,6 +192,11 @@ struct engine_laya : decision_engine {
         for (size_t j = 0; j < seq.markers.size(); ++j) {
             out.logits[j] = res.logits[(size_t) idx * res.n_markers_max + j];
         }
+        const float * act = res.act_logits.data() + (size_t) idx * res.n_act;
+        out.act_logits.assign(act, act + res.n_act);
+        std::vector<float> p;
+        laya_act_softmax(act, res.n_act, p);
+        out.act_probability = laya_py_round4(p[0]);
         out.n_evaluated = out.n_tokens;
     }
 
@@ -299,36 +327,84 @@ std::unique_ptr<decision_engine> decision_engine_laya_init(const decision_spec &
     if (kernels.empty()) {
         kernels = "auto";
     }
-    if (kernels == "auto") {
-        // measured on Apple M4 Max over 911 items: Accelerate sgemm (F32 accumulation, no
-        // activation rounding) is closer to the PyTorch reference than the ggml F16 / Q8_0
-        // kernels and 2x faster; other BLAS libraries are not measured, so they stay opt-in
-        kernels = laya_blas_description() == "Accelerate" ? "blas" : "default";
+    const std::string device_mode = params.device.empty() ? "cpu" : params.device;
+    ggml_backend_dev_t device = nullptr;
+    try {
+        device = laya_device_select(device_mode, params.gpu_index);
+    } catch (const std::exception & e) {
+        throw std::runtime_error(std::string("laya: ") + e.what());
     }
-    if (kernels != "default" && kernels != "repack" && kernels != "blas" && kernels != "repack+blas") {
-        throw std::runtime_error("laya: unknown kernels '" + kernels + "' (auto, default, repack, blas, repack+blas)");
+    const bool cpu_only_kernels = kernels != "auto" && kernels != "default";
+    if (device && device_mode == "auto" && cpu_only_kernels) {
+        fprintf(stderr, "laya: kernels '%s' are CPU-only: decision device auto uses the CPU\n", kernels.c_str());
+        device = nullptr;
     }
 
-    laya_model_params mparams;
-    mparams.use_mmap        = params.use_mmap;
-    mparams.use_mlock       = params.use_mlock;
-    mparams.use_extra_bufts = kernels == "repack" || kernels == "repack+blas";
-
-    laya_context_params cparams;
-    cparams.n_threads = std::max(1, params.n_threads);
-    cparams.poll      = params.poll;
-    cparams.use_blas  = kernels == "blas" || kernels == "repack+blas";
-    cparams.n_threads_blas = params.n_threads_blas;
-
-    std::unique_ptr<engine_laya> eng(new engine_laya());
-    eng->plan      = plan;
-    eng->n_threads = cparams.n_threads;
-    eng->model     = laya_model_load_from_file_ext(params.model_path.c_str(), mparams);
-    eng->esc       = laya_escape_init(eng->model);
-    eng->split_exact = laya_probe_split(eng->model, eng->esc);
-    eng->ctx       = laya_init_ext(eng->model, cparams);
-    if (params.warmup && laya_warmup(eng->ctx, params.warmup_tokens) != 0) {
-        throw std::runtime_error("laya: warm-up forward pass failed");
+    laya_precision precision = LAYA_PRECISION_DEFAULT;
+    if (!params.precision.empty() && !laya_precision_from_name(params.precision, precision)) {
+        throw std::runtime_error("laya: unknown precision '" + params.precision + "' (default, strict)");
     }
+
+    const std::string kernels_req = kernels;
+    auto build = [&](ggml_backend_dev_t dev) {
+        std::string k = kernels_req;
+        if (dev) {
+            // the device computes with its own kernels; repack and BLAS are CPU-only
+            if (k != "auto" && k != "default") {
+                throw std::runtime_error("laya: kernels '" + k + "' are CPU-only, the device " + laya_device_name(dev) +
+                                         " takes auto or default");
+            }
+            k = "default";
+        } else if (k == "auto") {
+            // measured on Apple M4 Max over 911 items: Accelerate sgemm (F32 accumulation, no
+            // activation rounding) is closer to the PyTorch reference than the ggml F16 / Q8_0
+            // kernels and 2x faster; other BLAS libraries are not measured, so they stay opt-in
+            k = laya_blas_description() == "Accelerate" ? "blas" : "default";
+        }
+        if (k != "default" && k != "repack" && k != "blas" && k != "repack+blas") {
+            throw std::runtime_error("laya: unknown kernels '" + k + "' (auto, default, repack, blas, repack+blas)");
+        }
+
+        laya_model_params mparams;
+        mparams.use_mmap        = params.use_mmap;
+        mparams.use_mlock       = params.use_mlock;
+        mparams.use_extra_bufts = k == "repack" || k == "repack+blas";
+        mparams.device          = dev;
+
+        laya_context_params cparams;
+        cparams.n_threads = std::max(1, params.n_threads);
+        cparams.poll      = params.poll;
+        cparams.use_blas  = k == "blas" || k == "repack+blas";
+        cparams.n_threads_blas = params.n_threads_blas;
+        cparams.precision = precision;
+        cparams.strict_placement = params.strict_placement;
+        cparams.trace_dir = params.trace_dir;
+
+        std::unique_ptr<engine_laya> eng(new engine_laya());
+        eng->plan      = plan;
+        eng->strict_placement = params.strict_placement;
+        eng->n_threads = cparams.n_threads;
+        eng->model     = laya_model_load_from_file_ext(params.model_path.c_str(), mparams);
+        eng->esc       = laya_escape_init(eng->model);
+        eng->split_exact = laya_probe_split(eng->model, eng->esc);
+        eng->ctx       = laya_init_ext(eng->model, cparams);
+        if (params.warmup && laya_warmup(eng->ctx, params.warmup_tokens) != 0) {
+            throw std::runtime_error("laya: warm-up forward pass failed");
+        }
+        return eng;
+    };
+
+    if (device && device_mode == "auto") {
+        // auto: a device that fails to load, initialize or warm up gives way to the CPU (the partly built
+        // engine frees itself); a device error that aborts inside ggml cannot be caught here
+        try {
+            return build(device);
+        } catch (const std::exception & e) {
+            fprintf(stderr, "laya: warning: the device %s failed (%s); decision device auto uses the CPU\n",
+                    laya_device_name(device).c_str(), e.what());
+        }
+        return build(nullptr);
+    }
+    std::unique_ptr<engine_laya> eng = build(device);
     return eng;
 }

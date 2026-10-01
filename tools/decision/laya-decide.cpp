@@ -585,6 +585,27 @@ static double py_round4(double x) {
     return strtod(buf, nullptr);
 }
 
+double laya_py_round4(double x) {
+    return py_round4(x);
+}
+
+void laya_act_softmax(const float * act_logits, int32_t n_act, std::vector<float> & act) {
+    act.resize(n_act);
+    float amax = act_logits[0];
+    for (int32_t j = 0; j < n_act; ++j) {
+        act[j] = act_logits[j];
+        amax = std::max(amax, act[j]);
+    }
+    float asum = 0.0f;
+    for (int32_t j = 0; j < n_act; ++j) {
+        act[j] = std::exp(act[j] - amax);
+        asum += act[j];
+    }
+    for (int32_t j = 0; j < n_act; ++j) {
+        act[j] /= asum;
+    }
+}
+
 void laya_postprocess(
         const laya_question & q,
         const laya_seq & seq,
@@ -630,20 +651,8 @@ void laya_postprocess(
     const float answer_conf = std::min(1.0f, std::max(0.0f, p[argmax]));
 
     // action head softmax
-    std::vector<float> act(n_act);
-    float amax = result.act_logits[qid*n_act];
-    for (int32_t j = 0; j < n_act; ++j) {
-        act[j] = result.act_logits[qid*n_act + j];
-        amax = std::max(amax, act[j]);
-    }
-    float asum = 0.0f;
-    for (int32_t j = 0; j < n_act; ++j) {
-        act[j] = std::exp(act[j] - amax);
-        asum += act[j];
-    }
-    for (int32_t j = 0; j < n_act; ++j) {
-        act[j] /= asum;
-    }
+    std::vector<float> act;
+    laya_act_softmax(result.act_logits.data() + (size_t) qid*n_act, n_act, act);
     const float act_probability = act[0];
     const json action = { {"act_probability", py_round4(act_probability)} };
 
