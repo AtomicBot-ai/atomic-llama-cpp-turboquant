@@ -20,6 +20,22 @@ if (BUILD_SHARED_LIBS)
     set_target_properties(laya PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
+# HF checkpoint directory -> GGUF (port of convert_hf_to_gguf.py for laya). Separate from laya so
+# that the model library does not grow; links ggml (gguf API, ggml_quantize_chunk, ggml_fopen).
+add_library(laya-convert STATIC
+            laya-convert.cpp
+            laya-convert.h)
+
+target_link_libraries     (laya-convert PUBLIC ggml)
+if (WIN32)
+    # laya_utf8_to_wide (UTF-8 file names through the UTF-16 APIs), declared only on Windows
+    target_link_libraries (laya-convert PRIVATE laya)
+endif()
+target_include_directories(laya-convert PUBLIC .)
+target_include_directories(laya-convert PRIVATE ${PROJECT_SOURCE_DIR}/vendor)
+target_compile_features   (laya-convert PRIVATE cxx_std_17)
+set_target_properties     (laya-convert PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # Gate the CLI on LLAMA_BUILD_TOOLS so that library-only builds skip it.
 if (LLAMA_BUILD_TOOLS)
     set(TARGET llama-laya-cli)
@@ -29,5 +45,14 @@ if (LLAMA_BUILD_TOOLS)
         install(TARGETS ${TARGET} RUNTIME)
     endif()
     target_link_libraries  (${TARGET} PRIVATE decision laya Threads::Threads)
+    target_compile_features(${TARGET} PRIVATE cxx_std_17)
+
+    set(TARGET llama-laya-convert)
+    add_executable(${TARGET} laya-convert-cli.cpp)
+    set_target_properties(${TARGET} PROPERTIES OUTPUT_NAME llama-laya-convert)
+    if(LLAMA_TOOLS_INSTALL)
+        install(TARGETS ${TARGET} RUNTIME)
+    endif()
+    target_link_libraries  (${TARGET} PRIVATE decision laya-convert) # decision: decision_utf8_args (Windows argv)
     target_compile_features(${TARGET} PRIVATE cxx_std_17)
 endif()
