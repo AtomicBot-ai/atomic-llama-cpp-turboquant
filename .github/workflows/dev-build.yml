@@ -28,6 +28,7 @@ on:
       - '**/*.comp'
       - '**/*.glsl'
       - '**/*.metal'
+      - 'tests/laya/parity/**'
   # No paths filter: these jobs are required status checks on dev, and a
   # required check that never reports leaves the PR stuck in "Expected"
   # forever (e.g. a docs-only PR). Runs on PRs into master too so the
@@ -1044,6 +1045,14 @@ jobs:
           key: turboquant-decision-tests-${{ matrix.os }}
           evict-old-files: 1d
 
+      # before the builds: CMake registers the tiny-GGUF fixture of test-laya-backend-parity only when
+      # its interpreter has numpy and pyyaml
+      - name: Python setup
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          pip-install: -r tools/server/tests/requirements.txt
+
       - name: Build (Linux)
         if: ${{ runner.os == 'Linux' }}
         run: |
@@ -1056,9 +1065,10 @@ jobs:
             -DLLAMA_BUILD_TOOLS=ON \
             -DLLAMA_BUILD_TESTS=ON \
             -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_FATAL_WARNINGS=ON
+            -DLLAMA_FATAL_WARNINGS=ON \
+            -DPython3_EXECUTABLE="$(command -v python)"
           cmake --build build --config Release -j $(nproc) \
-            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-laya-convert llama-server llama-laya-cli llama-laya-convert
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-laya-convert llama-server llama-laya-cli llama-laya-convert test-laya-backend-precision test-laya-backend-parity
 
       # same toolchain as the server.yml Windows job
       - name: Build (Windows)
@@ -1073,20 +1083,19 @@ jobs:
             -DLLAMA_BUILD_SERVER=ON ^
             -DLLAMA_BUILD_TOOLS=ON ^
             -DLLAMA_BUILD_TESTS=ON ^
-            -DLLAMA_BUILD_EXAMPLES=OFF
+            -DLLAMA_BUILD_EXAMPLES=OFF ^
+            -DPython3_EXECUTABLE=%pythonLocation%\python.exe
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS% ^
-            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-laya-convert llama-server llama-laya-cli llama-laya-convert
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-laya-convert llama-server llama-laya-cli llama-laya-convert test-laya-backend-precision test-laya-backend-parity
 
       # decision + the checkpoint converter (test-laya-convert, test-decision-checkpoint-cli); the Python
       # cross-check (label python) needs torch + transformers 5.17 and runs locally (make_tiny_hf_laya.py --check)
       - name: Unit tests
         run: ctest --test-dir build -C Release -R "decision|laya-convert" -LE python --output-on-failure
 
-      - name: Python setup
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-          pip-install: -r tools/server/tests/requirements.txt
+      # laya backend tests: exit code 77 (no GPU / iGPU device on the runner) counts as skipped
+      - name: Laya backend tests
+        run: ctest --test-dir build -C Release -L laya --output-on-failure
 
       # the Python reference of the router rendering and the calibration tools; the golden file
       # that test-decision-reference reads must match a fresh run of its generator
@@ -1107,6 +1116,11 @@ jobs:
         run: |
           cd tools/server/tests
           python -m pytest -v unit/test_decision.py
+
+      # offline: backend parity gate, identity records, corpus regenerates to the recorded sha256
+      - name: Parity tooling tests
+        shell: bash
+        run: python -m pytest -v tests/laya/parity
 
   # Republishes the rolling `dev-latest` prerelease with whatever archives the
   # build jobs produced. Runs even when some jobs fail (if: always()) so a

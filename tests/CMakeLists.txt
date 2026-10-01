@@ -260,6 +260,36 @@ if (LLAMA_BUILD_TOOLS AND NOT EMSCRIPTEN)
                  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/laya/make_tiny_hf_laya.py --check $<TARGET_FILE:llama-laya-convert>)
         set_tests_properties(test-laya-convert-py PROPERTIES LABELS python SKIP_RETURN_CODE 77)
     endif()
+
+    # laya GPU backends (Phase 4b): exit code 77 = no GPU / iGPU device in the build (skipped)
+    llama_build_and_test(test-laya-backend-precision.cpp LABEL laya)
+    target_link_libraries(test-laya-backend-precision PRIVATE laya)
+    set_tests_properties(test-laya-backend-precision PROPERTIES SKIP_RETURN_CODE 77)
+
+    # the replay test needs the tiny random laya GGUF, which a Python fixture generates (numpy, pyyaml:
+    # tools/server/tests/requirements.txt); -DPython3_EXECUTABLE=<venv>/bin/python picks the interpreter
+    llama_build(test-laya-backend-parity.cpp)
+    target_link_libraries(test-laya-backend-parity PRIVATE laya)
+    set(LAYA_TINY_PY_OK OFF)
+    if (Python3_Interpreter_FOUND)
+        # the fixture imports numpy and gguf-py (which needs pyyaml): without them the test is not registered
+        execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy, yaml"
+                        RESULT_VARIABLE LAYA_TINY_PY_RC OUTPUT_QUIET ERROR_QUIET)
+        if (LAYA_TINY_PY_RC EQUAL 0)
+            set(LAYA_TINY_PY_OK ON)
+        else()
+            message(STATUS "test-laya-backend-parity: ${Python3_EXECUTABLE} has no numpy / pyyaml, not registered")
+        endif()
+    endif()
+    if (LAYA_TINY_PY_OK)
+        set(LAYA_TINY_GGUF "${CMAKE_CURRENT_BINARY_DIR}/laya-tiny-backend.gguf")
+        add_test(NAME test-laya-tiny-gguf
+                 COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/decision/make_tiny_laya.py ${LAYA_TINY_GGUF})
+        set_tests_properties(test-laya-tiny-gguf PROPERTIES FIXTURES_SETUP laya-tiny LABELS laya)
+        llama_test(test-laya-backend-parity LABEL laya
+                   ARGS ${LAYA_TINY_GGUF} ${PROJECT_SOURCE_DIR}/tests/laya/parity/tiers.json)
+        set_tests_properties(test-laya-backend-parity PROPERTIES SKIP_RETURN_CODE 77 FIXTURES_REQUIRED laya-tiny)
+    endif()
 endif()
 
 llama_build_and_test(
