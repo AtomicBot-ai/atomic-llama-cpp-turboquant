@@ -3,6 +3,8 @@
 !snapshots/
 !laya/
 !laya/golden/
+!laya/convert/
+!laya/convert/**/
 !decision/
 !decision/golden/
 !decision/bench/

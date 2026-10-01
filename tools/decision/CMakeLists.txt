@@ -1,12 +1,15 @@
 # decision
 
 # Decision API v1 library: py-json, decision.spec, request checks, calibration,
-# executor cards and the engines (laya for now). Static and PIC: the tools and
-# tests link it, and so does llama-server-impl, which is SHARED in DL builds.
+# executor cards, the engines (laya for now) and the GGUF cache for checkpoint
+# directories. Static and PIC: the tools and tests link it, and so does
+# llama-server-impl, which is SHARED in DL builds.
 
 add_library(decision STATIC
             decision.cpp
             decision.h
+            decision-checkpoint.cpp
+            decision-checkpoint.h
             decision-json.cpp
             decision-json.h
             decision-spec.cpp
@@ -22,7 +25,8 @@ add_library(decision STATIC
             laya-decide.h
             ${PROJECT_SOURCE_DIR}/examples/gguf-hash/deps/sha256/sha256.c)
 
-target_link_libraries     (decision PUBLIC laya ggml)
+# laya-convert: -m <checkpoint dir> is converted to a cached GGUF (decision-checkpoint.h)
+target_link_libraries     (decision PUBLIC laya laya-convert ggml)
 target_include_directories(decision PUBLIC . ${PROJECT_SOURCE_DIR}/vendor)
 target_include_directories(decision PRIVATE ${PROJECT_SOURCE_DIR}/examples/gguf-hash/deps) # sha256, also used by llama-gguf-hash
 target_compile_features   (decision PUBLIC cxx_std_17)

@@ -3,6 +3,7 @@
 
 #include "decision.h"
 #include "decision-calib.h"
+#include "decision-checkpoint.h"
 #include "decision-request.h"
 #include "decision-router.h"
 #include "decision-spec.h"
@@ -57,6 +58,11 @@ static server_http_res_ptr dec_unavailable_res(const std::string & msg) {
         {"reason",  "UNAVAILABLE"},
         {"message", msg},
     }}});
+}
+
+// progress of -m DIR (converted / cache hit)
+static void dec_log_checkpoint(const std::string & msg) {
+    SRV_INF("decision: %s\n", msg.c_str());
 }
 
 //
@@ -249,6 +255,7 @@ struct server_decision {
     bool                             router_available = false;
     std::string                      calibration_id;
     std::string                      model_name;
+    decision_model_source            source;   // -m FILE, or -m DIR and its cached GGUF
 
     dec_worker        worker;
     dec_stats         stats;
@@ -260,7 +267,21 @@ struct server_decision {
     }
 
     bool load(std::string & err) {
-        if (!decision_spec_load(params.model.path, params.decision.spec_path, spec, err)) {
+        // -m DIR: convert the checkpoint once into the GGUF cache (or reuse it), then load that GGUF
+        // like -m FILE. Here, after the HTTP server started: /health answers 503 while converting.
+        decision_checkpoint_params cparams;
+        cparams.cache_dir = params.decision.convert_cache;
+        if (!laya_convert_parse_outtype(params.decision.convert_type, cparams.outtype)) {
+            err = "unknown --decision-convert-type '" + params.decision.convert_type + "'";
+            return false;
+        }
+        cparams.log = dec_log_checkpoint;
+        if (!decision_model_source_resolve(params.model.path, cparams, source, err)) {
+            return false;
+        }
+        const std::string & gguf_path = source.gguf_path;
+
+        if (!decision_spec_load(gguf_path, params.decision.spec_path, spec, err)) {
             return false;
         }
 
@@ -281,7 +302,7 @@ struct server_decision {
         }
 
         decision_engine_params eparams;
-        eparams.model_path = params.model.path;
+        eparams.model_path = gguf_path;
         eparams.plan       = params.decision.plan;
         eparams.n_threads  = params.cpuparams.n_threads;
         if (!params.decision.threads_set && decision_cpu_perf_cores() > 0) {
@@ -464,6 +485,18 @@ struct server_decision {
             {"input_contract", spec.input_contract},
             {"special_tokens", spec.special_tokens},
             {"debug",          params.decision.debug},
+            // "gguf": -m FILE, loaded as is; "checkpoint-dir": -m DIR, converted into cache_path
+            {"source",         source.kind},
+            {"cache_path",     source.kind == "gguf" ? json() : json(source.gguf_path)},
+            {"checkpoint",     source.kind == "gguf" ? json() : json{
+                {"dir",        source.input},
+                {"cache_dir",  source.cache_dir},
+                {"key",        source.key},
+                {"outtype",    source.outtype},
+                {"cache_hit",  source.cache_hit},
+                {"convert_ms", source.convert_ms},
+                {"converter",  LAYA_CONVERT_VERSION},
+            }},
         };
     }
 
@@ -808,8 +841,12 @@ bool server_decision_prepare(common_params & params) {
         return false;
     }
     if (params.model.path.empty()) {
-        SRV_ERR("%s", "--decision requires -m FILE (without a model the server would start in router mode)\n");
+        SRV_ERR("%s", "--decision requires -m FILE or -m DIR (without a model the server would start in router mode)\n");
         return false;
+    }
+    const bool is_dir = decision_path_is_dir(params.model.path);
+    if (!is_dir && (!params.decision.convert_cache.empty() || params.decision.convert_type != common_params().decision.convert_type)) {
+        SRV_WRN("%s", "decision mode: --decision-convert-cache/--decision-convert-type apply to -m DIR only and are ignored for a GGUF file\n");
     }
 
     // chat, embedding and UI options have no meaning here
@@ -832,9 +869,10 @@ bool server_decision_prepare(common_params & params) {
     }
 
     // default model name: the file name without .gguf (llama_server would use the path as given),
-    // the same derivation as the default spec model_id
+    // the same derivation as the default spec model_id; for -m DIR the directory name, which is
+    // also the file name of its cached GGUF (<cache>/<key>/<name>.gguf)
     if (params.model_alias.empty()) {
-        params.model_alias.insert(decision_model_name(params.model.path));
+        params.model_alias.insert(is_dir ? decision_checkpoint_name(params.model.path) : decision_model_name(params.model.path));
     }
 
     // ui and public_path are read by ctx_http.init
@@ -846,6 +884,10 @@ bool server_decision_prepare(common_params & params) {
     // setenv: here, before ctx_http.start() creates the HTTP threads (getenv in them would race)
     decision_cpu_env_defaults();
     return true;
+}
+
+bool server_decision_is_checkpoint_dir(const std::string & path) {
+    return decision_is_laya_checkpoint_dir(path);
 }
 
 std::string server_decision_gguf_arch(const std::string & path) {

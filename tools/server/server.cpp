@@ -142,6 +142,9 @@ int llama_server(common_params & params, int argc, char ** argv) {
     } else if (!params.model.path.empty() && server_decision_gguf_arch(params.model.path) == "laya") {
         SRV_ERR("%s is a laya decision model; start it with --decision (see DECISION.md)\n", params.model.path.c_str());
         return 1;
+    } else if (!params.model.path.empty() && server_decision_is_checkpoint_dir(params.model.path)) {
+        SRV_ERR("%s is a laya checkpoint directory; start it with --decision (see DECISION.md)\n", params.model.path.c_str());
+        return 1;
     }
 
     // note: router mode also accepts -hf remote-preset, so we need to check that first

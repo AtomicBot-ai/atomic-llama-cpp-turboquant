@@ -127,6 +127,8 @@ class ServerProcess:
     decision_allow_uncalibrated: bool = False
     decision_debug: bool = False
     decision_kernels: str | None = None
+    decision_convert_cache: str | None = None
+    decision_convert_type: str | None = None
     load_mode: str | None = None
     no_warmup: bool = False
     extra_env: dict | None = None
@@ -303,6 +305,10 @@ class ServerProcess:
             server_args.append("--decision-debug")
         if self.decision_kernels:
             server_args.extend(["--decision-kernels", self.decision_kernels])
+        if self.decision_convert_cache:
+            server_args.extend(["--decision-convert-cache", self.decision_convert_cache])
+        if self.decision_convert_type:
+            server_args.extend(["--decision-convert-type", self.decision_convert_type])
         if self.load_mode:
             server_args.extend(["--load-mode", self.load_mode])
         if self.no_warmup:

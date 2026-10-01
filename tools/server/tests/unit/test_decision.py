@@ -5,6 +5,7 @@ import math
 import os
 import platform
 import random
+import shutil
 import sys
 import signal
 import subprocess
@@ -1184,3 +1185,364 @@ def test_router_collect_fit_and_stamp(tmp_path):
     kernels = {"cpu": "default", "cpu+repack": "repack", "cpu+blas": "blas", "cpu+repack+blas": "repack+blas"}
     with open(spec_out, encoding="utf-8") as f:
         assert json.load(f)["plan"]["kernels"] == kernels[got[0]["engine"]["plan"]["kernels"]]
+
+
+#
+# -m DIR: a laya Hugging Face checkpoint directory is converted once into the GGUF cache
+# (tools/decision/decision-checkpoint.h), then the cached GGUF is loaded like -m FILE
+#
+
+CONVERT_FIXTURES = os.path.join(REPO, "tests/laya/convert")
+
+
+def convert_golden(fixture: str, outtype: str) -> str:
+    """ sha256 of the Python converter's GGUF (convert_hf_to_gguf.py, no --model-name) from golden.sha256 """
+    with open(os.path.join(CONVERT_FIXTURES, "golden.sha256"), encoding="utf-8") as f:
+        for line in f:
+            p = line.split()
+            if len(p) == 6 and p[1] == fixture and p[2] == outtype and p[3] == "-":
+                return p[5]
+    raise KeyError((fixture, outtype))
+
+
+def file_sha256(path: str) -> str:
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def copy_fixture(tmp_path, fixture: str = "laya-tiny-ms-v0.1-8M") -> str:
+    # a copy: the corruption tests edit it, and the directory name (part of general.name) stays the same
+    dst = os.path.join(tmp_path, "ckpt", fixture)
+    shutil.copytree(os.path.join(CONVERT_FIXTURES, fixture), dst)
+    return dst
+
+
+def checkpoint_server(ckpt: str, cache: str | None, log_path: str, outtype: str | None = None) -> ServerProcess:
+    global server
+    server = tiny_laya_decision_server()
+    server.model_file = ckpt
+    server.model_alias = None
+    server.decision_convert_cache = cache
+    server.decision_convert_type = outtype
+    server.decision_debug = True  # logits and token ids in the answers: identity is checked on the raw numbers
+    server.log_path = log_path
+    return server
+
+
+def read_log(path: str) -> str:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def decision_answers(srv: ServerProcess) -> dict:
+    res = srv.make_request("POST", "/v1/systemone", data={"state": "Billed twice, please refund", "questions": QUESTIONS})
+    assert res.status_code == 200, res.body
+    # everything but the clock
+    return {k: res.body[k] for k in ("model", "answers", "usage", "warnings", "runtime")}
+
+
+def python_converted_gguf(fixture_dir: str, fixture: str, outtype: str, cached: str, dst_dir: str) -> str:
+    """ The Python converter's GGUF of the fixture, named <fixture>.gguf (the model name comes from the
+        file name, as -m DIR takes it from the directory name). With LAYA_REF_PYTHON (torch, transformers)
+        convert_hf_to_gguf.py runs; without it the golden sha256 of that output stands in for it: a file
+        with the same sha256 is that file, so the cached bytes are copied after the check. """
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, fixture + ".gguf")
+    py = os.environ.get("LAYA_REF_PYTHON")
+    if py:
+        env = {**os.environ, "PYTHONPATH": os.path.join(REPO, "gguf-py")}
+        subprocess.run([py, os.path.join(REPO, "convert_hf_to_gguf.py"), fixture_dir, "--outfile", dst, "--outtype", outtype],
+                       check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        assert file_sha256(cached) == convert_golden(fixture, outtype)
+        with open(cached, "rb") as src, open(dst, "wb") as out:
+            out.write(src.read())
+    assert file_sha256(dst) == convert_golden(fixture, outtype)
+    return dst
+
+
+@pytest.mark.parametrize("fixture", ["laya-tiny-ms-v0.1-8M", "laya-bl-tiny-instruct-30K"])
+def test_checkpoint_dir_converts_then_hits_cache(tmp_path, fixture):
+    ckpt = copy_fixture(tmp_path, fixture)
+    cache = os.path.join(tmp_path, "cache")
+
+    # first start: converted
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log1.txt"))
+    srv.start()
+    d = srv.make_request("GET", "/props").body["decision"]
+    assert d["source"] == "checkpoint-dir"
+    cache_path = d["cache_path"]
+    assert os.path.normpath(os.path.dirname(os.path.dirname(cache_path))) == os.path.normpath(cache)
+    assert os.path.basename(cache_path) == fixture + ".gguf"
+    assert d["checkpoint"]["cache_hit"] is False and d["checkpoint"]["outtype"] == "f16"
+    assert d["checkpoint"]["dir"] == ckpt and len(d["checkpoint"]["key"]) == 32
+    # the directory name is the default model name and the default spec model_id
+    assert srv.make_request("GET", "/health").body["model"] == fixture
+    assert d["model_id"] == fixture
+    assert srv.make_request("GET", "/props").body["model_path"] == ckpt
+    first = decision_answers(srv)
+    srv.stop()
+    assert "decision: converted: " + cache_path in read_log(os.path.join(tmp_path, "log1.txt"))
+    # byte-identical to convert_hf_to_gguf.py
+    assert file_sha256(cache_path) == convert_golden(fixture, "f16")
+    # nothing but the one GGUF in the cache, nothing written into the checkpoint
+    assert [os.path.relpath(os.path.join(r, f), cache) for r, _, fs in os.walk(cache) for f in fs] == \
+           [os.path.relpath(cache_path, cache)]
+    assert sorted(os.listdir(ckpt)) == sorted(os.listdir(os.path.join(CONVERT_FIXTURES, fixture)))
+
+    # second start: cache hit, same file, same answers
+    mtime = os.stat(cache_path).st_mtime_ns
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log2.txt"))
+    srv.start()
+    d = srv.make_request("GET", "/props").body["decision"]
+    assert d["cache_path"] == cache_path and d["checkpoint"]["cache_hit"] is True
+    assert decision_answers(srv) == first
+    srv.stop()
+    log2 = read_log(os.path.join(tmp_path, "log2.txt"))
+    assert "decision: cache hit: " + cache_path in log2 and "decision: converted" not in log2
+    assert os.stat(cache_path).st_mtime_ns == mtime
+
+    # the Python converter's GGUF gives the same answers, and -m FILE reports source gguf
+    gguf = python_converted_gguf(ckpt, fixture, "f16", cache_path, os.path.join(tmp_path, "py"))
+    srv = checkpoint_server(gguf, None, os.path.join(tmp_path, "log3.txt"))
+    srv.start()
+    d = srv.make_request("GET", "/props").body["decision"]
+    assert d["source"] == "gguf" and d["cache_path"] is None and d["checkpoint"] is None
+    assert decision_answers(srv) == first
+
+
+@pytest.mark.parametrize("outtype", ["f32"])
+def test_checkpoint_dir_convert_type(tmp_path, outtype):
+    ckpt = copy_fixture(tmp_path)
+    cache = os.path.join(tmp_path, "cache")
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log.txt"), outtype=outtype)
+    srv.start()
+    d = srv.make_request("GET", "/props").body["decision"]
+    assert d["checkpoint"]["outtype"] == outtype
+    decision_answers(srv)
+    srv.stop()
+    assert file_sha256(d["cache_path"]) == convert_golden("laya-tiny-ms-v0.1-8M", outtype)
+    # another outtype is another key: the f16 conversion does not reuse this one
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log2.txt"))
+    srv.start()
+    d16 = srv.make_request("GET", "/props").body["decision"]
+    assert d16["checkpoint"]["cache_hit"] is False and d16["checkpoint"]["key"] != d["checkpoint"]["key"]
+
+
+def test_checkpoint_dir_q8_0_refused(tmp_path):
+    # convert_hf_to_gguf.py's q8_0 also quantizes token_embd / type_emb / scorer / act_head, which the
+    # measured Q8_0 recipe (tests/laya/quantize.sh) keeps at F16: -m DIR does not offer it
+    server.decision_convert_type = "q8_0"
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
+
+
+def test_checkpoint_dir_edit_converts_again(tmp_path):
+    ckpt = copy_fixture(tmp_path)
+    cache = os.path.join(tmp_path, "cache")
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log1.txt"))
+    srv.start()
+    key1 = srv.make_request("GET", "/props").body["decision"]["checkpoint"]["key"]
+    srv.stop()
+    # same size, new content in a small file (keyed by content): a new key, converted again
+    path = os.path.join(ckpt, "tokenizer", "tokenizer_config.json")
+    with open(path, "rb") as f:
+        data = f.read()
+    with open(path, "wb") as f:
+        f.write(data.rstrip(b"\n") + b" ")
+    st = os.stat(path)
+    assert st.st_size == len(data)
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log2.txt"))
+    srv.start()
+    c = srv.make_request("GET", "/props").body["decision"]["checkpoint"]
+    assert c["key"] != key1 and c["cache_hit"] is False
+
+
+def test_checkpoint_dir_bad_cache_entry_converts_again(tmp_path):
+    ckpt = copy_fixture(tmp_path)
+    cache = os.path.join(tmp_path, "cache")
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log1.txt"))
+    srv.start()
+    d = srv.make_request("GET", "/props").body["decision"]
+    first = decision_answers(srv)
+    srv.stop()
+    with open(d["cache_path"], "r+b") as f:
+        f.truncate(os.path.getsize(d["cache_path"]) // 2)
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log2.txt"))
+    srv.start()
+    d2 = srv.make_request("GET", "/props").body["decision"]
+    assert d2["cache_path"] == d["cache_path"] and d2["checkpoint"]["cache_hit"] is False
+    assert decision_answers(srv) == first
+    srv.stop()
+    assert "is not usable (truncated" in read_log(os.path.join(tmp_path, "log2.txt"))
+    assert file_sha256(d["cache_path"]) == convert_golden("laya-tiny-ms-v0.1-8M", "f16")
+
+
+def test_checkpoint_dir_default_cache(tmp_path):
+    # $LLAMA_CACHE/laya/gguf-cache, as common's -hf downloads use $LLAMA_CACHE
+    ckpt = copy_fixture(tmp_path)
+    srv = checkpoint_server(ckpt, None, os.path.join(tmp_path, "log.txt"))
+    srv.extra_env = {"LLAMA_CACHE": os.path.join(tmp_path, "llama-cache")}
+    srv.start()
+    cache_path = srv.make_request("GET", "/props").body["decision"]["cache_path"]
+    assert os.path.normpath(os.path.dirname(os.path.dirname(cache_path))) == \
+           os.path.normpath(os.path.join(tmp_path, "llama-cache", "laya", "gguf-cache"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="HOME layout")
+def test_checkpoint_dir_default_cache_user_dir(tmp_path):
+    # without LLAMA_CACHE: the platform user cache + llama.cpp/laya/gguf-cache
+    ckpt = copy_fixture(tmp_path)
+    home = os.path.join(tmp_path, "home")
+    srv = checkpoint_server(ckpt, None, os.path.join(tmp_path, "log.txt"))
+    srv.extra_env = {"LLAMA_CACHE": "", "HOME": home, "XDG_CACHE_HOME": ""}
+    srv.start()
+    cache_path = srv.make_request("GET", "/props").body["decision"]["cache_path"]
+    user_cache = os.path.join(home, "Library", "Caches") if sys.platform == "darwin" else os.path.join(home, ".cache")
+    assert os.path.normpath(os.path.dirname(os.path.dirname(cache_path))) == \
+           os.path.normpath(os.path.join(user_cache, "llama.cpp", "laya", "gguf-cache"))
+
+
+def break_truncate(ckpt: str):
+    path = os.path.join(ckpt, "model.safetensors")
+    with open(path, "r+b") as f:
+        f.truncate(os.path.getsize(path) - 100)
+
+
+def break_json(ckpt: str):
+    with open(os.path.join(ckpt, "encoder", "config.json"), "w") as f:
+        f.write("{\"hidden_size\": ")
+
+
+def break_header(ckpt: str):
+    # a safetensors header length far beyond the file
+    path = os.path.join(ckpt, "model.safetensors")
+    with open(path, "r+b") as f:
+        f.write((1 << 62).to_bytes(8, "little"))
+
+
+def break_not_checkpoint(ckpt: str):
+    os.remove(os.path.join(ckpt, "rl_agent_config.json"))
+
+
+@pytest.mark.parametrize("breaker,message", [
+    (break_truncate, "cannot convert checkpoint directory"),
+    (break_json, "cannot convert checkpoint directory"),
+    (break_header, "cannot convert checkpoint directory"),
+    (break_not_checkpoint, "is a directory but not a laya checkpoint"),
+])
+def test_checkpoint_dir_corrupt_fails(tmp_path, breaker, message):
+    ckpt = copy_fixture(tmp_path)
+    breaker(ckpt)
+    cache = os.path.join(tmp_path, "cache")
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log.txt"))
+    with pytest.raises(RuntimeError):
+        srv.start(timeout_seconds=20)
+    log = read_log(os.path.join(tmp_path, "log.txt"))
+    assert "failed to load the decision model: " in log and message in log, log[-2000:]
+    # a clean failure: no GGUF, no temporary file, no empty key directory
+    assert not os.path.exists(cache) or os.listdir(cache) == []
+
+
+def test_checkpoint_dir_cache_inside_checkpoint_fails(tmp_path):
+    ckpt = copy_fixture(tmp_path)
+    srv = checkpoint_server(ckpt, os.path.join(ckpt, "cache"), os.path.join(tmp_path, "log.txt"))
+    with pytest.raises(RuntimeError):
+        srv.start(timeout_seconds=20)
+    assert "is inside the checkpoint directory" in read_log(os.path.join(tmp_path, "log.txt"))
+    # refused before anything was created in the checkpoint
+    assert not os.path.exists(os.path.join(ckpt, "cache"))
+    assert sorted(os.listdir(ckpt)) == sorted(os.listdir(os.path.join(CONVERT_FIXTURES, "laya-tiny-ms-v0.1-8M")))
+
+
+def test_checkpoint_dir_large_file_key(tmp_path):
+    # files over 8 MiB (the weights, a 256k-vocab tokenizer.json) are keyed by size + mtime + symlink target,
+    # not by content: a new mtime is a new key. tokenizer.json padded with trailing whitespace: same JSON.
+    ckpt = copy_fixture(tmp_path)
+    cache = os.path.join(tmp_path, "cache")
+    tok = os.path.join(ckpt, "tokenizer", "tokenizer.json")
+    with open(tok, "ab") as f:
+        f.write(b" " * (9 << 20))
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log1.txt"))
+    srv.start()
+    c1 = srv.make_request("GET", "/props").body["decision"]["checkpoint"]
+    srv.stop()
+    assert c1["cache_hit"] is False
+    # the same bytes as the unpadded fixture (whitespace does not change the JSON)
+    assert file_sha256(os.path.join(cache, c1["key"], "laya-tiny-ms-v0.1-8M.gguf")) == convert_golden("laya-tiny-ms-v0.1-8M", "f16")
+
+    # a subdirectory the converter never reads is not keyed, even with an unreadable file in it
+    os.makedirs(os.path.join(ckpt, "eval"))
+    secret = os.path.join(ckpt, "eval", "results.json")
+    with open(secret, "w") as f:
+        f.write("{}")
+    if os.name != "nt":
+        os.chmod(secret, 0)
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log2.txt"))
+    srv.start()
+    c2 = srv.make_request("GET", "/props").body["decision"]["checkpoint"]
+    srv.stop()
+    if os.name != "nt":
+        os.chmod(secret, 0o644)
+    assert c2["key"] != c1["key"]  # a new subdirectory is keyed by its name (presence) only
+    assert c2["cache_hit"] is False
+
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log3.txt"))
+    srv.start()
+    c3 = srv.make_request("GET", "/props").body["decision"]["checkpoint"]
+    srv.stop()
+    assert c3["key"] == c2["key"] and c3["cache_hit"] is True
+
+    # same size, new mtime of the large file: a new key, converted again
+    st = os.stat(tok)
+    os.utime(tok, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log4.txt"))
+    srv.start()
+    c4 = srv.make_request("GET", "/props").body["decision"]["checkpoint"]
+    assert c4["key"] != c3["key"] and c4["cache_hit"] is False
+
+
+def test_checkpoint_dir_stale_part_removed(tmp_path):
+    # a killed conversion leaves <name>.gguf.<hex>.part in the key directory; the next conversion there removes it
+    ckpt = copy_fixture(tmp_path)
+    cache = os.path.join(tmp_path, "cache")
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log1.txt"))
+    srv.start()
+    cache_path = srv.make_request("GET", "/props").body["decision"]["cache_path"]
+    srv.stop()
+    stale = cache_path + ".0123456789abcdef.part"
+    fresh = cache_path + ".fedcba9876543210.part.0011223344556677.tmp"
+    for p in (stale, fresh):
+        with open(p, "wb") as f:
+            f.write(b"x")
+    old = os.stat(stale).st_mtime - 3600
+    os.utime(stale, (old, old))
+    os.remove(cache_path)  # the next start converts into this key directory
+    srv = checkpoint_server(ckpt, cache, os.path.join(tmp_path, "log2.txt"))
+    srv.start()
+    srv.stop()
+    assert not os.path.exists(stale)
+    assert os.path.exists(fresh)  # younger than 10 minutes: may belong to a running conversion
+    assert "removed a stale temporary file" in read_log(os.path.join(tmp_path, "log2.txt"))
+
+
+def test_checkpoint_dir_without_decision_fails(tmp_path):
+    ckpt = copy_fixture(tmp_path)
+    srv = checkpoint_server(ckpt, os.path.join(tmp_path, "cache"), os.path.join(tmp_path, "log.txt"))
+    srv.decision = False
+    with pytest.raises(RuntimeError):
+        srv.start(timeout_seconds=20)
+    assert "is a laya checkpoint directory; start it with --decision" in read_log(os.path.join(tmp_path, "log.txt"))
+    assert not os.path.exists(os.path.join(tmp_path, "cache"))
+
+
+def test_bad_convert_type_fails(tmp_path):
+    server.decision_convert_type = "bf16"
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=10)
+
+
+def test_gguf_source_props():
+    server.start()
+    d = server.make_request("GET", "/props").body["decision"]
+    assert d["source"] == "gguf" and d["cache_path"] is None and d["checkpoint"] is None
