@@ -283,12 +283,20 @@ def runtime_from_bench(d):
             "placement": d.get("placement")}
 
 
+def _inside(path, root):
+    """path is root or below it; separator- and drive-safe (a "root/" prefix test fails on Windows)."""
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # different drives on Windows
+        return False
+
+
 def _exe_names(i):
-    root = (i.get("build") or {}).get("root") or ""
+    root = os.path.realpath((i.get("build") or {}).get("root") or "") if (i.get("build") or {}).get("root") else ""
     names = set()
     for e in i.get("executables") or []:
         rp = os.path.realpath(e)
-        rel = os.path.relpath(rp, root) if root and rp.startswith(root.rstrip("/") + "/") else rp
+        rel = os.path.relpath(rp, root) if root and _inside(rp, root) else rp
         names.add(rel.replace(os.sep, "/"))
     return names
 
