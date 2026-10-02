@@ -583,11 +583,38 @@ static bool vk_load_pipelines(moe_cache_vulkan_device & dev) {
     return true;
 }
 
+// moe_cache_mv.comp needs int64/int8/fp16 arithmetic and 8/16-bit storage. ggml-vulkan enables every
+// supported feature on its device, so supported here means enabled. Without them pipeline creation is
+// undefined behavior on some drivers, so check before creating it.
+static bool vk_device_supports_moe_kernels(VkPhysicalDevice phys) {
+    VkPhysicalDeviceVulkan12Features vk12 = {};
+    vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+
+    VkPhysicalDeviceVulkan11Features vk11 = {};
+    vk11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    vk11.pNext = &vk12;
+
+    VkPhysicalDeviceFeatures2 features2 = {};
+    features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features2.pNext = &vk11;
+
+    vkGetPhysicalDeviceFeatures2(phys, &features2);
+
+    return features2.features.shaderInt64 && vk12.shaderInt8 && vk12.shaderFloat16 &&
+           vk12.storageBuffer8BitAccess && vk11.storageBuffer16BitAccess;
+}
+
 // Create the command pool and compile the moe-cache pipelines on first use.
 // session_create only keeps bookkeeping state, so a context that never uses
 // the cache pays no GPU setup cost.
 static bool vk_device_ensure_ready(moe_cache_vulkan_device & dev, size_t budget_mb) {
     std::call_once(dev.init_once, [&]() {
+        if (!vk_device_supports_moe_kernels(dev.vk_physical)) {
+            MOE_CACHE_LOG("[moe-cache] Vulkan: device lacks int64/int8/fp16 shader or 8/16-bit storage support, moe cache disabled\n");
+            dev.dead.store(true);
+            return;
+        }
+
         VkCommandPoolCreateInfo cpci = {};
         cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
