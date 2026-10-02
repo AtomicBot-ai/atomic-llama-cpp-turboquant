@@ -463,6 +463,57 @@ jobs:
             llama-turboquant-linux-x64-cuda-12.4.tar.gz
           retention-days: 14
 
+  # The CUDA archives ship PTX ("-virtual") for old and server GPUs, which the
+  # driver compiles on the user's machine. Compile those archs as real SASS here
+  # so a kernel that does not build for them (shared memory limits, missing arch
+  # guards) fails CI instead of failing at load time. Compile only, no archive.
+  linux-cuda-real-arch-check:
+    name: linux-cuda-${{ matrix.cuda }}-real-arch-check
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cuda: '12.4'
+            pkg: '12-4'
+            archs: '50-real;61-real;70-real'
+          - cuda: '13.3'
+            pkg: '13-3'
+            archs: '75-real;80-real;90-real'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: turboquant-linux-cuda-${{ matrix.cuda }}-real-arch-check
+          evict-old-files: 1d
+
+      - name: Install CUDA Toolkit
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential \
+            cuda-nvcc-${{ matrix.pkg }} cuda-cccl-${{ matrix.pkg }} cuda-cudart-dev-${{ matrix.pkg }} libcublas-dev-${{ matrix.pkg }}
+          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+
+      - name: Compile ggml-cuda
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CUDA=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="${{ matrix.archs }}" \
+            -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache \
+            -DLLAMA_CURL=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release --target ggml-cuda -j $(nproc)
+
   linux-x64-rocm:
     runs-on: ubuntu-22.04
     env:
