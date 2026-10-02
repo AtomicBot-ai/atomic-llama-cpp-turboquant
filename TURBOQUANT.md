@@ -126,15 +126,44 @@ upstream commit the fork is based on.
 
 Conflict hot-spots (see `MERGE_NOTES.md` for history): `ggml-cuda.cu`/`fattn.cu`,
 `ggml-vulkan.cpp` (SET_ROWS/supports_op), `ggml-metal.metal` kernel naming,
-`llama-kv-cache.cpp`, `gguf-py/gguf/constants.py` (quant type ids — the fork
-renumbered `Q2_0` to 47; upstream Q2_0 GGUFs are incompatible).
+`llama-kv-cache.cpp`, `gguf-py/gguf/constants.py` (quant type ids follow
+upstream since the tqp-v0.4.0 rebase: `Q2_0` = 42, turbo KV types 43/44/47,
+`TQ3_1S`/`TQ4_1S` = 45/46).
+
+### TurboQuant+ (TheTom) base
+
+Since 2026-10 `dev` is based on TheTom's `feature/turboquant-kv-cache` at tag
+`tqp-v0.4.0` (remote `upstream` in this repo, `ggml` is ggml-org). TheTom
+re-ported TurboQuant onto fresh ggml on 2026-07-31, so the older fork history
+could not be merged; our own commits were re-applied on top of his tree
+(cherry-pick with `-x`, the source sha is in each message). From now on sync
+TheTom with a normal merge into a sync branch, the same way as above.
+
+Kept on purpose when it differed from upstream:
+
+- `ssm_alpha`/`ssm_beta` quantization exclusion only for `LLM_ARCH_QWEN4EXP`, so
+  our quantize masks for Qwen3.5/3.6 and other GDN models reproduce.
+- TQ WMMA prefill also checks the compiled CUDA arch (V100 on the CUDA 12.4
+  archive runs `61-virtual` PTX).
+- Vulkan moe cache checks device features before creating pipelines.
+- Metal `LIGHTNING_INDEXER` restored (lost in an upstream merge).
+- BoringSSL pin `0.20260803.0`.
+- The `f32_pedantic` (strict decision precision) path keeps cuBLAS for F32
+  transposed-vector matmuls.
+
+Watch on the next sync:
+
+- `vendors/hip.h` host-alloc APIs (kv-stream) must build on ROCm 7.2.1 and
+  TheRock 10.0.0.
+- `__ballot_sync` on HIP truncates to 32 bits on wave64; only NVIDIA calls it
+  today.
+- `tools/kv-stream-bench` links cudart; check CUDA archive contents and size.
 
 ## Known constraints
 
-- Vulkan: turbo3 flash-attn SPIR-V and banded-FA/lightning-indexer kernels are
-  not implemented; those ops are rejected via `supports_op` (turbo KV cache
-  falls back off on Vulkan). TURBO_WHT / turbo set_rows / GATED_DELTA_NET
-  Vulkan kernels DO exist.
+- Vulkan: banded-FA (Inkling) and lightning-indexer kernels are not
+  implemented; those ops are rejected via `supports_op`. Turbo K/V flash
+  attention, TURBO_WHT, turbo set_rows and GATED_DELTA_NET Vulkan kernels exist.
 - Inkling: no MTP/NextN support yet (heads in GGUF are ignored); the fork's
   MTP subsystem currently serves qwen35/step35/hy-v3. Planned work.
 - Upstream removed `-sm row` (CUDA multi-GPU split-buffer) — gone since the
