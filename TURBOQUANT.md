@@ -164,6 +164,10 @@ Watch on the next sync:
 - Vulkan: banded-FA (Inkling) and lightning-indexer kernels are not
   implemented; those ops are rejected via `supports_op`. Turbo K/V flash
   attention, TURBO_WHT, turbo set_rows and GATED_DELTA_NET Vulkan kernels exist.
+- Turbo K cannot be RoPE-shifted: the turbo dequant stays in its WHT basis, so
+  `build_graph_shift` skips turbo K layers (context shift and `--cache-reuse`
+  degrade output with turbo K). A correct shift needs an inverse WHT before RoPE
+  on every backend.
 - Inkling: no MTP/NextN support yet (heads in GGUF are ignored); the fork's
   MTP subsystem currently serves qwen35/step35/hy-v3. Planned work.
 - Upstream removed `-sm row` (CUDA multi-GPU split-buffer) — gone since the

@@ -176,6 +176,11 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
 
 ### Notes
 
+- **Context shift / `--cache-reuse` with a quantized K cache:** `q8_0`, `q4_0`
+  and the other ggml types no longer crash and now shift correctly. With
+  `turbo2`/`turbo3`/`turbo4` K the shift is still skipped, as in earlier
+  releases: no crash, but output quality drops after the context shifts. Size
+  `-c` so it does not shift, or use a ggml type for `-ctk` when you need it.
 - On Vulkan devices without int64/int8/fp16 shader arithmetic or 8-bit storage
   (older iGPUs, some legacy AMD) the MoE cache turns itself off and the normal
   expert path runs.

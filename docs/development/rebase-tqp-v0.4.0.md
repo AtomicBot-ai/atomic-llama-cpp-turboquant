@@ -32,7 +32,7 @@ MTP / NextN audit (lines added by each commit that are alive on old dev but abse
 - Ported: `--spec-type mtp|nextn` and `--mtp-head` aliases (`4c21bbc4f`), the clear error for pre-b10018 `gemma4_assistant` GGUFs (`29017fd55`), MTP.md / NEXTN.md, helper and UDT scripts.
 - GDN partial `seq_rm`: upstream has the mainline `n_rs_seq` implementation.
 - Draft mtmd processing (`TAG_MTMD_DRAFT_PROCESSING`): mainline replaced it with the mtmd post-decode callback (#24645).
-- Turbo K-shift skip (`31df030fe`): not ported. Upstream shifts quantized K correctly (dequant, inverse Hadamard, RoPE, Hadamard, requant); the old skip left stale positions.
+- Turbo K-shift skip (`31df030fe`): re-done differently in `a7df3b9a3`. Upstream's quantized K shift crashed for every quantized K cache when attention rotation is off (null `rot`), and turbo K cannot be shifted by dequant -> RoPE -> requant because the turbo dequant stays in its WHT basis (Metal also claimed a CPY f32 -> turbo kernel it does not have). Now q8_0/q4_0 shift correctly and turbo K layers are left unshifted, which matches the released builds: no crash, but output degrades after a context shift with turbo K.
 - iSWA `get_can_shift` without the size check (`d1333b0bc`): not ported. Mainline keeps the check for correctness; Gemma 4 with `--cache-reuse` needs `--swa-full` for fast TTFT.
 - Removed upstream (mainline #26254): OuteTTS vocoder flags of `llama-tts`.
 
