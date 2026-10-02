@@ -339,9 +339,13 @@ static bool tensor_allows_quantization(const llama_model_quantize_params * param
     // has a 4-element row, which no block-quantized type can represent, so there is no floor to
     // set for it in any case. The hyper-connection injection matrices are the same class but do
     // carry 8 bits, so they get a floor in llama_tensor_get_type instead of being excluded here.
-    quantize &= name.find("ssm_alpha.weight")  == std::string::npos;
-    quantize &= name.find("ssm_beta.weight")   == std::string::npos;
-    quantize &= name.find("ple_conv1d.weight") == std::string::npos;
+    // arch-gated: other GDN archs (qwen35, kimi linear, bailingmoe3, kimi-k3) keep their quantization
+    // and their tensor-type masks working as before
+    if (arch == LLM_ARCH_QWEN4EXP) {
+        quantize &= name.find("ssm_alpha.weight")  == std::string::npos;
+        quantize &= name.find("ssm_beta.weight")   == std::string::npos;
+        quantize &= name.find("ple_conv1d.weight") == std::string::npos;
+    }
 
     // keep Inkling's shortconv kernels and rel-proj table unquantized; arch-gated so the
     // name substrings cannot hit another architecture
