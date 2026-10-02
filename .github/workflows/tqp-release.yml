@@ -67,7 +67,6 @@ jobs:
             -DGGML_NATIVE=OFF ^
             -DGGML_CUDA=ON ^
             -DGGML_CUDA_FA_ALL_QUANTS=ON ^
-            -DLLAMA_BUILD_BORINGSSL=ON ^
             ${{ env.CMAKE_ARGS }}
           set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
           cmake --build build --config Release -j %NINJA_JOBS%
@@ -87,85 +86,8 @@ jobs:
           name: windows-x64-cuda${{ matrix.cuda }}
           path: turboquant-plus-${{ github.ref_name }}-windows-x64-cuda${{ matrix.cuda }}.zip
 
-  linux-cpu:
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Clone
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev
-
-      - name: Build
-        run: |
-          cmake -B build \
-            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
-            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-            -DGGML_BACKEND_DL=ON \
-            -DGGML_NATIVE=OFF \
-            -DGGML_CPU_ALL_VARIANTS=ON \
-            ${{ env.CMAKE_ARGS }}
-          cmake --build build --config Release -j $(nproc)
-
-      - name: Pack
-        run: |
-          cp LICENSE ./build/bin/
-          tar -czvf turboquant-plus-${{ github.ref_name }}-linux-x64-cpu.tar.gz \
-            --transform "s,^\.,turboquant-plus-${{ github.ref_name }}," -C ./build/bin .
-
-      - name: Upload
-        uses: actions/upload-artifact@v6
-        with:
-          name: linux-x64-cpu
-          path: turboquant-plus-${{ github.ref_name }}-linux-x64-cpu.tar.gz
-
-  linux-vulkan:
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Clone
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Dependencies
-        run: |
-          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential mesa-vulkan-drivers vulkan-sdk libssl-dev
-
-      - name: Build
-        run: |
-          cmake -B build \
-            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
-            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-            -DGGML_BACKEND_DL=ON \
-            -DGGML_NATIVE=OFF \
-            -DGGML_CPU_ALL_VARIANTS=ON \
-            -DGGML_VULKAN=ON \
-            ${{ env.CMAKE_ARGS }}
-          cmake --build build --config Release -j $(nproc)
-
-      - name: Pack
-        run: |
-          cp LICENSE ./build/bin/
-          tar -czvf turboquant-plus-${{ github.ref_name }}-linux-x64-vulkan.tar.gz \
-            --transform "s,^\.,turboquant-plus-${{ github.ref_name }}," -C ./build/bin .
-
-      - name: Upload
-        uses: actions/upload-artifact@v6
-        with:
-          name: linux-x64-vulkan
-          path: turboquant-plus-${{ github.ref_name }}-linux-x64-vulkan.tar.gz
-
   release:
-    needs: [macos-metal, windows-cuda, linux-cpu, linux-vulkan]
+    needs: [macos-metal, windows-cuda]
     runs-on: ubuntu-latest
     permissions:
       contents: write
