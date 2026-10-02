@@ -8,6 +8,8 @@ llama.cpp supports speculative decoding, a technique that can significantly acce
 
 The `llama-server` application supports several implementations of speculative decoding. An implementation with draft model can be mixed with an implementation without draft model.
 
+Fork note (atomic-llama-cpp-turboquant): `--spec-type mtp` and `--spec-type nextn` are aliases of `draft-mtp`, and `--mtp-head FNAME` is an alias of `--spec-draft-model`. Model-specific recipes: [MTP.md](../MTP.md) (Gemma 4 assistant) and [NEXTN.md](../NEXTN.md) (Qwen 3.5/3.6 NextN).
+
 ### Draft Model (`draft`)
 
 A much smaller model (called the _draft model_) generates drafts.
