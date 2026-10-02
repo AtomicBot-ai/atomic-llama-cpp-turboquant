@@ -926,6 +926,14 @@ static __global__ void mul_mat_tq3_1s_wmma_kernel(
 
 #endif // defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
 
+#if defined(GGML_CUDA_USE_WMMA)
+// the WMMA kernels above are stubs below sm_70: check the compiled arch, not only the device
+// (e.g. a V100 running the compute_61 PTX of a "61-virtual" build)
+static bool tq_wmma_available(const int cc) {
+    return fp16_mma_hardware_available(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA;
+}
+#endif // defined(GGML_CUDA_USE_WMMA)
+
 static void launch_tq4_1s_wmma(
         const void * src0_d, const float * act_buf,
         float * dst_d, int ncols_x, int nrows_x, int ncols_dst,
@@ -1491,7 +1499,7 @@ void ggml_cuda_mul_mat_tq(ggml_backend_cuda_context & ctx,
             }
         } else {
 #if defined(GGML_CUDA_USE_WMMA)
-            if (fp16_mma_hardware_available(cc)) {
+            if (tq_wmma_available(cc)) {
                 // Large prefill: Fused Tensor Core (WMMA) path
                 ggml_cuda_pool_alloc<float> act_buf(ctx.pool(id), n_total_elements);
                 {
@@ -1557,7 +1565,7 @@ void ggml_cuda_mul_mat_tq(ggml_backend_cuda_context & ctx,
             }
         } else {
 #if defined(GGML_CUDA_USE_WMMA)
-            if (fp16_mma_hardware_available(cc)) {
+            if (tq_wmma_available(cc)) {
                 // Large prefill: Fused Tensor Core (WMMA) path
                 if (is_tq4) {
                     launch_tq4_1s_wmma(src0_d, act_buf.get(), dst_d, ncols_x, nrows_x, ncols_dst, ncols_x, nrows_x, stream);
