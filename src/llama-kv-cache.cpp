@@ -2683,15 +2683,20 @@ ggml_tensor * llama_kv_cache::build_rope_shift(
         // dequantize to f32 -> RoPE -> quantize back
         tmp = ggml_cast(ctx, cur, GGML_TYPE_F32);
 
-        // rotate back
-        tmp = llama_mul_mat_hadamard(ctx, tmp, rot);
+        // rot is null when attention rotation is off for this cache
+        if (rot) {
+            // rotate back
+            tmp = llama_mul_mat_hadamard(ctx, tmp, rot);
+        }
 
         tmp = ggml_rope_ext(ctx, tmp,
                 shift, factors, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
                 yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow);
 
-        // rotate fwd
-        tmp = llama_mul_mat_hadamard(ctx, tmp, rot);
+        if (rot) {
+            // rotate fwd
+            tmp = llama_mul_mat_hadamard(ctx, tmp, rot);
+        }
 
         tmp = ggml_cpy(ctx, tmp, cur);
     } else {
@@ -2756,6 +2761,12 @@ ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_co
 
     for (const auto & layer : layers) {
         const uint32_t il = layer.il;
+
+        // turbo K lives in its own WHT basis and the turbo dequant does not undo it, so a
+        // dequant -> RoPE -> requant shift would corrupt it; these layers are left unshifted
+        if (layer.k->type == GGML_TYPE_TURBO2_0 || layer.k->type == GGML_TYPE_TURBO3_0 || layer.k->type == GGML_TYPE_TURBO4_0) {
+            continue;
+        }
 
         const int64_t n_head_kv    = hparams.n_head_kv(il);
         const int64_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
