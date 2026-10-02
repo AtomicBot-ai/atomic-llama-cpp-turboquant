@@ -1,0 +1,8 @@
+User: Explain speculative decoding in one paragraph.
+Assistant: Speculative decoding runs a smaller draft model or auxiliary head to predict several tokens ahead; the large target model verifies them in parallel or with minimal extra compute, accepting a prefix of correct predictions and rolling back when a mismatch occurs.
+
+User: What is a KV cache?
+Assistant: The KV cache stores key and value tensors from past tokens so attention can reuse them instead of recomputing the full history on each new token.
+
+User: Name three loss functions used in language modeling.
+Assistant: Cross-entropy on next-token prediction, label smoothing cross-entropy, and optionally auxiliary losses such as z-loss for stabilizing large logits.

@@ -17,11 +17,11 @@ have_cmd() {
 }
 
 dl() {
-    [ -f "$2" ] && return
     if have_cmd wget; then
-        wget "$1" -O "$2"
+        wget -q "$1" -O "$2" || return 1
     elif have_cmd curl; then
-        curl -L "$1" -o "$2"
+        # -f: fail on HTTP errors (avoid HTML error pages named .zip)
+        curl -fsSL "$1" -o "$2" || return 1
     else
         die "Please install wget or curl"
     fi
@@ -30,8 +30,13 @@ dl() {
 have_cmd unzip || die "Please install unzip"
 
 if [ ! -f "$FILE" ]; then
-    dl "$URL" "$ZIP" || exit
-    unzip -o "$ZIP"  || exit
+    if [ -f "$ZIP" ] && ! unzip -t "$ZIP" >/dev/null 2>&1; then
+        rm -f -- "$ZIP"
+    fi
+    if [ ! -f "$ZIP" ]; then
+        dl "$URL" "$ZIP" || exit 1
+    fi
+    unzip -o "$ZIP" || exit 1
     rm -f -- "$ZIP"
 fi
 

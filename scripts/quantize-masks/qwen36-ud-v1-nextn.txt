@@ -1,0 +1,7 @@
+token_embd\..*=q8_0
+output\.weight=q8_0
+attn_v\..*=q6_K
+ffn_down\..*=q6_K
+ffn_gate_inp\..*=q8_0
+blk\.[0-9]+\.nextn\..*=q8_0
+mtp\..*=q8_0
