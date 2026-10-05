@@ -233,7 +233,15 @@ if (LLAMA_BUILD_TOOLS AND NOT EMSCRIPTEN)
     llama_build_and_test(test-decision-calib.cpp ARGS ${PROJECT_SOURCE_DIR}/tests/decision)
     llama_build_and_test(test-decision-router.cpp)
     llama_build_and_test(test-decision-reference.cpp ARGS ${PROJECT_SOURCE_DIR}/tests/decision/golden/router_cases.jsonl)
-    foreach (test_target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference)
+    # clef prompt against encode_record of the model repo (tests/clef/gen_golden.py), with the vocabulary of
+    # Cloudflare/clef-flash (convert_hf_to_gguf.py --vocab-only; models/ggml-vocab-qwen35.gguf has the Qwen3 vocabulary)
+    add_test(NAME test-decision-clef-vocab
+             COMMAND ${CMAKE_COMMAND} -E tar xzf ${PROJECT_SOURCE_DIR}/tests/clef/ggml-vocab-clef.tar.gz
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(test-decision-clef-vocab PROPERTIES FIXTURES_SETUP clef-vocab LABELS main)
+    llama_build_and_test(test-decision-clef.cpp ARGS ${CMAKE_CURRENT_BINARY_DIR}/ggml-vocab-clef.gguf ${PROJECT_SOURCE_DIR}/tests/clef/golden/prompts.jsonl)
+    set_tests_properties(test-decision-clef PROPERTIES FIXTURES_REQUIRED clef-vocab)
+    foreach (test_target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-decision-clef)
         target_link_libraries(${test_target} PRIVATE decision)
     endforeach()
 
