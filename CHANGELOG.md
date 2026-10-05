@@ -10,6 +10,86 @@ commit list underneath.
 
 Releases before `b10269-1.5.0` predate this file; see the git history.
 
+## b10298-2.0.0
+
+### Added
+
+- **New TurboQuant+ base: `tqp-v0.4.0`** (TheTom's fork as of 2026-09-28; our
+  work was rebased onto it). What it brings:
+  - MoE expert cache (`--moe-cache`, see `docs/backend/MOE-CACHE.md`): faster
+    decode for MoE models whose experts stay in host memory. CUDA/HIP, Metal and
+    Vulkan; anything it cannot handle falls back to the CPU path.
+  - KV streaming (`--kv-stream-arena-mib`, `--kv-stream-stage-mib`, see
+    `docs/kv-stream.md`).
+  - ConvRot weight types `Q8_CR`, `Q5_CR`, `Q6_CR` in `llama-quantize`.
+  - TurboQuant K/V (`turbo2`/`turbo3`/`turbo4`) flash attention on Vulkan.
+  - Faster TQ4_1S/TQ3_1S on AMD (RDNA and CDNA MMQ), HIP graph capture, and many
+    CUDA/HIP/Vulkan/SYCL fixes.
+  - New architectures: Qwen4-Exp, Muse Glimmer; DFlash2 speculative decoding.
+- **Community Laya fine-tunes load with `-m <dir>`.** Both converters (C++ and
+  `convert_hf_to_gguf.py`) now ignore a root `config.json` next to
+  `rl_agent_config.json` + `encoder/config.json` and a
+  `tokenizer/special_tokens_map.json` that only restates `tokenizer_config.json`;
+  until now both files made the conversion fail (Python mapped the checkpoint as a
+  plain ModernBERT). This opens fine-tunes such as `cklxx/laya-browser`,
+  `Wouze/laya-ara-rag`, `impacte/mimir-laya-router` or `gtm-k/*`. The output is
+  the same as for the directory without those files. Their accuracy is the
+  fine-tune author's; only the official checkpoints are measured in `DECISION.md`.
+- **Hints for Laya repackagings this engine cannot load**: `ggmlc` GGUFs
+  (`mys/laya-*-GGUF`), encoder-only `modern-bert` GGUFs with a separate head
+  (`Weidows/*`, `fr0stbit3/*`, with `--decision`) and `laya-head` files now fail
+  with a pointer to the official checkpoint and `--decision -m <dir>`.
+- **Cloudflare Clef decision models** (`Cloudflare/clef`, `Cloudflare/clef-flash`)
+  in `llama-server --decision` (layout `clef`, see "Clef" in `DECISION.md`). The
+  GGUF is the upstream one: `ggml-org/Clef-Flash-GGUF` / `ggml-org/Clef-GGUF` load
+  as they are, and `convert_hf_to_gguf.py` converts the Hugging Face repo. All
+  questions of a request go in one prompt and one forward pass (the joint schema
+  head), on the CPU or one GPU (`--decision-device gpu`); `-c` sets the longest
+  prompt (default 16384 tokens). Requests follow the reference: `instructions`
+  are optional, the confidence is the probability of the chosen option. Text
+  only for now (no images).
+
+### Notes
+
+- **Context shift / `--cache-reuse` with a quantized K cache:** `q8_0`, `q4_0`
+  and the other ggml types no longer crash and now shift correctly. With
+  `turbo2`/`turbo3`/`turbo4` K the shift is still skipped, as in earlier
+  releases: no crash, but output quality drops after the context shifts. Size
+  `-c` so it does not shift, or use a ggml type for `-ctk` when you need it.
+- On Vulkan devices without int64/int8/fp16 shader arithmetic or 8-bit storage
+  (older iGPUs, some legacy AMD) the MoE cache turns itself off and the normal
+  expert path runs.
+- **Windows signing scope**: release archives Authenticode-sign what Atomic Chat
+  runs, `llama-server.exe` and the DLLs it loads (`llama*.dll`, `mtmd.dll`,
+  `ggml*.dll`, the bundled CUDA runtime). The other tools in the archive
+  (`llama-cli`, `llama-bench`, `llama-quantize`, ...) are no longer signed, so
+  SmartScreen may warn when you start one by hand. `dev-latest` builds are
+  unsigned unless a run asks for signing.
+
+### Changed
+
+- **Supported platforms are unchanged:** same CUDA 12.4 / 13.3, ROCm 7.2.1 /
+  TheRock 10.0.0, Vulkan SDK and GPU architecture lists as b10269-1.7.0.
+  Released GGUFs (TQ3_1S/TQ4_1S, NVFP4, Kimi K3, BailingMoeV3, Inkling, laya)
+  load as before.
+- **`Q2_0` type id is now 42**, the same as upstream llama.cpp, so upstream Q2_0
+  GGUFs load. The fork used 47 before; a Q2_0 GGUF made by an older fork build
+  does not load.
+- **Breaking:** `--slot-save-path` / state files saved with a turbo KV cache by an
+  older build do not load (the turbo type ids moved). RPC client and server must
+  run the same build.
+- **Breaking (upstream):** `llama-tts` now runs Qwen3-TTS through mtmd; the
+  OuteTTS vocoder flags (`--model-vocoder`/`-mv`, `--hf-repo-v`, `--hf-file-v`,
+  `--tts-oute-default`, `--tts-use-guide-tokens`) are gone.
+- **Gemma 4 with `--cache-reuse`:** cache reuse is off again unless
+  `--swa-full` is set (upstream keeps the SWA cache size check for
+  correctness). Add `--swa-full` to get the fast time-to-first-token back.
+- Model suppress tokens are applied by the sampler instead of the Gemma 4 graph;
+  sampled output is the same, raw logits from the C API no longer carry `-inf`
+  for them.
+- `--spec-type mtp` / `nextn` and `--mtp-head` keep working (aliases of
+  `draft-mtp` and `--spec-draft-model`).
+
 ## b10269-1.7.0
 
 ### Added

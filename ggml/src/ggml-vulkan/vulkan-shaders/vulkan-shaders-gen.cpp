@@ -590,6 +590,7 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
         if (tname == "bf16") {
             continue;
         }
+        // TQ4_1S uses dedicated mul_mat_vec kernel; no generic matmul needed
 
         std::string data_a_key = "DATA_A_" + to_uppercase(tname);
         // For aligned matmul loads
@@ -626,6 +627,40 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
             string_to_spv(shader_name + "_" + tname + "_q8_1", "mul_mmq.comp", merge_maps(merge_maps(base_dict, float_type_dict), {{data_a_key, "1"}, {"D_TYPE", "float"},}), fp16, coopmat, coopmat2, f16acc);
         }
 #endif
+    }
+
+    // TurboQuant weight types, ROTATED matmul.
+    //
+    // Generated explicitly rather than by adding them to type_names, for the
+    // same reasons as the mat-vec kernels: that loop would also emit q8_1 mmq
+    // variants (no integer-dot path exists for these types) and pull them into
+    // paths that have no TQ support.
+    //
+    // The A side loads centroid*scale WITHOUT the inverse WHT, so these are only
+    // correct against an activation pre-rotated by tq_rotate_act.comp. The host
+    // must not dispatch them otherwise.
+    //
+    // coopmat2 is excluded: TQ has no dequant_funcs_cm2.glsl entry, and the
+    // target (gfx1151) exposes KHR_coopmat only. LOAD_VEC_A is pinned to 8
+    // because the A-side block indexes idx/4 and idx&3 to map one invocation
+    // onto exactly one 3-byte packing group of 8 contiguous elements.
+    if (!coopmat2) {
+        for (const auto& tname : {std::string("tq3_1s"), std::string("tq4_1s")}) {
+            const std::string data_a_key = "DATA_A_" + to_uppercase(tname);
+            // Must carry FLOAT_TYPEV8 as well: load_b_to_shmem() references it
+            // whenever LOAD_VEC_B is 8, which it is on the fp16 path.
+            const std::map<std::string, std::string> float_type_dict = {
+                {"FLOAT_TYPE",   FLOAT_TYPE(1, tname)},
+                {"FLOAT_TYPEV2", FLOAT_TYPE(2, tname)},
+                {"FLOAT_TYPEV4", FLOAT_TYPE(4, tname)},
+                {"FLOAT_TYPEV8", FLOAT_TYPE(8, tname)},
+            };
+
+            string_to_spv(shader_name + "_" + tname + "_f32" + dot2_sfx, "mul_mm.comp",
+                merge_maps(merge_maps(base_dict, float_type_dict), {{data_a_key, "1"}, {"LOAD_VEC_A", "8"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f32}, {"B_TYPE_SCALAR", "float"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
+            string_to_spv(shader_name + "_" + tname + "_f16" + dot2_sfx, "mul_mm.comp",
+                merge_maps(merge_maps(base_dict, float_type_dict), {{data_a_key, "1"}, {"LOAD_VEC_A", "8"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f16}, {"B_TYPE_SCALAR", "float16_t"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
+        }
     }
 }
 
@@ -746,7 +781,7 @@ void process_shaders() {
     for (const auto& tname : type_names) {
         // mul mat vec
         std::string data_a_key = "DATA_A_" + to_uppercase(tname);
-        std::string shader = (string_ends_with(tname, "_k") || string_starts_with(tname, "iq1_") || string_starts_with(tname, "iq2_") || string_starts_with(tname, "iq3_")) ? "mul_mat_vec_" + tname + ".comp" : "mul_mat_vec.comp";
+        std::string shader = (string_ends_with(tname, "_k") || string_starts_with(tname, "iq1_") || string_starts_with(tname, "iq2_") || string_starts_with(tname, "iq3_") ) ? "mul_mat_vec_" + tname + ".comp" : "mul_mat_vec.comp";
 
         string_to_spv("mul_mat_vec_" + tname + "_f32_f32", shader, merge_maps(base_dict, {{data_a_key, "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
         string_to_spv("mul_mat_vec_" + tname + "_f16_f32", shader, merge_maps(base_dict, {{data_a_key, "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
@@ -803,6 +838,19 @@ void process_shaders() {
         string_to_spv("get_rows_" + tname + "_f32", shader, merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {data_a_key, "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
     }
 
+    // TurboQuant KV-cache dequant and get_rows (KV-only types, not in type_names)
+    string_to_spv("dequant_turbo2_0", "dequant_turbo2_0.comp", merge_maps(base_dict, {{"DATA_A_TURBO2_0", "1"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo2_0", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO2_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo2_0_f32", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO2_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
+
+    string_to_spv("dequant_turbo3_0", "dequant_turbo3_0.comp", merge_maps(base_dict, {{"DATA_A_TURBO3_0", "1"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo3_0", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO3_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo3_0_f32", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO3_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
+
+    string_to_spv("dequant_turbo4_0", "dequant_turbo4_0.comp", merge_maps(base_dict, {{"DATA_A_TURBO4_0", "1"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo4_0", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO4_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float16_t"}}));
+    string_to_spv("get_rows_turbo4_0_f32", "get_rows_quant.comp", merge_maps(base_dict, {{"TEMP_TYPE", "FLOAT_TYPE"}, {"DATA_A_TURBO4_0", "1"}, {"B_TYPE", "int"}, {"D_TYPE", "float"}}));
+
     string_to_spv("get_rows_i32", "get_rows.comp", {{"TEMP_TYPE", "uint"}, {"A_TYPE", "uint"}, {"B_TYPE", "int"}, {"D_TYPE", "uint"}});
 
     string_to_spv("mul_mat_vec_p021_f16_f32_subgroup_add", "mul_mat_vec_p021.comp", {{"A_TYPE", "float16_t"}, {"A_TYPEV4", "f16vec4"}, {"B_TYPE", "float"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}});
@@ -843,23 +891,92 @@ void process_shaders() {
         string_to_spv("cpy_f32_" + t, "copy_to_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"S_TYPE", "float"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
         string_to_spv("cpy_" + t + "_f32", "copy_from_quant.comp", {{"DATA_A_" + to_uppercase(t), "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
     }
+    // turbo copy-from-quant only; copy-to-quant (cpy_f32_turboN_0) omitted because the non-SET_ROWS quantize() path lacks the WHT transform
+    string_to_spv("cpy_turbo2_0_f32", "copy_from_quant.comp", {{"DATA_A_TURBO2_0", "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
+    string_to_spv("cpy_turbo3_0_f32", "copy_from_quant.comp", {{"DATA_A_TURBO3_0", "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
+    string_to_spv("cpy_turbo4_0_f32", "copy_from_quant.comp", {{"DATA_A_TURBO4_0", "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
+    // tq4_1s copy-from-quant only; copy-to-quant requires WHT forward (handled in SET_ROWS path)
+    string_to_spv("cpy_tq4_1s_f32", "copy_from_quant.comp", {{"DATA_A_TQ4_1S", "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
 
     for (auto src : {std::pair{"f32", "float"}, std::pair{"f16", "float16_t"}}) {
-        for (std::string dst : {"f32", "f16", "bf16", "q1_0", "q2_0", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl"}) {
+        for (std::string dst : {"f32", "f16", "bf16", "q1_0", "q2_0", "q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "iq4_nl", "turbo2_0", "turbo3_0", "turbo4_0", "tq4_1s"}) {
             string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i32", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
             string_to_spv("set_rows_" + std::string(src.first) + "_" + dst + "_i64", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"S_TYPE", src.second}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
         }
     }
 
-
-    // fork: TurboQuant set_rows shaders (f32 source only)
-    for (std::string dst : {"turbo2_0", "turbo3_0", "turbo4_0"}) {
-        string_to_spv("set_rows_f32_" + dst + "_i32", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"S_TYPE", "float"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
-        string_to_spv("set_rows_f32_" + dst + "_i64", "copy_to_quant.comp", {{"SET_ROWS", "1"}, {"DATA_A_" + to_uppercase(dst), "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"S_TYPE", "float"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}});
-    }
-
     // TurboQuant Walsh-Hadamard Transform op (Q forward + kqv inverse rotation)
     string_to_spv("turbo_wht", "turbo_wht.comp", {});
+
+    // TurboQuant WEIGHT types.
+    //
+    // dequant_tq4_1s.comp and mul_mat_vec_tq4_1s.comp have been in the tree
+    // since 2a716ac4 but were never passed to glslc: the Vulkan SPIR-V build is
+    // driven entirely by the explicit string_to_spv() calls here (there is no
+    // glob), and "tq4_1s" appears in neither type_names nor any generation
+    // loop. The shaders were dead files, so every TQ4_1S MUL_MAT fell back to
+    // CPU while test-backend-ops reported OK -- its TQ4_1S cases were silently
+    // skipped rather than run (see ggml-org/llama.cpp#242 for why a fully
+    // skipped op still reports success).
+    //
+    // These are generated here rather than by adding "tq4_1s" to type_names,
+    // because that loop would also emit three things we must not use:
+    //
+    //   1. USE_SUBGROUP_ADD / _NO_SHMEM reduction variants. mul_mat_vec_tq4_1s
+    //      indexes a 32-entry shared array by gl_LocalInvocationID.x and pairs
+    //      lanes as (tid, tid + step) for the butterfly, so it is only correct
+    //      for a 32-thread workgroup. A subgroup reduction over a wave that is
+    //      not exactly the workgroup is wrong, and RADV on gfx1151 (Strix Halo,
+    //      Radeon 8060S) reports "warp size: 64". The host side pins these
+    //      pipelines to a 32-thread workgroup with SHMEM reduction to match.
+    //   2. mul_mat_vec_id_tq4_1s_f16_f32. The MUL_MAT_ID host path asserts the
+    //      B operand is f32 or q8_1 (ggml_vk_get_dequantize_mul_mat_vec_id), so
+    //      only the f32 id variant is generated below.
+    //   3. get_rows_tq4_1s via get_rows_quant.comp, which applies no inverse
+    //      WHT and whose get_dm() returns vec2(1,0); it would hand back
+    //      un-rotated centroid*scale values. GET_ROWS support is deliberately
+    //      not claimed for this type.
+    string_to_spv("mul_mat_vec_tq4_1s_f32_f32", "mul_mat_vec_tq4_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("mul_mat_vec_tq4_1s_f16_f32", "mul_mat_vec_tq4_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
+    // MoE decode. The same source compiled with MUL_MAT_ID: all of the expert
+    // indirection lives in mul_mat_vec_base.glsl (get_offsets(), reduce_result()),
+    // which this shader already includes, and the expert id arrives via
+    // gl_WorkGroupID.y, which it never touches. The 32-thread pin and the
+    // shared-memory butterfly are therefore unaffected.
+    string_to_spv("mul_mat_vec_id_tq4_1s_f32_f32", "mul_mat_vec_tq4_1s.comp",
+        merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
+    // Cold path: dequantize the whole tensor to f16 and run the generic matmul.
+    // Used when n > mul_mat_vec_max_cols (prompt processing).
+    string_to_spv("dequant_tq4_1s", "dequant_tq4_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"D_TYPE", "float16_t"}}));
+
+    // TQ3_1S is the sibling 3-bit type (8 Lloyd-Max levels, 8 indices packed
+    // per 3 bytes, 16 B blocks). Unlike TQ4_1S it had no Vulkan shaders at all,
+    // so dequant_tq3_1s.comp and mul_mat_vec_tq3_1s.comp are new. Everything in
+    // the three-point rationale above applies here verbatim -- the mat-vec maps
+    // one thread to one element of a 32-element block, so it is generated
+    // explicitly and pinned to a 32-thread workgroup host-side rather than
+    // being driven from type_names.
+    //
+    // TQ3_1S is also excluded from the coopmat/coopmat2 matmul paths: it has no
+    // dequant_funcs_cm2.glsl entry, and gfx1151 exposes KHR_coopmat (coopmat1)
+    // only. A stub that returned zeros there would be worse than no support.
+    string_to_spv("mul_mat_vec_tq3_1s_f32_f32", "mul_mat_vec_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("mul_mat_vec_tq3_1s_f16_f32", "mul_mat_vec_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("mul_mat_vec_id_tq3_1s_f32_f32", "mul_mat_vec_tq3_1s.comp",
+        merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("dequant_tq3_1s", "dequant_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"D_TYPE", "float16_t"}}));
+
+    // Activation pre-rotation for the rotated matmul path. Type-independent:
+    // TQ3 and TQ4 share the same 32-element sign pattern and butterfly, so one
+    // pipeline serves both. Takes no DATA_A_* define -- it only touches the
+    // activation.
+    string_to_spv("tq_rotate_act", "tq_rotate_act.comp", {});
 
     auto get_type_str = [](bool f16) {
         return f16 ? "float16_t" : "float";
@@ -1165,6 +1282,32 @@ void process_shaders() {
     string_to_spv("ssm_conv_f32", "ssm_conv.comp", {{"A_TYPE", "float"}});
 
     string_to_spv("topk_moe_f32", "topk_moe.comp", {});
+
+    // MoE expert cache matvec variants (Q8_0/Q4_0/Q4_K/Q6_K/Q5_K weights).
+    // Compiled separately per weight type; see moe_cache_mv.comp.
+    string_to_spv("moe_cache_mv_q8_0", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "1"}});
+    string_to_spv("moe_cache_mv_q4_0", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "2"}});
+    string_to_spv("moe_cache_mv_q4_K", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "3"}});
+    string_to_spv("moe_cache_mv_q6_K", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "4"}});
+    string_to_spv("moe_cache_mv_q5_K", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "5"}});
+    string_to_spv("moe_cache_mv_q1_0", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "6"}});
+    string_to_spv("moe_cache_mv_q2_0", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "7"}});
+    string_to_spv("moe_cache_mv_q4_1", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "8"}});
+    string_to_spv("moe_cache_mv_q5_0", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "9"}});
+    string_to_spv("moe_cache_mv_q5_1", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "10"}});
+    string_to_spv("moe_cache_mv_q2_K", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "11"}});
+    string_to_spv("moe_cache_mv_q3_K", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "12"}});
+    string_to_spv("moe_cache_mv_iq2_xxs", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "13"}, {"DATA_A_IQ2_XXS", "1"}});
+    string_to_spv("moe_cache_mv_iq2_xs", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "14"}, {"DATA_A_IQ2_XS", "1"}});
+    string_to_spv("moe_cache_mv_iq2_s", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "15"}, {"DATA_A_IQ2_S", "1"}});
+    string_to_spv("moe_cache_mv_iq3_xxs", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "16"}, {"DATA_A_IQ3_XXS", "1"}});
+    string_to_spv("moe_cache_mv_iq3_s", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "17"}, {"DATA_A_IQ3_S", "1"}});
+    string_to_spv("moe_cache_mv_iq1_s", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "18"}, {"DATA_A_IQ1_S", "1"}, {"NEEDS_IQ1S_GRID_GPU", "1"}});
+    string_to_spv("moe_cache_mv_iq1_m", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "19"}, {"DATA_A_IQ1_M", "1"}, {"NEEDS_IQ1S_GRID_GPU", "1"}});
+    string_to_spv("moe_cache_mv_iq4_nl", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "20"}, {"DATA_A_IQ4_NL", "1"}});
+    string_to_spv("moe_cache_mv_iq4_xs", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "21"}, {"DATA_A_IQ4_XS", "1"}});
+    string_to_spv("moe_cache_mv_mxfp4", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "22"}, {"DATA_A_MXFP4", "1"}});
+    string_to_spv("moe_cache_mv_nvfp4", "moe_cache_mv.comp", {{"MOE_CACHE_WTYPE", "23"}, {"DATA_A_NVFP4", "1"}});
 
     for (auto &c : compiles) {
         c.wait();

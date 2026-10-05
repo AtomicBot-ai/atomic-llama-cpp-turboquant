@@ -150,8 +150,8 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 dat
 // byte (iqs/8). No iWHT here, the graph handles rotation outside FA.
 #define FA_DEQUANT4_TURBO3_0(BUF) {                                                               \
     const float c[8] = float[8](                                                                  \
-        -0.190685, -0.117832, -0.065717, -0.021460,                                               \
-         0.021460,  0.065717,  0.117832,  0.190685);                                              \
+        -0.190207, -0.118786, -0.066822, -0.021663,                                               \
+         0.021663,  0.066822,  0.118786,  0.190207);                                              \
     const float norm = float(BUF.data[a_offset + ib].norm);                                       \
     const uint qs_byte  = uint(BUF.data[a_offset + ib].qs[iqs / 4]);                              \
     const uint sgn_byte = uint(BUF.data[a_offset + ib].signs[iqs / 8]);                           \
@@ -167,10 +167,10 @@ layout (binding = 1) readonly buffer K_PACKED_Q5_1_P32 { block_q5_1_packed32 dat
 // elements span 2 consecutive qs bytes (each holds 2 nibbles).
 #define FA_DEQUANT4_TURBO4_0(BUF) {                                                               \
     const float c[16] = float[16](                                                                \
-        -0.173926, -0.117195, -0.089527, -0.068756,                                               \
-        -0.051262, -0.035597, -0.020989, -0.006938,                                               \
-         0.006938,  0.020989,  0.035597,  0.051262,                                               \
-         0.068756,  0.089527,  0.117195,  0.173926);                                              \
+        -0.241529, -0.182877, -0.143016, -0.111036,                                               \
+        -0.083292, -0.058050, -0.034299, -0.011349,                                               \
+         0.011349,  0.034299,  0.058050,  0.083292,                                                \
+         0.111036,  0.143016,  0.182877,  0.241529);                                              \
     const float norm = float(BUF.data[a_offset + ib].norm);                                       \
     const uint b0 = uint(BUF.data[a_offset + ib].qs[iqs / 2    ]);                                \
     const uint b1 = uint(BUF.data[a_offset + ib].qs[iqs / 2 + 1]);                                \

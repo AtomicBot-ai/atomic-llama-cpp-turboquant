@@ -41,6 +41,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "ChameleonForConditionalGeneration": "chameleon",
     "ChatGLMForConditionalGeneration": "chatglm",
     "ChatGLMModel": "chatglm",
+    "ClefModel": "clef",
     "CodeShellForCausalLM": "codeshell",
     "CogVLMForCausalLM": "cogvlm",
     "Cohere2MoeForCausalLM": "command_r",
@@ -54,9 +55,13 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "DeepseekV3ForCausalLM": "deepseek",
     "DeepseekV32ForCausalLM": "deepseek",
     "DFlashDraftModel": "qwen",
+    "DFlash2DraftModel": "qwen",
     "Qwen3DSparkModel": "qwen",
     "DeepseekV4ForCausalLM": "deepseek",
+    "DFlashLagunaForCausalLM": "laguna",
+
     "DeepseekV4DSparkModel": "deepseek",
+
     "DistilBertForMaskedLM": "bert",
     "DistilBertForSequenceClassification": "bert",
     "DistilBertModel": "bert",
@@ -185,6 +190,8 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "Olmo3ForCausalLM": "olmo",
     "OlmoForCausalLM": "olmo",
     "OlmoeForCausalLM": "olmo",
+    "MuseGlimmerAssistantModel": "muse_glimmer",
+    "MuseGlimmerForConditionalGeneration": "muse_glimmer",
     "OpenELMForCausalLM": "openelm",
     "OrionForCausalLM": "orion",
     "PLMForCausalLM": "plm",
@@ -265,6 +272,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
 
 MMPROJ_MODEL_MAP: dict[str, str] = {
     "AudioFlamingo3ForConditionalGeneration": "ultravox",
+    "ClefModel": "clef",
     "CogVLMForCausalLM": "cogvlm",
     "DeepseekOCR2ForCausalLM": "deepseek",
     "DeepseekOCRForCausalLM": "deepseek",
@@ -301,6 +309,7 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
     "MiniCPMV4_6ForConditionalGeneration": "minicpm",
     "Mistral3ForConditionalGeneration": "llava",
     "NemotronH_Nano_VL_V2": "nemotron",
+    "MuseGlimmerForConditionalGeneration": "muse_glimmer",
     "PaddleOCRVisionModel": "ernie",
     "Phi4ForCausalLMV": "phi",
     "Qwen2AudioForConditionalGeneration": "ultravox",

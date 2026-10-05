@@ -1459,8 +1459,23 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
         case GGML_OP_TURBO_WHT:
             return op->src[0]->ne[0] % 128 == 0;
         case GGML_OP_SOLVE_TRI:
+            return has_simdgroup_reduction && op->src[0]->type != GGML_TYPE_NVFP4;
         case GGML_OP_MUL_MAT:
+            if (op->src[0]->type == GGML_TYPE_Q8_CR ||
+                    op->src[0]->type == GGML_TYPE_Q5_CR ||
+                    op->src[0]->type == GGML_TYPE_Q6_CR) {
+                return has_simdgroup_reduction &&
+                    op->src[1]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
+                    ggml_is_contiguous(op->src[1]) && ggml_is_contiguous(op) &&
+                    op->src[1]->ne[0] % 256 == 0;
+            }
+            return has_simdgroup_reduction && op->src[0]->type != GGML_TYPE_NVFP4;
         case GGML_OP_MUL_MAT_ID:
+            if (op->src[0]->type == GGML_TYPE_Q8_CR ||
+                    op->src[0]->type == GGML_TYPE_Q5_CR ||
+                    op->src[0]->type == GGML_TYPE_Q6_CR) {
+                return false;
+            }
             return has_simdgroup_reduction && op->src[0]->type != GGML_TYPE_NVFP4;
         case GGML_OP_SET:
         case GGML_OP_CPY:
@@ -1482,9 +1497,6 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                            case GGML_TYPE_Q5_1:
                            case GGML_TYPE_IQ4_NL:
                            case GGML_TYPE_I32:
-                           case GGML_TYPE_TURBO2_0:
-                           case GGML_TYPE_TURBO3_0:
-                           case GGML_TYPE_TURBO4_0:
                                 return true;
                            default:
                                 return false;
@@ -1528,7 +1540,10 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 };
             }
         case GGML_OP_GET_ROWS:
-            return op->src[0]->type != GGML_TYPE_NVFP4;
+            return op->src[0]->type != GGML_TYPE_NVFP4 &&
+                op->src[0]->type != GGML_TYPE_Q8_CR &&
+                op->src[0]->type != GGML_TYPE_Q5_CR &&
+                op->src[0]->type != GGML_TYPE_Q6_CR;
         case GGML_OP_SET_ROWS:
             {
                 if (op->src[0]->type == GGML_TYPE_F16) {

@@ -29,6 +29,9 @@ decision_json_status decision_json_parse(const std::string & text, json & out, s
 // json.dumps(v, ensure_ascii=False)
 std::string decision_py_dumps(const json & v);
 
+// json.dumps(v, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+std::string decision_py_dumps_compact_sorted(const json & v);
+
 // repr(float): shortest round-trip digits, fixed for 1e-4 <= |x| < 1e16, ".0" on integral values
 std::string decision_py_float(double d);
 

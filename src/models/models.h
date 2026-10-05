@@ -6,6 +6,9 @@
 
 // note: almost all graphs require at least sqrtf, so include cmath globally
 #include <cmath>
+#include <map>
+
+class llama_memory_hybrid_idx_context;
 
 // ref: https://github.com/ggml-org/llama.cpp/pull/28068
 static inline ggml_tensor * build_gdn_l2_norm(ggml_context * ctx, ggml_tensor * x, float eps) {
@@ -603,6 +606,11 @@ struct llama_model_qwen3vlmoe : public llama_model_base {
 };
 
 
+struct llama_model_qwen3tts : public llama_model_qwen3vl {
+    llama_model_qwen3tts(const struct llama_model_params & params) : llama_model_qwen3vl(params) {}
+};
+
+
 struct llama_model_phi2 : public llama_model_base {
     llama_model_phi2(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
@@ -1030,6 +1038,19 @@ struct llama_model_olmoe : public llama_model_base {
 };
 
 
+struct llama_model_muse_glimmer : public llama_model_base {
+    llama_model_muse_glimmer(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_graph_context {
+        graph(const llama_model & model, const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
+
 struct llama_model_openelm : public llama_model_base {
     llama_model_openelm(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
@@ -1114,7 +1135,6 @@ struct llama_model_deepseek32 : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
-
 
 struct llama_model_deepseek4 : public llama_model_base {
     llama_model_deepseek4(const struct llama_model_params & params) : llama_model_base(params) {}
@@ -1300,6 +1320,15 @@ struct llama_model_dflash : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
+    // set when dflash.decoder_arch == "laguna": draft layers follow the Laguna
+    // decoder contract (softplus attn gate, per-aux feature norms, context K/V
+    // through input_layernorm, causal noise-block attention)
+    bool decoder_laguna = false;
+
+    // per-aux-feature RMSNorm weights stacked to [n_embd, n_aux], applied
+    // before concat + fc (Laguna drafters)
+    ggml_tensor * aux_norm = nullptr;
+
     template <bool is_enc>
     struct graph : public llm_graph_context {
         graph(const llama_model & model, const llm_graph_params & params);
@@ -1313,6 +1342,7 @@ struct llama_model_dflash : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
+
 
 
 struct llama_model_mistral4 : public llama_model_deepseek2 {
@@ -2115,6 +2145,212 @@ struct llama_model_qwen35 : public llama_model_base {
 };
 
 
+// Qwen3.5 backbone evaluated without memory, with a joint decision head on top of its hidden states
+struct llama_model_clef : public llama_model_qwen35 {
+    llama_model_clef(const struct llama_model_params & params) : llama_model_qwen35(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct attn {
+        ggml_tensor * wq = nullptr;
+        ggml_tensor * bq = nullptr;
+        ggml_tensor * wk = nullptr;
+        ggml_tensor * bk = nullptr;
+        ggml_tensor * wv = nullptr;
+        ggml_tensor * bv = nullptr;
+        ggml_tensor * wo = nullptr;
+        ggml_tensor * bo = nullptr;
+    };
+
+    struct norm {
+        ggml_tensor * w = nullptr;
+        ggml_tensor * b = nullptr;
+    };
+
+    // the first n_layer_routing blocks have no self attention
+    struct head_layer {
+        norm self_norm;
+        attn self_attn;
+        norm cross_norm;
+        norm cross_norm_kv; // routing blocks only
+        attn cross_attn;
+        norm ffn_norm;
+        ggml_tensor * ffn_up     = nullptr;
+        ggml_tensor * ffn_up_b   = nullptr;
+        ggml_tensor * ffn_down   = nullptr;
+        ggml_tensor * ffn_down_b = nullptr;
+    };
+
+    uint32_t n_layer_routing = 0;
+    uint32_t n_layer_joint   = 0;
+    uint32_t n_head_decision = 0;
+
+    std::vector<head_layer> head_layers; // routing blocks, then joint blocks
+
+    norm hidden_norm;
+    norm option_summary_norm;
+    norm field_norm;
+    norm option_norm;
+
+    ggml_tensor * proj_memory          = nullptr;
+    ggml_tensor * proj_question        = nullptr;
+    ggml_tensor * proj_option_question = nullptr;
+    ggml_tensor * proj_global          = nullptr;
+    ggml_tensor * proj_option_context  = nullptr;
+    ggml_tensor * proj_option_lexical  = nullptr;
+    ggml_tensor * scales               = nullptr; // prior scale, joint scale, residual gate
+    ggml_tensor * scorer               = nullptr;
+    ggml_tensor * scorer_b             = nullptr;
+    ggml_tensor * scorer_out           = nullptr;
+    ggml_tensor * scorer_out_b         = nullptr;
+
+    class input_decision;
+
+    struct graph : public llm_build_delta_net_base {
+        graph(const llama_model & model, const llm_graph_params & params);
+    private:
+        llm_graph_input_attn_no_cache * build_attn_inp_causal();
+
+        ggml_tensor * build_layer_attn(
+        llm_graph_input_attn_no_cache * inp_attn,
+                    ggml_tensor * cur,
+                    ggml_tensor * inp_pos,
+                            int * sections,
+                            int   il);
+
+        ggml_tensor * build_layer_attn_linear(
+                    ggml_tensor * cur,
+                            int   il);
+
+        // hidden: [n_embd, n_tokens], returns one score per option: [1, n_options]
+        ggml_tensor * build_head(
+                    ggml_tensor * hidden,
+                 input_decision * inp);
+
+        ggml_tensor * build_head_norm(ggml_tensor * cur, const norm & n);
+        ggml_tensor * build_head_attn(ggml_tensor * q, ggml_tensor * kv, const attn & a);
+        ggml_tensor * build_head_ffn (ggml_tensor * cur, const head_layer & layer);
+
+        const llama_model_clef & model;
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
+
+class llm_graph_input_qsa;
+
+struct llama_model_qwen4exp : public llama_model_base {
+    llama_model_qwen4exp(const struct llama_model_params & params) : llama_model_base(params) {}
+
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_build_delta_net_base {
+        graph(const llama_model & model, const llm_graph_params & params);
+    protected:
+        // tag-dispatched ctor for graph_mtp: binds the members without building the trunk
+        struct no_build_t {};
+        graph(const llama_model & model, const llm_graph_params & params, no_build_t) :
+            llm_build_delta_net_base(params), model(model) {}
+
+        // HC replaces every layer norm: residual is [n_embd, hc, n_tokens]
+        ggml_tensor * build_hc_mix(
+                    ggml_tensor * x,
+                    ggml_tensor * w_norm,
+                    ggml_tensor * w_down,
+                    ggml_tensor * w_up,
+                    ggml_tensor * w_inject,
+                    ggml_tensor ** inject,
+                            int   il);
+
+        ggml_tensor * build_hc_combine(
+                    ggml_tensor * residual,
+                    ggml_tensor * block_out,
+                    ggml_tensor * inject,
+                            int   il);
+
+        ggml_tensor * build_layer_attn(
+              llm_graph_input_attn_kv * inp_attn,
+  const llama_memory_hybrid_idx_context * mctx_hyb,
+                    ggml_tensor * cur,
+                    ggml_tensor * inp_pos,
+                            int * sections,
+                            int   il);
+
+        // dense self-attention restricted to the cells that top_k names
+        ggml_tensor * build_attn_qsa(
+        llm_graph_input_attn_kv * inp,
+                    ggml_tensor * q_cur,
+                    ggml_tensor * k_cur,
+                    ggml_tensor * v_cur,
+                    ggml_tensor * top_k,
+                          float   kq_scale,
+                            int   il);
+
+        // the QSA cache layout inputs do not depend on the layer, only on its compress ratio,
+        // so the layers sharing a ratio share one input set
+        std::map<uint32_t, llm_graph_input_qsa *> qsa_inps;
+
+        // QSA: token indices this layer's queries may attend to, or nullptr for dense
+        ggml_tensor * build_qsa_top_k(
+  const llama_memory_hybrid_idx_context * mctx_hyb,
+                    ggml_tensor * cur,
+                    ggml_tensor * inp_pos,
+                    ggml_tensor * kq_mask,
+                            int * sections,
+                            int   il);
+
+        ggml_tensor * build_layer_attn_linear(
+             llm_graph_input_rs * inp,
+                    ggml_tensor * cur,
+                            int   il);
+
+        ggml_tensor * build_layer_ffn(
+                    ggml_tensor * cur,
+                            int   il);
+
+        ggml_tensor * build_norm_gated(
+                    ggml_tensor * input,
+                    ggml_tensor * weights,
+                    ggml_tensor * gate,
+                            int   layer);
+
+        std::map<ggml_tensor *, ggml_tensor *> rs_rows;
+
+        ggml_tensor * build_conv_state_at(
+             llm_graph_input_rs * inp,
+                    ggml_tensor * conv_states_all,
+                    ggml_tensor * x,
+                        int64_t   state_cols,
+                        int64_t   channels,
+                            int   il);
+
+        ggml_tensor * build_inp_ple(
+  const llama_memory_hybrid_idx_context * mctx_hyb);
+
+        ggml_tensor * build_ple(
+             llm_graph_input_rs * inp,
+                    ggml_tensor * emb,
+                    ggml_tensor * hidden,
+                            int   il);
+
+        // returns pair of qkv, z
+        std::pair<ggml_tensor *, ggml_tensor *> build_qkvz(
+                    ggml_tensor * input,
+                            int   il);
+
+        const llama_model & model;
+    };
+
+    // LLM_GRAPH_TYPE_DECODER_MTP draft head: one HC-wrapped dense-attention + MoE block
+    struct graph_mtp : public graph {
+        graph_mtp(const llama_model & model, const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
 struct llama_model_qwen35moe : public llama_model_base {
     llama_model_qwen35moe(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
@@ -2280,3 +2516,28 @@ struct llama_model_step35 : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
+
+struct llm_build_eagle3_encode : public llm_graph_context {
+    llm_build_eagle3_encode(const llama_model & model, const llm_graph_params & params);
+private:
+    ggml_tensor * build_inp_embd() const;
+};
+
+struct llm_build_eagle3_decode : public llm_graph_context {
+    llm_build_eagle3_decode(const llama_model & model, const llm_graph_params & params);
+};
+
+struct llm_build_dflash_encode : public llm_graph_context {
+    llm_build_dflash_encode(const llama_model & model, const llm_graph_params & params);
+private:
+    ggml_tensor * build_inp_embd() const;
+};
+
+struct llm_build_dflash_decode : public llm_graph_context {
+    llm_build_dflash_decode(const llama_model & model, const llm_graph_params & params);
+};
+
+struct llm_build_openai_moe_iswa : public llm_graph_context {
+    llm_build_openai_moe_iswa(const llama_model & model, const llm_graph_params & params);
+};
+

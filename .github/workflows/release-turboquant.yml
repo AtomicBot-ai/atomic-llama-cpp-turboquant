@@ -78,6 +78,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-vulkan
+          save: false
           evict-old-files: 1d
 
       - name: Dependencies
@@ -148,6 +149,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-cuda-13.3
+          save: false
           evict-old-files: 1d
 
       - name: Install CUDA Toolkit
@@ -237,6 +239,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-arm64-cuda-13.3
+          save: false
           evict-old-files: 1d
 
       # GCC 14: GGML_CPU_ALL_VARIANTS builds armv9.2+sme CPU variants, which
@@ -342,6 +345,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-cpu
+          save: false
           evict-old-files: 1d
 
       - name: Dependencies
@@ -411,6 +415,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-cuda-12.4
+          save: false
           evict-old-files: 1d
 
       - name: Install CUDA Toolkit
@@ -501,6 +506,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-rocm
+          save: false
           evict-old-files: 1d
 
       - name: Install ROCm
@@ -618,6 +624,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-windows-x64-${{ matrix.variant }}
+          save: false
           # 500M (the action default) cannot hold a CUDA build, so the cache
           # thrashed and every run was effectively cold.
           max-size: ${{ startsWith(matrix.variant, 'cuda') && '2G' || '500M' }}
@@ -702,11 +709,14 @@ jobs:
               Copy-Item $_.FullName -Destination $dst -Force
             }
 
-      # Signed before staging, so the archive carries the signatures.
+      # Signed before staging, so the archive carries the signatures. Only the
+      # runtime the app runs (llama-server.exe and its DLLs): every file costs a
+      # KeyLocker signature, and the other tools were about 30 of ~47 per archive.
       - name: Sign Windows binaries
         uses: ./.github/actions/windows-code-sign
         with:
           path: build\bin\Release
+          scope: runtime
           sm-api-key: ${{ secrets.SM_API_KEY }}
           sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
           sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
@@ -761,6 +771,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-windows-x64-rocm
+          save: false
           # 9 gfx targets x every fattn/mmq template instance: a CUDA-sized build.
           max-size: 2G
           evict-old-files: 7d
@@ -937,6 +948,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-macos-arm64
+          save: false
           evict-old-files: 1d
 
       - name: Import code signing certificate

@@ -11,6 +11,7 @@ Engines (layouts):
 | layout | models | runtime | status |
 |---|---|---|---|
 | `laya` | Laya family: `laya-multilingual` (mmBERT-base encoder), `laya` and `laya-typed-decisions` (English, ModernBERT-large encoder), each with the marker head | `tools/laya`, own ggml graph, CPU only | done |
+| `clef` | Cloudflare `clef` (27B) and `clef-flash` (9B): Qwen3.5 backbone + joint schema head, all questions in one prompt | libllama, arch `clef` (upstream PR #29831), CPU or one GPU | done, text only (see "Clef") |
 | `semif-letters` | Arbiter-4B, JevK5 (Qwen3.5 + letter readout) | libllama | not supported yet: load fails with a clear error |
 
 Code map:
@@ -25,6 +26,10 @@ Code map:
 | `tools/server/tests/unit/test_decision.py` | server contract tests (offline) |
 | `tools/decision/decision-bench.cpp`, `tests/decision/bench/`, `scripts/bench-decision*` | `llama-decision-bench`, its request suite, the KPI script and report (see Benchmark) |
 | `tests/laya/verify_reference.py`, `tests/laya/parity/` | parity against the PyTorch reference and between backends: corpus generator, public-output gate, tiers, identity records (see Backend parity tiers) |
+| `src/models/clef.cpp`, `conversion/clef.py` | Clef model graph and converter (backport of upstream PR #29831) |
+| `tools/decision/engine-clef.cpp`, `tools/decision/clef-prompt.{h,cpp}` | clef engine (libllama) and its prompt (`encode_record` of the model repo) |
+| `tests/test-decision-clef.cpp`, `tests/clef/` | prompt golden test, tiny Clef GGUF generator, parity tools against the PyTorch reference (see "Clef") |
+| `tools/server/tests/unit/test_decision_clef.py` | clef server contract tests (offline) |
 
 ## Quick start
 
@@ -78,6 +83,16 @@ Ignored with a warning: `--parallel`, `-ctk/-ctv`, `--ctx-checkpoints`, `--spec-
 
 A laya GGUF or checkpoint directory started without `--decision` fails fast with a hint. `--decision` inside a
 router-mode child instance is rejected: run a separate process.
+
+Laya repackagings from Hugging Face that this engine cannot load fail with a hint to use the official
+checkpoint (`llama-server --decision -m <checkpoint dir>`) instead of a bare "not a laya GGUF":
+`ggmlc` files (`mys/laya-*-GGUF`, compiled graphs for the [ggmlc](https://github.com/monatis/ggmlc)
+runtime; also without `--decision`), encoder-only `modern-bert` files whose decision head ships
+separately (`Weidows/*`, `fr0stbit3/*`; with `--decision` only, without it they are ordinary
+embedding models) and `laya-head` files (the head half of `wigcheng5566/laya-neutron-gguf`). The
+weights inside are the official checkpoints (the F16 encoders and heads are byte-equal to our
+conversion), so nothing is lost; their quantized files keep `token_embd` quantized, below the tiers
+this document measures.
 
 ## API
 
@@ -770,6 +785,10 @@ python3 tests/laya/verify_reference.py compare ref.jsonl cli.jsonl server.jsonl
 python -m pytest -q tests/laya/parity
 # GPU backends (skipped, exit code 77, in a build without a GPU / iGPU device)
 ctest --test-dir build -L laya            # matmul precision probe per device, CPU vs device replay on the tiny GGUF
+# clef: the prompt against encode_record (the vocabulary of clef-flash, unpacked from tests/clef/ggml-vocab-clef.tar.gz)
+ctest --test-dir build -R decision-clef
+cd tools/server/tests
+LLAMA_SERVER_BIN_PATH=../../../build/bin/llama-server python -m pytest -q unit/test_decision_clef.py
 ```
 
 `test-laya-backend-precision [--json out.json]` multiplies small matrices with known exact
@@ -1059,6 +1078,105 @@ and spins all threads (about 12x wall time in CPU seconds). It is the lever for 
 models where no Accelerate exists (Q4_0 / Q4_K on AVX2 and NEON); those platforms are not
 measured here.
 
+## Clef (`Cloudflare/clef`, `Cloudflare/clef-flash`)
+
+Clef (27B, Qwen3.8-27B backbone) and Clef-flash (9B, Qwen3.5-9B backbone) are Cloudflare's decision
+models (Apache-2.0). A small joint schema head reads the final hidden states of the backbone: every
+option reads the prompt (2 routing blocks), every question reads its options, the other questions and
+the prompt (4 decoder blocks), and each option gets one score. All questions of a request are in one
+prompt and one forward pass, so the answer to a question depends on the other questions of the
+request, as in the reference. Text only: the vision encoder of the checkpoints is not used.
+
+The model code is a backport of upstream PR #29831 (`src/models/clef.cpp`, arch `clef`, converter
+`conversion/clef.py`), so the GGUF is the upstream format: `ggml-org/Clef-GGUF` and
+`ggml-org/Clef-Flash-GGUF` load as they are, and our converter writes the same tensors (byte for byte
+on Clef-flash BF16; upstream also writes `clef.attention.recurrent_layers` and `add_bos/eos_token`,
+which the loader does not need).
+
+```bash
+python convert_hf_to_gguf.py <snapshot of Cloudflare/clef-flash> --outtype bf16 --outfile clef-flash-bf16.gguf
+./build/bin/llama-quantize clef-flash-bf16.gguf clef-flash-q8_0.gguf Q8_0
+./build/bin/llama-server --decision -m clef-flash-q8_0.gguf --decision-device gpu --port 8090
+```
+
+- Engine: `tools/decision/engine-clef.cpp` runs the GGUF with libllama (no memory: the whole prompt
+  is one ubatch). `-c N` is the longest prompt in tokens (default 16384, the `max_length` of the
+  reference); context, batch and ubatch are all N, so the compute buffer is sized for N at load.
+  `--decision-device cpu|gpu|auto` and `--decision-gpu` pick the device (the model goes on it as a
+  whole); kernels and precision take only `auto`/`default`. Use a GPU: on the CPU a 9B prompt of
+  a few hundred tokens takes over a second (see the speed numbers below).
+- Spec: an unstamped GGUF of arch `clef` gets the default spec: layout `clef`, format and input
+  contract `clef-v1`, `special_tokens: "parse"`, `confidence: "max_p"`, plan `joint`, no
+  calibration (T = 1; the checkpoints ship none).
+- Prompt (`tools/decision/clef-prompt.cpp`): `encode_record` of `joint_schema_model.py`. The pieces
+  are tokenized one by one (HF `tokenizer(text, add_special_tokens=False)`: special-token text in
+  the state is parsed, as in the reference); a non-string state, instructions or option description
+  is `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`. Options are
+  `{"description", "option_id"}`: noul `true` then `false` with built-in descriptions unless the
+  criteria give one (a `null` one drops the description), choice sorted by id, score by level. The
+  question text and every option text are spans the head reads; the engine marks them with
+  `llama_set_decision_order` (see below). When the prompt is longer than `-c`, the state is cut from
+  the end (`state_truncated`; `"truncation": "error"` makes it a 422 `STATE_TRUNCATED`); when the
+  questions alone do not fit, the request is a 422 `PROMPT_TOO_LONG`.
+- Request (layout `clef`, the reference semantics): `state` is required (`null` is the text
+  `null`); `instructions` are optional (missing, `null` or `""` give the question id) and may be any
+  JSON value; one choice or score option is enough; choice criteria may also be a list (TypeSafe:
+  `dict.fromkeys(str(c))`); up to 255 options per question; questions per request follow
+  `--decision-max-items` (default 16, the hosted model takes 64).
+- Answer: the TypeSafe shapes with `confidence` = the probability of the chosen option
+  (`systemone_answer` of the reference: max p for choice and score). The probabilities are not
+  rounded (the reference rounds to 4 digits). `usage.input_tokens` counts the one prompt; with
+  `--decision-debug` its tokens are on the first question.
+- Router: one prompt per candidate (plan `joint` with a single noul question), so candidates stay
+  independent. There is no router calibration in the checkpoints: 501 unless
+  `--decision-allow-uncalibrated`.
+
+libllama differences from upstream:
+
+- Upstream marks the spans per batch entry with `llama_batch_ext_set_decision_order` (`llama_batch_ext`,
+  upstream PR #24669, which this fork does not have yet). Here the staging API
+  `llama_set_decision_order(ctx, order, n_tokens)` (`src/llama-ext.h`) sets the order of all tokens
+  of the next `llama_decode` / `llama_encode` batch; `llama_ubatch.decision_order` and the graph are
+  the upstream code. At the next upstream sync the upstream API replaces it.
+- The output buffer of a `clef` context has no logits (`output_reserve`): the graph writes one score
+  per token and no logits, and n_vocab floats per token (248320 x 4 bytes, about 1 MB a token) would
+  be allocated and never read. Upstream allocates them (upstream issue #29388).
+- `output.weight` of a `clef` GGUF is loaded with `TENSOR_GET_ROWS` (`src/llama-model-loader.h`): the
+  head reads its rows with `ggml_get_rows` and never multiplies by it, so it must not go into a CPU
+  repack buffer (which has no GET_ROWS). Upstream picks the buffer for a matmul, and a quantized GGUF on
+  the CPU (or with the output layer on the CPU) aborts at load with `GGML_ASSERT(*cur_backend_id != -1)`
+  unless `--no-repack`.
+
+Parity with the PyTorch reference (`tests/clef`; corpus: 17 hand-written cases for the prompt rules,
+a 16-question request, 60 `typed-decisions` workflow requests of 5 questions, 25 banking77 requests
+with a 77-option choice; 103 requests, 383 questions; Apple M4 Max, Metal):
+
+| run | reference | argmax | max \|dP\| | mean per-question max \|dP\| | max \|dlogit\| |
+|---|---|---|---|---|---|
+| BF16 GGUF | fp32 (MPS), 17 cases, 42 questions | 42/42 | 0.0023 | 0.0005 | 0.013 |
+| Q8_0 GGUF | fp32 (MPS), 17 cases | 42/42 | 0.024 | 0.0028 | 0.077 |
+| reference bf16 (MPS) | fp32 (MPS), 17 cases | 42/42 | 0.033 | 0.0028 | 0.11 |
+| BF16 GGUF | bf16 (MPS), 103 requests | 380/383 | 0.032 | 0.0023 | 0.14 |
+| Q8_0 GGUF | bf16 (MPS), 103 requests | 379/383 | 0.057 | 0.0042 | 0.29 |
+
+The prompt tokens are identical to `encode_record` on all 103 requests. The BF16 GGUF is ten times
+closer to the fp32 reference than the reference's own bf16 run (the dtype Cloudflare serves); the
+argmax differences against the bf16 reference are near ties.
+
+Speed (compute per request, Clef-flash, Apple M4 Max; prompt tokens / median ms): Metal BF16 156 /
+204, 425 / 494, 938 / 1167; Metal Q8_0 156 / 232, 425 / 626, 938 / 1257 (prefill is compute bound,
+Q8_0 is not faster); CPU Q8_0, 12 threads: 300 / about 1400. Memory at `-c 16384`: 17.3 GiB of BF16
+weights on Metal, compute buffers 3.6 GiB (Metal) + 1.0 GiB (CPU). A Metal out-of-memory error leaves
+the backend in an error state: restart the server.
+
+```bash
+python tests/clef/make_corpus.py --typed-decisions typed_decisions_train.jsonl --banking77 <banking77>/data/test-*.parquet --out corpus.jsonl
+python tests/clef/reference.py <clef-flash snapshot> corpus.jsonl ref.jsonl --device mps --dtype bfloat16   # torch, transformers, accelerate, torchvision
+python tests/clef/run_server.py http://127.0.0.1:8090 corpus.jsonl out.jsonl   # llama-server --decision --decision-debug
+python tests/clef/compare.py ref.jsonl out.jsonl --tokens
+python tests/clef/gen_golden.py <clef-flash snapshot> tests/clef/golden/prompts.jsonl   # regenerate the prompt golden file
+```
+
 ## English checkpoints (`laya`, `laya-typed-decisions`)
 
 | checkpoint | encoder | ctx / head budget | tokenizer | calibration in the GGUF |
@@ -1168,8 +1286,21 @@ differ.
 - `general.*` follows gguf-py: `--model-name`, the README front matter (a YAML subset), and the
   directory name. Like Python, an HF snapshot directory whose hash starts with a digit gives
   `general.finetune=<hash>`, and without `--model-name` the name is the title-cased hash.
+- Community fine-tunes: a root `config.json` next to `rl_agent_config.json` and
+  `encoder/config.json` is ignored (they ship HF wrapper configs or copies of
+  `rl_agent_config.json` there; the laya reference never reads it), and so is a
+  `tokenizer/special_tokens_map.json` that only restates the special tokens of
+  `tokenizer_config.json` (same content; in the AddedToken form, the same flags as that added token
+  in `tokenizer.json`). The Python converter does the same (`ModelBase.load_hparams` hands that
+  layout to the laya loader before AutoConfig, `LayaModel.prepare_metadata` keeps the root config out
+  of the name heuristics), and the output equals the conversion of the same directory without those
+  files (both converters, checked by `test-laya-convert` and `test-laya-convert-py`). Without
+  `encoder/config.json`, a root `config.json` is still refused, as is a `special_tokens_map.json`
+  that names another token, a token `tokenizer_config.json` does not set,
+  `additional_special_tokens`, other flags or unknown fields.
 - Inputs the port does not cover are refused with a message instead of giving a different file:
-  a root `config.json`, `pytorch_model*.bin` (also a `model.safetensors.index.json` without any
+  a root `config.json` without `encoder/config.json`, `hf_quant_config.json`, `added_tokens.json`,
+  `pytorch_model*.bin` (also a `model.safetensors.index.json` without any
   `model*.safetensors` file: Python then takes the `.bin` path), non-float dtypes, tensor names
   outside the laya table, rope scaling / experts / `quantization_config` / `id2label` in the
   encoder config, `modules.json`, a `tokenizer_class` other than `PreTrainedTokenizerFast` /

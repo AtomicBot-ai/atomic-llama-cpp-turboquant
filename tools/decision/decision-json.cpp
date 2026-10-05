@@ -117,19 +117,31 @@ void py_escape(const std::string & s, std::string & out) {
     out += '"';
 }
 
-void py_dump(const json & v, std::string & out) {
+// compact: separators=(",", ":"); sort_keys: by code point, which is the byte order of UTF-8
+void py_dump(const json & v, std::string & out, bool compact = false, bool sort_keys = false) {
+    const char * item_sep = compact ? "," : ", ";
+    const char * key_sep  = compact ? ":" : ": ";
     switch (v.type()) {
         case json::value_t::object: {
+            std::vector<json::const_iterator> items;
+            for (auto it = v.begin(); it != v.end(); ++it) {
+                items.push_back(it);
+            }
+            if (sort_keys) {
+                std::sort(items.begin(), items.end(), [](const json::const_iterator & a, const json::const_iterator & b) {
+                    return a.key() < b.key();
+                });
+            }
             out += '{';
             bool first = true;
-            for (auto it = v.begin(); it != v.end(); ++it) {
+            for (const auto & it : items) {
                 if (!first) {
-                    out += ", ";
+                    out += item_sep;
                 }
                 first = false;
                 py_escape(it.key(), out);
-                out += ": ";
-                py_dump(it.value(), out);
+                out += key_sep;
+                py_dump(it.value(), out, compact, sort_keys);
             }
             out += '}';
             break;
@@ -139,10 +151,10 @@ void py_dump(const json & v, std::string & out) {
             bool first = true;
             for (const auto & e : v) {
                 if (!first) {
-                    out += ", ";
+                    out += item_sep;
                 }
                 first = false;
-                py_dump(e, out);
+                py_dump(e, out, compact, sort_keys);
             }
             out += ']';
             break;
@@ -191,6 +203,12 @@ decision_json_status decision_json_parse(const std::string & text, json & out, s
 std::string decision_py_dumps(const json & v) {
     std::string out;
     py_dump(v, out);
+    return out;
+}
+
+std::string decision_py_dumps_compact_sorted(const json & v) {
+    std::string out;
+    py_dump(v, out, true, true);
     return out;
 }
 

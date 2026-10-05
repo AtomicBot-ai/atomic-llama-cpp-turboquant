@@ -1,14 +1,36 @@
 #include "common.cuh"
+#include "convrot.cuh"
 #include "mmq.cuh"
 #include "quantize.cuh"
 #include "mmid.cuh"
 
 #include <cstdint>
 
+// Some opt-in callers bypass ggml_cuda_should_use_mmq() after doing their own
+// activation preparation. Check that the selected architecture actually has
+// a launchable table entry before entering MMQ so unsupported combinations
+// can use their existing fallback instead of reaching J_best == 0 and aborting.
+bool ggml_cuda_mmq_has_config(
+        const ggml_type type, const int64_t nrows_x, const int cc, const size_t smpbo) {
+    const bool fallback = nrows_x % 128 != 0;
+
+    for (int J = 8; J <= 128; J += 8) {
+        const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J, fallback, cc);
+        if (config.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(config, cc) <= smpbo) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
     switch (args.type_x) {
         case GGML_TYPE_Q1_0:
             mul_mat_q_case<GGML_TYPE_Q1_0>(ctx, args, stream);
+            break;
+        case GGML_TYPE_TQ4_1S:
+            mul_mat_q_case<GGML_TYPE_TQ4_1S>(ctx, args, stream);
             break;
         case GGML_TYPE_Q2_0:
             mul_mat_q_case<GGML_TYPE_Q2_0>(ctx, args, stream);
@@ -83,10 +105,12 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
 }
 
 void ggml_cuda_mul_mat_q(
-        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst) {
+        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1,
+        const ggml_tensor * ids, ggml_tensor * dst, bool convrot) {
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
+    GGML_ASSERT(!convrot || (!ids && mmq_get_q8_1_ds_layout(src0->type) == MMQ_Q8_1_DS_LAYOUT_D4));
 
     GGML_TENSOR_BINARY_OP_LOCALS;
 
@@ -145,7 +169,11 @@ void ggml_cuda_mul_mat_q(
             const int64_t s11 = src1->nb[1] / ts_src1;
             const int64_t s12 = src1->nb[2] / ts_src1;
             const int64_t s13 = src1->nb[3] / ts_src1;
-            if (use_native_fp4) {
+            if (convrot) {
+                ggml_cuda_convrot_quantize_mmq_q8_1(
+                    src1_d, src1_q8_1.get(), ne10, s11, s12, s13,
+                    ne10_padded, ne11, ne12, ne13, stream);
+            } else if (use_native_fp4) {
                 static constexpr size_t align_float8 = 32;
                 const bool use_aligned_float8 = ggml_cuda_is_aligned(src1, align_float8);
                 static_assert(sizeof(block_fp4_mmq) == 4 * sizeof(block_q8_1));
@@ -271,6 +299,9 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
+// TQ4_1S is intentionally NOT listed here: should_use_mmq() must return false for it so the
+// MoE MUL_MAT_ID path never routes it to an un-rotated MMQ. The dense Step-1 path calls
+// ggml_cuda_mul_mat_q directly (after activation pre-rotation), bypassing this gate.
 // -------------------------------------------------
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:

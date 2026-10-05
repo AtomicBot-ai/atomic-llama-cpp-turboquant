@@ -2081,12 +2081,16 @@ std::string lc_arch_key(const char * k) {
     return std::string(LC_ARCH) + "." + k;
 }
 
+// the layout ModelBase.load_hparams hands to the laya loader even with a root config.json
+// (rl_agent_config.json and encoder/config.json are files)
+bool lc_laya_layout(const std::string & dir) {
+    return lc_stat(lc_join(dir, "rl_agent_config.json")).is_file && lc_stat(lc_join(dir, "encoder/config.json")).is_file;
+}
+
 // ModelBase.index_tensors + LayaModel.filter_tensors + prepare_tensors (types, names, order)
 void lc_collect_tensors(lc_ctx & c, uint64_t n_blocks, laya_convert_outtype outtype) {
-    for (const char * f : { "hf_quant_config.json", "config.json" }) {
-        if (lc_stat(lc_join(c.dir, f)).exists) {
-            lc_fail(std::string(f) + " in the checkpoint root: the Python converter would not use the laya loader for it; not supported");
-        }
+    if (lc_stat(lc_join(c.dir, "hf_quant_config.json")).exists) {
+        lc_fail("hf_quant_config.json in the checkpoint root: the Python converter would not use the laya loader for it; not supported");
     }
     // get_model_part_names(dir, "model", ".safetensors") first: without such a file Python takes the
     // pytorch_model*.bin path (not supported here) even when model.safetensors.index.json names shards
@@ -2489,13 +2493,81 @@ void lc_check_template_processing(const json & p, const std::string & where) {
     }
 }
 
+// AutoTokenizer applies special_tokens_map.json on top of tokenizer_config.json. It is accepted only
+// when it restates special tokens that tokenizer_config.json already names: the same content and, for
+// the AddedToken form, the same flags as that added token in tokenizer.json. Then it changes nothing
+// (community fine-tunes save it that way). Anything else could re-flag or add tokens: refused.
+void lc_check_special_tokens_map(const std::string & path, const json & tcfg, const json & tj) {
+    const json sm = lc_load_json<json>(path);
+    if (!sm.is_object()) {
+        lc_fail(path + ": not a JSON object");
+    }
+    static const char * const keys[] = { "bos_token", "eos_token", "unk_token", "sep_token", "pad_token", "cls_token", "mask_token" };
+    const json * added = lc_get(tj, "added_tokens");
+    for (auto it = sm.begin(); it != sm.end(); ++it) {
+        const std::string & key = it.key();
+        auto bad = [&](const std::string & what) {
+            lc_fail(path + ": '" + key + "' " + what + "; not supported (AutoTokenizer would apply it)");
+        };
+        if (std::find_if(std::begin(keys), std::end(keys), [&](const char * k) { return key == k; }) == std::end(keys)) {
+            bad("is not one of the special token attributes tokenizer_config.json can name");
+        }
+        auto content_of = [](const json & v, std::string & out) {
+            const json * c = v.is_object() ? lc_get(v, "content") : &v;
+            if (!c || !c->is_string()) {
+                return false;
+            }
+            out = c->get<std::string>();
+            return true;
+        };
+        std::string content;
+        if (!content_of(it.value(), content)) {
+            bad("is neither a string nor an AddedToken object with a string content");
+        }
+        const json * tv = lc_get_nn(tcfg, key);
+        std::string tcontent;
+        if (!tv || !content_of(*tv, tcontent)) {
+            bad("is not set in tokenizer_config.json");
+        }
+        if (content != tcontent) {
+            bad("differs from tokenizer_config.json (" + json(content).dump() + " vs " + json(tcontent).dump() + ")");
+        }
+        if (!it.value().is_object()) {
+            continue;
+        }
+        const json * at = nullptr;
+        if (added && added->is_array()) {
+            for (const json & a : *added) {
+                const json * ac = lc_get(a, "content");
+                if (ac && ac->is_string() && ac->get<std::string>() == content) {
+                    at = &a;
+                    break;
+                }
+            }
+        }
+        if (!at) {
+            bad("is not an added token of tokenizer.json");
+        }
+        for (auto f = it.value().begin(); f != it.value().end(); ++f) {
+            if (f.key() == "content" || f.key() == "__type") {
+                continue;
+            }
+            if (f.key() != "lstrip" && f.key() != "rstrip" && f.key() != "normalized" && f.key() != "single_word" && f.key() != "special") {
+                bad("has the unknown AddedToken field '" + f.key() + "'");
+            }
+            const json * af = lc_get(*at, f.key());
+            if (!f.value().is_boolean() || !af || *af != f.value()) {
+                bad("sets " + f.key() + " " + f.value().dump() + ", tokenizer.json has " + (af ? af->dump() : std::string("none")));
+            }
+        }
+    }
+}
+
 void lc_convert_vocab(lc_ctx & c, const json & hp) {
     const std::string tj_path = lc_join(c.tok_dir, "tokenizer.json");
     const std::string tc_path = lc_join(c.tok_dir, "tokenizer_config.json");
-    for (const char * f : { "special_tokens_map.json", "added_tokens.json" }) {
-        if (lc_stat(lc_join(c.tok_dir, f)).exists) {
-            lc_fail(lc_join(c.tok_dir, f) + ": not supported (the Python path would read it through AutoTokenizer)");
-        }
+    if (lc_stat(lc_join(c.tok_dir, "added_tokens.json")).exists) {
+        lc_fail(lc_join(c.tok_dir, "added_tokens.json") + ": not supported (the Python path would read it through AutoTokenizer)");
     }
     c.log("loading " + tj_path);
     const json tj = lc_load_json<json>(tj_path, LC_MAX_TOKENIZER_BYTES);
@@ -2505,6 +2577,9 @@ void lc_convert_vocab(lc_ctx & c, const json & hp) {
     }
     if (!tcfg.is_object()) {
         lc_fail(tc_path + ": not a JSON object");
+    }
+    if (lc_stat(lc_join(c.tok_dir, "special_tokens_map.json")).exists) {
+        lc_check_special_tokens_map(lc_join(c.tok_dir, "special_tokens_map.json"), tcfg, tj);
     }
     // Python reads the vocab through AutoTokenizer.from_pretrained(tokenizer dir), which picks the class
     // from tokenizer_config.tokenizer_class, else from tokenizer/config.json (tokenizer_class, model_type).
@@ -3162,6 +3237,14 @@ lc_hparams lc_load_hparams(const lc_ctx & c) {
     const std::string rl_path = lc_join(c.dir, "rl_agent_config.json");
     if (!lc_stat(rl_path).is_file) {
         lc_fail("no rl_agent_config.json in '" + c.dir + "': not a laya checkpoint");
+    }
+    // A root config.json next to rl_agent_config.json + encoder/config.json is ignored: community
+    // fine-tunes put HF wrapper configs or copies of rl_agent_config.json there, the laya reference
+    // never reads it, and the Python converter claims this layout before AutoConfig
+    // (ModelBase.load_hparams) and keeps it out of the name heuristics (LayaModel.prepare_metadata).
+    if (lc_stat(lc_join(c.dir, "config.json")).exists && !lc_laya_layout(c.dir)) {
+        lc_fail("config.json in the checkpoint root without rl_agent_config.json and encoder/config.json: "
+                "the Python converter would not use the laya loader for it; not supported");
     }
     h.rl = lc_load_json<ordered_json>(rl_path);
     if (!h.rl.is_object()) {

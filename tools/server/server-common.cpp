@@ -548,39 +548,6 @@ bool server_tokens::validate(const struct llama_context * ctx) const {
     return true;
 }
 
-// fork: process a media chunk on an extra context (used to mirror mtmd media
-// evaluation onto the draft context for mmproj-compatible speculative decoding)
-int32_t server_tokens::process_chunk(
-            llama_context * ctx,
-            mtmd_context * mctx,
-            size_t idx,
-            llama_pos pos,
-            int32_t seq_id,
-            size_t & n_tokens_out) const {
-    const auto & chunk = find_chunk(idx);
-    const char * name = mtmd_input_chunk_get_type(chunk.get()) == MTMD_INPUT_CHUNK_TYPE_IMAGE
-                        ? "image" : "audio";
-    SRV_INF("processing %s...\n", name);
-    int32_t n_batch = llama_n_batch(ctx);
-    int64_t t0 = ggml_time_ms();
-    llama_pos new_n_past; // unused for now
-    int32_t result = mtmd_helper_eval_chunk_single(mctx, ctx,
-        chunk.get(),
-        pos,
-        seq_id,
-        n_batch,
-        true, // logits last
-        &new_n_past);
-    SRV_INF("%s processed in %" PRId64 " ms\n", name, ggml_time_ms() - t0);
-    if (result != 0) {
-        LOG_ERR("mtmd_helper_eval failed with status %d", result);
-        n_tokens_out = 0;
-        return result;
-    }
-    n_tokens_out = mtmd_input_chunk_get_n_tokens(chunk.get());
-    return 0;
-}
-
 server_tokens server_tokens::clone() const {
     server_tokens res;
     res.has_mtmd = has_mtmd;
@@ -1119,12 +1086,15 @@ json oaicompat_chat_params_parse(
         throw std::invalid_argument("invalid type for \"enable_thinking\" (expected boolean, got string)");
     }
 
-    // Parse also the OAI "reasoning_effort": "none" specific value
+    // Parse the OAI "reasoning_effort" field; "none" disables reasoning.
     if (body.contains("reasoning_effort")) {
         auto reasoning_effort = json_value(body, "reasoning_effort", std::string(""));
         if (reasoning_effort == "none") {
             inputs.enable_thinking = false;
-        } // other reasoning_effort values are model-specific and not yet handled
+            inputs.chat_template_kwargs.erase("reasoning_effort");
+        } else if (!reasoning_effort.empty()) {
+            inputs.chat_template_kwargs["reasoning_effort"] = json(reasoning_effort).dump();
+        }
     }
 
     inputs.force_pure_content = opt.force_pure_content;

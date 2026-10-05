@@ -16,6 +16,7 @@
 // options per question of each layout (laya: LAYA_MAX_MARKERS)
 #define DECISION_LAYA_MAX_OPTIONS  20
 #define DECISION_SEMIF_MAX_OPTIONS 16
+#define DECISION_CLEF_MAX_OPTIONS  255
 
 struct decision_calibration {
     std::string method     = "none";  // "temperature" or "none"
@@ -47,10 +48,10 @@ struct decision_spec {
     std::string architecture;             // general.architecture of the GGUF
     std::string model_id;
     std::string model_version;
-    std::string layout;                   // "laya", "semif-letters"
-    std::string format;                   // "laya-v1", "semif-v1"
-    std::string input_contract;           // laya: "laya-v1" | "laya-router-v1"; semif-letters: "semif-v1"
-    std::string special_tokens;           // laya: "mask-to-space" | "escape-control"; semif-letters: "escape"
+    std::string layout;                   // "laya", "clef", "semif-letters"
+    std::string format;                   // "laya-v1", "clef-v1", "semif-v1"
+    std::string input_contract;           // laya: "laya-v1" | "laya-router-v1"; clef: "clef-v1"; semif-letters: "semif-v1"
+    std::string special_tokens;           // laya: "mask-to-space" | "escape-control"; clef: "parse"; semif-letters: "escape"
     int32_t     max_options       = 0;    // 0: engine limit
     int32_t     max_candidates    = 16;
     int32_t     max_prompt_tokens = 0;
@@ -67,7 +68,7 @@ struct decision_spec {
 
 // Load the spec of a model: sidecar file if given, else the GGUF decision.spec,
 // else defaults for the architecture (laya: calibration from laya.temperature
-// when it is not all 1.0, else calibrated:false). A laya spec without a
+// when it is not all 1.0, else calibrated:false; clef: no calibration). A laya spec without a
 // "calibration" key keeps that laya.temperature calibration. Returns false with err set.
 bool decision_spec_load(const std::string & model_path, const std::string & sidecar_path, decision_spec & spec, std::string & err);
 

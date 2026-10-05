@@ -28,7 +28,10 @@ public:
                llama_memory_t   mem_other,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
-        const  layer_share_cb & share);
+        const  layer_share_cb & share,
+                          size_t kv_stream_stage_bytes = 0,
+                          void * kv_stream_phase_arena = nullptr,
+                          size_t kv_stream_maximum_pool_bytes = 0);
 
     llama_kv_cache_iswa(
             const llama_model & model,
@@ -46,7 +49,10 @@ public:
                llama_memory_t   mem_other,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
-        const  layer_share_cb & share);
+        const  layer_share_cb & share,
+                          size_t kv_stream_stage_bytes = 0,
+                          void * kv_stream_phase_arena = nullptr,
+                          size_t kv_stream_maximum_pool_bytes = 0);
 
     ~llama_kv_cache_iswa() = default;
 
@@ -83,6 +89,9 @@ public:
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
 
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_target> get_kv_stream_targets() const override;
+
     //
     // llama_kv_cache_iswa specific API
     //
@@ -90,18 +99,8 @@ public:
     llama_kv_cache * get_base() const;
     llama_kv_cache * get_swa () const;
 
-    // Read-only MTP cross-attention: pairs base+swa slot infos with a 1-token ubatch. Do not call apply() before compute.
-    //
-    // Async MTP pipeline contract (see plan async-mtp-pipeline, Phase E):
-    //   When the MTP graph is computed on a worker thread (via decode_mtp_async +
-    //   sched_mtp), the snapshot of slot info captured here must remain valid until
-    //   decode_mtp_wait returns. The current append-only KV cache satisfies this as
-    //   long as no cache eviction or seq_rm overlapping positions ≤ attn_pos happens
-    //   between submit and wait. Callers must therefore ensure target llama_decode
-    //   for the same seq_id does not trigger eviction during an in-flight MTP request.
-    llama_memory_context_ptr init_mtp(llama_seq_id seq_id, llama_ubatch ubatch);
-
 private:
+
     const bool unified;
 
     std::unique_ptr<llama_kv_cache> kv_base;
@@ -143,6 +142,9 @@ public:
 
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
+
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_active_target> get_kv_stream_active_targets() const override;
 
     //
     // llama_kv_cache_iswa_context specific API

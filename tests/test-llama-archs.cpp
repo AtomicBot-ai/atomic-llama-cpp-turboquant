@@ -113,6 +113,8 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         n_layer = 3;
     } else if (arch == LLM_ARCH_CHAMELEON) {
         n_vocab = 10240;
+    } else if (arch == LLM_ARCH_QWEN3TTS) {
+        n_vocab = 4096; // must be >= the hard-coded codec head size (3072)
     }
 
     const uint32_t n_embd_head = n_embd / n_head;
@@ -190,7 +192,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         ms.add_kv(LLM_KV_ROPE_FREQ_BASE_SWA,              10000.0f);
         // SWA pattern: every 5th layer is full attention (matches E2B layer_types)
         ms.add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, uint32_t(5));
-    } else if (arch == LLM_ARCH_COHERE2MOE || arch == LLM_ARCH_MIMO2 || arch == LLM_ARCH_STEP35) {
+    } else if (arch == LLM_ARCH_COHERE2MOE || arch == LLM_ARCH_MIMO2 || arch == LLM_ARCH_STEP35 || arch == LLM_ARCH_MUSE_GLIMMER) {
         std::vector<uint32_t> pattern;
         pattern.reserve(n_layer);
         for (uint32_t il = 0; il < n_layer; il++) {
@@ -203,8 +205,41 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
 
     // MSA requires one indexer head per GQA (KV) head, unlike the DSA archs where the
     // indexer head count is independent of the main attention head count.
-    ms.add_kv(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,   arch == LLM_ARCH_MINIMAX_M3 ? n_head : uint32_t(1));
-    ms.add_kv(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,   uint32_t(64));
+    if (arch == LLM_ARCH_QWEN4EXP) {
+        ms.add_kv(LLM_KV_HYPER_CONNECTION_COUNT,    uint32_t(4));
+        ms.add_kv(LLM_KV_HYPER_CONNECTION_LOW_RANK, uint32_t(8));
+        // without this the QSA layers fall back to dense and go uncovered
+        ms.add_kv(LLM_KV_ATTENTION_COMPRESS_RATIOS, std::vector<uint32_t>(n_layer, 4));
+
+        // has_cell_ext() needs ple_n_heads here: the indexer cache serializes no ext without it
+        const uint32_t ple_ngram_size      = 3;
+        const uint32_t ple_heads_per_ngram = 2;
+        const uint32_t ple_n_heads         = (ple_ngram_size - 1)*ple_heads_per_ngram;
+        GGML_ASSERT(n_embd % ple_n_heads == 0);
+        const uint32_t ple_head_dim = n_embd/ple_n_heads;
+
+        std::vector<uint64_t> ple_head_offsets(ple_n_heads);
+        std::vector<uint64_t> ple_head_vocab_sizes(ple_n_heads, n_vocab);
+        for (uint32_t h = 0; h < ple_n_heads; h++) {
+            ple_head_offsets[h] = uint64_t(h)*n_vocab;
+        }
+
+        // the PLE history lives in the recurrent cache, so it must sit on a linear attention layer
+        ms.add_kv(LLM_KV_PLE_LAYERS,                  std::vector<uint32_t>({ 0 }));
+        ms.add_kv(LLM_KV_PLE_NGRAM_SIZE,              ple_ngram_size);
+        ms.add_kv(LLM_KV_PLE_HEADS_PER_NGRAM,         ple_heads_per_ngram);
+        ms.add_kv(LLM_KV_PLE_CONV_KERNEL,             uint32_t(4));
+        ms.add_kv(LLM_KV_PLE_EOS_TOKEN_ID,            uint32_t(0));
+        ms.add_kv(LLM_KV_EMBEDDING_LENGTH_PER_LAYER,  ple_head_dim);
+        ms.add_kv(LLM_KV_PLE_LAYER_MULTIPLIERS,       std::vector<uint64_t>({ 1, 3, 5 }));
+        ms.add_kv(LLM_KV_PLE_HEAD_OFFSETS,            ple_head_offsets);
+        ms.add_kv(LLM_KV_PLE_HEAD_VOCAB_SIZES,        ple_head_vocab_sizes);
+    }
+
+    ms.add_kv(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,   arch == LLM_ARCH_MINIMAX_M3 || arch == LLM_ARCH_DEEPSEEK4 ? n_head : uint32_t(1));
+    // qwen4exp ropes indexer keys with the main rotary width, so its head can't be < n_rot
+    ms.add_kv(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,
+              arch == LLM_ARCH_QWEN4EXP ? n_embd_head : uint32_t(64));
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_TOP_K,        uint32_t(8));
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,   uint32_t(4));
     ms.add_kv(LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS, uint32_t(1));
@@ -222,9 +257,6 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         ms.add_kv(LLM_KV_EXPERT_GATING_FUNC,         uint32_t(2)); // sigmoid
         ms.add_kv(LLM_KV_EXPERT_GROUP_SCALE,         1.0f);
         ms.add_kv(LLM_KV_EXPERTS_PER_GROUP,          uint32_t(1));
-        ms.add_kv(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, n_ff);
-        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_SCALE,       1.0f);
-        ms.add_kv(LLM_KV_EXPERT_WEIGHTS_NORM,        false);
     }
 
     ms.add_kv(LLM_KV_POSNET_EMBEDDING_LENGTH,   n_embd);
@@ -235,7 +267,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_XIELU_ALPHA_P,             1.0f);
     ms.add_kv(LLM_KV_XIELU_BETA,                1.0f);
     ms.add_kv(LLM_KV_XIELU_EPS,                 1.0e-7f);
-    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ? 256 : 2*n_embd);
+    ms.add_kv(LLM_KV_SSM_INNER_SIZE,            arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_QWEN4EXP ? 256 : 2*n_embd);
     ms.add_kv(LLM_KV_SSM_CONV_KERNEL,           uint32_t(4));
     ms.add_kv(LLM_KV_SSM_STATE_SIZE,            uint32_t(128));
     ms.add_kv(LLM_KV_SSM_TIME_STEP_RANK,        n_head);
@@ -341,6 +373,7 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_QWEN3VLMOE:
         case LLM_ARCH_QWEN35MOE:
+        case LLM_ARCH_QWEN4EXP:
         case LLM_ARCH_PHIMOE:
         case LLM_ARCH_DBRX:
         case LLM_ARCH_OLMOE:
@@ -355,7 +388,6 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_BAILINGMOE2:
         case LLM_ARCH_DOTS1:
         case LLM_ARCH_AFMOE:
-        case LLM_ARCH_LAGUNA:
         case LLM_ARCH_ERNIE4_5:
         case LLM_ARCH_ERNIE4_5_MOE:
         case LLM_ARCH_HUNYUAN_MOE:
@@ -374,6 +406,7 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_STEP35:
         case LLM_ARCH_MISTRAL4:
         case LLM_ARCH_MELLUM:
+        case LLM_ARCH_LAGUNA:
             return true;
         default:
             return false;
@@ -424,6 +457,9 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_PLM) {
         return false; // TODO tensor shapes
     }
+    if (arch == LLM_ARCH_CLEF) {
+        return false; // TODO decision head tensors
+    }
     if (arch == LLM_ARCH_LAYA) {
         return false; // graph lives in tools/laya, libllama only loads it for llama-quantize
     }
@@ -449,6 +485,14 @@ static bool arch_supported(const llm_arch arch) {
         return false;
     }
 #endif // GGML_USE_WEBGPU
+
+    // FIXME: jamba produces incorrect output (~0.55 NMSE vs CPU) on the HIP
+    // backend on RDNA3.5 (gfx1151); the SSM kernels need investigation.
+#ifdef GGML_USE_HIP
+    if (arch == LLM_ARCH_JAMBA) {
+        return false;
+    }
+#endif // GGML_USE_HIP
 
     return true;
 }

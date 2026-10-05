@@ -1976,84 +1976,6 @@ static void test_convert_responses_to_chatcmpl() {
     }
 }
 
-// Laguna (poolside) — GLM-4-MoE tool calls + <think> reasoning, turn ends with </assistant>.
-static void test_laguna_parser(const std::string & template_path, bool detailed_debug) {
-    auto tst = peg_tester(template_path, detailed_debug);
-
-    // Reasoning + content (no tools). Generation prompt emits the opening <think>,
-    // so the parsed output starts with reasoning text and no leading <think>.
-    tst.test("I'm\nthinking</think>Hello, world!\nWhat's up?")
-        .enable_thinking(true)
-        .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
-        .expect(message_assist_thoughts)
-        .run();
-
-    // Reasoning + single tool call (string param). The grammar covers the
-    // tool-call region; the turn-end </assistant> is post-grammar (handled by
-    // additional_stops at runtime), so the parsed/grammar-checked text ends at
-    // </tool_call> — mirroring the deepseek_v3_2 cases.
-    tst.test(
-           "Let me check the weather</think>\n"
-           "<tool_call>get_weather\n"
-           "<arg_key>city</arg_key>\n"
-           "<arg_value>Paris</arg_value>\n"
-           "</tool_call>")
-        .enable_thinking(true)
-        .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
-        .tools({ get_weather_tool })
-        .expect(message_with_tool_calls_and_reasoning("get_weather", R"({"city": "Paris"})", "Let me check the weather"))
-        .run();
-
-    // Non-thinking mode + non-string (integer) arg. Generation prompt is
-    // "<assistant>\n</think>"; the integer is a raw JSON value, not quoted.
-    tst.test(
-           "<tool_call>special_function\n"
-           "<arg_key>arg1</arg_key>\n"
-           "<arg_value>1</arg_value>\n"
-           "</tool_call>")
-        .enable_thinking(false)
-        .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
-        .tools({ special_function_tool })
-        .expect(message_assist_call)
-        .run();
-
-    // Thinking mode where the model omits the closing </think> and goes straight
-    // into the tool call. The reasoning region terminates at <tool_call> (not only
-    // at </think>), so the call is still extracted instead of being swallowed into
-    // reasoning_content.
-    tst.test(
-           "Let me check the weather\n"
-           "<tool_call>get_weather\n"
-           "<arg_key>city</arg_key>\n"
-           "<arg_value>Paris</arg_value>\n"
-           "</tool_call>")
-        .enable_thinking(true)
-        .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
-        .tools({ get_weather_tool })
-        .expect(message_with_tool_calls_and_reasoning("get_weather", R"({"city": "Paris"})", "Let me check the weather"))
-        .run();
-
-    // Parallel tool calls with reasoning.
-    tst.test(
-           "Calling both</think>\n"
-           "<tool_call>get_time\n"
-           "<arg_key>city</arg_key>\n"
-           "<arg_value>Paris</arg_value>\n"
-           "</tool_call>\n"
-           "<tool_call>get_weather\n"
-           "<arg_key>city</arg_key>\n"
-           "<arg_value>Paris</arg_value>\n"
-           "</tool_call>")
-        .enable_thinking(true)
-        .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
-        .parallel_tool_calls(true)
-        .tools({ get_time_tool, get_weather_tool })
-        .expect(message_with_reasoning_content_and_multiple_tool_calls(
-            "Calling both", "",
-            { { "get_time", R"({"city": "Paris"})" }, { "get_weather", R"({"city": "Paris"})" } }))
-        .run();
-}
-
 // Shared LFM2 parser cases - all variants use one output format and parser
 static void test_lfm2_parser(const std::string & template_path, bool detailed_debug) {
     auto tst = peg_tester(template_path, detailed_debug);
@@ -4994,10 +4916,6 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
         test_lfm2_parser(tmpl, detailed_debug);
     }
 
-    {
-        test_laguna_parser("models/templates/laguna.jinja", detailed_debug);
-    }
-
     // Thinking cases only apply to LFM2.5-8B-A1B, the one LFM2 template that emits <think>
     {
         auto tst = peg_tester("models/templates/LFM2.5-8B-A1B.jinja", detailed_debug);
@@ -7175,6 +7093,23 @@ static void test_reasoning_budget_message_per_request() {
     }
 }
 
+static void test_reasoning_effort_caps() {
+    LOG_DBG("%s\n", __func__);
+
+    auto assert_supports_effort = [](const std::string & path, bool expected) {
+        auto tmpls = read_templates(path);
+        assert_equals(expected, common_chat_templates_get_caps(tmpls.get()).at("supports_reasoning_effort"));
+    };
+
+    assert_supports_effort("models/templates/deepseek-ai-DeepSeek-V4.jinja", true);
+    assert_supports_effort("models/templates/tencent-Hy3.jinja", true);
+    assert_supports_effort("models/templates/openai-gpt-oss-120b.jinja", true);
+    assert_supports_effort("models/templates/upstage-Solar-Open-100B.jinja", true);
+    assert_supports_effort("models/templates/Cohere2MoE.jinja", true);
+    assert_supports_effort("models/templates/meta-llama-Llama-3.1-8B-Instruct.jinja", false);
+    assert_supports_effort("models/templates/Qwen-Qwen3-0.6B.jinja", false);
+}
+
 static void test_msg_diffs_compute() {
     LOG_DBG("%s\n", __func__);
     {
@@ -7334,6 +7269,7 @@ int main(int argc, char ** argv) {
         test_deepseek_v4_thinking_retention();
         test_deepseek_v4_tool_result_ordering();
         test_template_generation_prompt();
+        test_reasoning_effort_caps();
         test_reasoning_budget_tokens_per_request();
         test_reasoning_budget_message_per_request();
         test_template_output_peg_parsers(detailed_debug);

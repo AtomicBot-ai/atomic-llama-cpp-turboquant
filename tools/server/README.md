@@ -75,13 +75,15 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--mlock` | DEPRECATED in favor of `--load-mode`: force system to keep model in RAM rather than swapping or compressing<br/>(env: LLAMA_ARG_MLOCK) |
 | `--mmap, --no-mmap` | DEPRECATED in favor of `--load-mode`: whether to memory-map model. (if mmap disabled, slower load but may reduce pageouts if not using mlock)<br/>(env: LLAMA_ARG_MMAP) |
 | `-dio, --direct-io, -ndio, --no-direct-io` | DEPRECATED in favor of `--load-mode`: use DirectIO if available<br/>(env: LLAMA_ARG_DIO) |
-| `-lm, --load-mode MODE` | model loading mode (default: mmap)<br/>- none: no special loading mode<br/>- mmap: memory-map model (if mmap disabled, slower load but may reduce pageouts if not using mlock)<br/>- mlock: force system to keep model in RAM rather than swapping or compressing<br/>- mmap+mlock: mmap + force system to keep model in RAM rather than swapping or compressing<br/>- dio: use DirectIO if available<br/><br/>(env: LLAMA_ARG_LOAD_MODE) |
+| `-lm, --load-mode MODE` | model loading mode (default: auto)<br/>- auto: mmap, unless a device does not support it<br/>- none: no special loading mode<br/>- mmap: memory-map model (if mmap disabled, slower load but may reduce pageouts if not using mlock)<br/>- mlock: force system to keep model in RAM rather than swapping or compressing<br/>- mmap+mlock: mmap + force system to keep model in RAM rather than swapping or compressing<br/>- dio: use DirectIO if available<br/><br/>(env: LLAMA_ARG_LOAD_MODE) |
+| `--tensor-read-lazy MODE` | on-demand reading of certain tensors, for example per-layer embeddings (default: auto)<br/>- on: read the rows of such tensors from disk on demand instead of keeping them resident (requires mmap)<br/>- auto: on, but only for tensors larger than 4 GiB<br/>- off: always keep them resident<br/>(env: LLAMA_ARG_TENSOR_READ_LAZY) |
 | `--numa TYPE` | attempt optimizations that help on some NUMA systems<br/>- distribute: spread execution evenly over all nodes<br/>- isolate: only spawn threads on CPUs on the node that execution started on<br/>- numactl: use the CPU map provided by numactl<br/>if run without this previously, it is recommended to drop the system page cache before using this<br/>see https://github.com/ggml-org/llama.cpp/issues/1437<br/>(env: LLAMA_ARG_NUMA) |
 | `-dev, --device <dev1,dev2,..>` | comma-separated list of devices to use for offloading (none = don't offload)<br/>use --list-devices to see a list of available devices<br/>(env: LLAMA_ARG_DEVICE) |
 | `--list-devices` | print list of available devices and exit |
 | `-ot, --override-tensor <tensor name pattern>=<buffer type>,...` | override tensor buffer type<br/>(env: LLAMA_ARG_OVERRIDE_TENSOR) |
 | `-cmoe, --cpu-moe` | keep all Mixture of Experts (MoE) weights in the CPU<br/>(env: LLAMA_ARG_CPU_MOE) |
 | `-ncmoe, --n-cpu-moe N` | keep the Mixture of Experts (MoE) weights of the first N layers in the CPU<br/>(env: LLAMA_ARG_N_CPU_MOE) |
+| `-ncffn, --n-cpu-ffn N` | keep the dense FFN weights of the first N layers in the CPU<br/>(dense models; for MoE expert weights use --n-cpu-moe)<br/>(env: LLAMA_ARG_N_CPU_FFN) |
 | `-ngl, --gpu-layers, --n-gpu-layers N` | max. number of layers to store in VRAM, either an exact number, 'auto', or 'all' (default: auto)<br/>(env: LLAMA_ARG_N_GPU_LAYERS) |
 | `-sm, --split-mode {none,layer,row,tensor}` | how to split the model across multiple GPUs, one of:<br/>- none: use one GPU only<br/>- layer (default): split layers and KV across GPUs (pipelined)<br/>- row: split weight across GPUs by rows (parallelized)<br/>- tensor: split weights and KV across GPUs (parallelized, EXPERIMENTAL)<br/>(env: LLAMA_ARG_SPLIT_MODE) |
 | `-ts, --tensor-split N0,N1,N2,...` | fraction of the model to offload to each GPU, comma-separated list of proportions, e.g. 3,1<br/>(env: LLAMA_ARG_TENSOR_SPLIT) |
@@ -133,14 +135,14 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--xtc-probability N` | xtc probability (default: 0.00, 0.0 = disabled) |
 | `--xtc-threshold N` | xtc threshold (default: 0.10, 1.0 = disabled) |
 | `--typical, --typical-p N` | locally typical sampling, parameter p (default: 1.00, 1.0 = disabled) |
-| `--repeat-last-n N` | last n tokens to consider for penalize (default: 64, 0 = disabled, -1 = ctx_size) |
+| `--repeat-last-n N` | last n tokens to consider for penalize (default: 64, 0 = disabled) |
 | `--repeat-penalty N` | penalize repeat sequence of tokens (default: 1.00, 1.0 = disabled) |
 | `--presence-penalty N` | repeat alpha presence penalty (default: 0.00, 0.0 = disabled) |
 | `--frequency-penalty N` | repeat alpha frequency penalty (default: 0.00, 0.0 = disabled) |
 | `--dry-multiplier N` | set DRY sampling multiplier (default: 0.00, 0.0 = disabled) |
 | `--dry-base N` | set DRY sampling base value (default: 1.75) |
 | `--dry-allowed-length N` | set allowed length for DRY sampling (default: 2) |
-| `--dry-penalty-last-n N` | set DRY penalty for the last n tokens (default: -1, 0 = disable, -1 = context size) |
+| `--dry-penalty-last-n N` | set DRY penalty for the last n tokens (default: 64, 0 = disable) |
 | `--dry-sequence-breaker STRING` | add sequence breaker for DRY sampling, clearing out default breakers ('\n', ':', '"', '*') in the process; use "none" to not use any sequence breakers |
 | `--adaptive-target N` | adaptive-p: select tokens near this probability (valid range 0.0 to 1.0; negative = disabled) (default: -1.00)<br/>[(more info)](https://github.com/ggml-org/llama.cpp/pull/17927) |
 | `--adaptive-decay N` | adaptive-p: decay rate for target adaptation over time. lower values are more reactive, higher values are more stable.<br/>(valid range 0.0 to 0.99) (default: 0.90) |
@@ -241,6 +243,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--jinja, --no-jinja` | whether to use jinja template engine for chat (default: enabled)<br/>(env: LLAMA_ARG_JINJA) |
 | `--reasoning-format FORMAT` | controls whether thought tags are allowed and/or extracted from the response, and in which format they're returned; one of:<br/>- none: leaves thoughts unparsed in `message.content`<br/>- deepseek: puts thoughts in `message.reasoning_content`<br/>- deepseek-legacy: keeps `<think>` tags in `message.content` while also populating `message.reasoning_content`<br/>(default: auto)<br/>(env: LLAMA_ARG_THINK) |
 | `-rea, --reasoning [on\|off\|auto]` | Use reasoning/thinking in the chat ('on', 'off', or 'auto', default: 'auto' (detect from template))<br/>(env: LLAMA_ARG_REASONING) |
+| `--reasoning-effort LEVEL` | reasoning effort level given to the chat template: 'default' to keep the template default,<br/>or a level such as 'minimal', 'low', 'medium', 'high', 'xhigh' or 'max' (default: default)<br/>(env: LLAMA_ARG_REASONING_EFFORT) |
 | `--reasoning-budget N` | token budget for thinking: -1 for unrestricted, 0 for immediate end, N>0 for token budget (default: -1)<br/>(env: LLAMA_ARG_THINK_BUDGET) |
 | `--reasoning-budget-message MESSAGE` | message injected before the end-of-thinking tag when reasoning budget is exhausted (default: none)<br/>(env: LLAMA_ARG_THINK_BUDGET_MESSAGE) |
 | `--reasoning-preserve, --no-reasoning-preserve` | preserve reasoning trace in the full history, not just the last assistant message (default: template default)<br/>compatible with certain templates having 'supports_preserve_reasoning' capability<br/>example: https://docs.z.ai/guides/capabilities/thinking-mode#preserved-thinking<br/>(env: LLAMA_ARG_REASONING_PRESERVE) |
@@ -249,8 +252,6 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--skip-chat-parsing, --no-skip-chat-parsing` | force a pure content parser, even if a Jinja template is specified; model will output everything in the content section, including any reasoning and/or tool calls (default: disabled)<br/>(env: LLAMA_ARG_SKIP_CHAT_PARSING) |
 | `--prefill-assistant, --no-prefill-assistant` | whether to prefill the assistant's response if the last message is an assistant message (default: prefill enabled)<br/>when this flag is set, if the last message is an assistant message then it will be treated as a full message and not prefilled<br/><br/>(env: LLAMA_ARG_PREFILL_ASSISTANT) |
 | `-sps, --slot-prompt-similarity SIMILARITY` | how much the prompt of a request must match the prompt of a slot in order to use that slot (default: 0.10, 0.0 = disabled) |
-| `--slot-cache-key-similarity SIMILARITY` | how much the prompt of a cache_key request must match the cached slot prompt before reusing it (default: 0.50, 0.0 = disable ratio check) |
-| `--slot-cache-key-min-prefix N` | minimum common-prefix tokens required before reusing a cache_key slot (default: 32, 0 = disabled) |
 | `--lora-init-without-apply` | load LoRA adapters without applying them (apply later via POST /lora-adapters) (default: disabled) |
 | `--sleep-idle-seconds SECONDS` | number of seconds of idleness after which the server will sleep (default: -1; -1 = disabled) |
 | `--log-prompts-dir PATH` | Log prompts to directory (auto-created if not present; only used for debugging, default: disabled) |
@@ -271,13 +272,15 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--spec-draft-n-cpu-moe, --spec-draft-ncmoe, -ncmoed, --n-cpu-moe-draft N` | keep the Mixture of Experts (MoE) weights of the first N layers in the CPU for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE) |
 | `--spec-draft-n-max N` | number of tokens to draft for speculative decoding (default: 3)<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_MAX) |
 | `--spec-draft-n-min N` | minimum number of draft tokens to use for speculative decoding (default: 0)<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_MIN) |
+| `--spec-draft-n-min-adaptive N` | minimum adaptive MTP draft depth; the depth starts here and never drops below it (default: 3)<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_MIN_ADAPTIVE) |
+| `--spec-chain 0\|1\|N` | chained MTP drafting: all draft tokens in one GPU decode (default: off). Use --spec-chain N to enable and set depth (e.g. --spec-chain 8).<br/>(env: LLAMA_ARG_SPEC_CHAIN) |
 | `--spec-draft-p-split, --draft-p-split P` | speculative decoding split probability (default: 0.10)<br/>(env: LLAMA_ARG_SPEC_DRAFT_P_SPLIT) |
 | `--spec-draft-p-min, --draft-p-min P` | minimum speculative decoding probability (greedy) (default: 0.00)<br/>(env: LLAMA_ARG_SPEC_DRAFT_P_MIN) |
 | `--spec-draft-backend-sampling, --no-spec-draft-backend-sampling` | offload draft sampling to the backend (default: enabled)<br/>(env: LLAMA_ARG_SPEC_DRAFT_BACKEND_SAMPLING) |
 | `--spec-draft-device, -devd, --device-draft <dev1,dev2,..>` | comma-separated list of devices to use for offloading the draft model (none = don't offload)<br/>use --list-devices to see a list of available devices |
 | `--spec-draft-ngl, -ngld, --gpu-layers-draft, --n-gpu-layers-draft N` | max. number of draft model layers to store in VRAM, either an exact number, 'auto', or 'all' (default: auto)<br/>(env: LLAMA_ARG_N_GPU_LAYERS_DRAFT) |
 | `--spec-draft-model, -md, --model-draft FNAME` | draft model for speculative decoding (default: unused)<br/>(env: LLAMA_ARG_SPEC_DRAFT_MODEL) |
-| `--spec-type none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache` | comma-separated list of types of speculative decoding to use (default: none)<br/><br/>(env: LLAMA_ARG_SPEC_TYPE) |
+| `--spec-type none,draft-simple,draft-eagle3,draft-mtp,draft-mtp-adaptive,draft-dflash,draft-dspark,ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache` | comma-separated list of types of speculative decoding to use (default: none)<br/><br/>(env: LLAMA_ARG_SPEC_TYPE) |
 | `--spec-ngram-mod-n-min N` | minimum number of ngram tokens to use for ngram-based speculative decoding (default: 48) |
 | `--spec-ngram-mod-n-max N` | maximum number of ngram tokens to use for ngram-based speculative decoding (default: 64) |
 | `--spec-ngram-mod-n-match N` | ngram-mod lookup length (default: 24) |
@@ -492,7 +495,7 @@ These words will not be included in the completion, so make sure to add them to 
 
 `repeat_penalty`: Control the repetition of token sequences in the generated text. Default: `1.1`
 
-`repeat_last_n`: Last n tokens to consider for penalizing repetition. Default: `64`, where `0` is disabled and `-1` is ctx-size.
+`repeat_last_n`: Last n tokens to consider for penalizing repetition. Default: `64`, where `0` is disabled.
 
 `presence_penalty`: Repeat alpha presence penalty. Default: `0.0`, which is disabled.
 
@@ -504,7 +507,7 @@ These words will not be included in the completion, so make sure to add them to 
 
 `dry_allowed_length`: Tokens that extend repetition beyond this receive exponentially increasing penalty: multiplier * base ^ (length of repeating sequence before token - allowed length). Default: `2`
 
-`dry_penalty_last_n`: How many tokens to scan for repetitions. Default: `-1`, where `0` is disabled and `-1` is context size.
+`dry_penalty_last_n`: How many tokens to scan for repetitions. Default: `64`, where `0` is disabled.
 
 `dry_sequence_breakers`: Specify an array of sequence breakers for DRY sampling. Only a JSON array of strings is accepted. Default: `['\n', ':', '"', '*']`
 
@@ -812,7 +815,7 @@ By default, it is read-only. To make POST request to change global properties, y
       "dry_multiplier": 0.0,
       "dry_base": 1.75,
       "dry_allowed_length": 2,
-      "dry_penalty_last_n": -1,
+      "dry_penalty_last_n": 64,
       "dry_sequence_breakers": [
         "\n",
         ":",
@@ -1092,6 +1095,10 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 | `llamacpp:n_tokens_max` | Counter | High watermark of the context size observed. |
 | `llamacpp:n_decode_total` | Counter | Total Number of llama_decode() calls. |
 | `llamacpp:n_busy_slots_per_decode` | Gauge | Average number of busy slots per llama_decode() call. |
+| `llamacpp:spec_decode_num_draft_tokens_total` | Counter | Total draft tokens generated (0 when spec-decode is off). |
+| `llamacpp:spec_decode_num_accepted_tokens_total` | Counter | Total draft tokens accepted by the target model (0 when spec-decode is off). |
+| `llamacpp:spec_decode_num_drafts_total` | Counter | Total speculative decoding verification steps (0 when spec-decode is off). |
+| `llamacpp:spec_decode_num_accepted_tokens_per_pos_total` | Counter | Accepted tokens per draft position (labeled `position="N"`; absent when spec-decode is off or before the first completed speculative request). |
 
 ### POST `/slots/{id_slot}?action=save`: Save the prompt cache of the specified slot to a file.
 
@@ -1265,7 +1272,7 @@ The `response_format` parameter supports both plain JSON output (e.g. `{"type": 
 
 `chat_template_kwargs`: Allows sending additional parameters to the json templating system. For example: `{"enable_thinking": false}`
 
-`reasoning_effort`: If set to `none`, reasoning will be disabled for this request. Other values (e.g., `low`, `max`) have no effect on reasoning.
+`reasoning_effort`: If `none`, reasoning/thinking is disabled. Otherwise, the value is made available to the jinja template.
 
 `reasoning_format`: The reasoning format to be parsed. If set to `none`, it will output the raw generated text.
 

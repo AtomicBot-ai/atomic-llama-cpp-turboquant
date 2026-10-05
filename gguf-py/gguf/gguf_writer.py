@@ -280,6 +280,10 @@ class GGUFWriter:
 
         self.kv_data[0][key] = GGUFValue(value=val, type=vtype, sub_type=sub_type)
 
+    def remove_key(self, key: str) -> None:
+        for kv_data in self.kv_data:
+            kv_data.pop(key, None)
+
     def add_uint8(self, key: str, val: int) -> None:
         self.add_key_value(key,val, GGUFValueType.UINT8)
 
@@ -992,11 +996,29 @@ class GGUFWriter:
     def add_block_size(self, value: int) -> None:
         self.add_uint32(Keys.LLM.BLOCK_SIZE.format(arch=self.arch), value)
 
+    def add_conv_kernel_size(self, value: int) -> None:
+        self.add_uint32(Keys.LLM.CONV_KERNEL_SIZE.format(arch=self.arch), value)
+
+    def add_conv_group_size(self, value: int) -> None:
+        self.add_uint32(Keys.LLM.CONV_GROUP_SIZE.format(arch=self.arch), value)
+
+    def add_selector_rank(self, value: int) -> None:
+        self.add_uint32(Keys.LLM.SELECTOR_RANK.format(arch=self.arch), value)
+
+    def add_selector_top_k(self, value: int) -> None:
+        self.add_uint32(Keys.LLM.SELECTOR_TOP_K.format(arch=self.arch), value)
+
+    def add_sample_from_anchor(self, value: bool) -> None:
+        self.add_bool(Keys.LLM.SAMPLE_FROM_ANCHOR.format(arch=self.arch), value)
+
     def add_target_layers(self, value: Sequence[int]) -> None:
         self.add_array(Keys.LLM.TARGET_LAYERS.format(arch=self.arch), value)
 
     def add_target_hidden_size(self, value: int) -> None:
         self.add_uint32(Keys.LLM.TARGET_HIDDEN_SIZE.format(arch=self.arch), value)
+
+    def add_decoder_arch(self, value: str) -> None:
+        self.add_string(Keys.LLM.DECODER_ARCH.format(arch=self.arch), value)
 
     def add_norm_before_residual(self, value: bool) -> None:
         self.add_bool(Keys.LLM.NORM_BEFORE_RESIDUAL.format(arch=self.arch), value)
@@ -1024,6 +1046,40 @@ class GGUFWriter:
 
     def add_hyper_connection_epsilon(self, value: float) -> None:
         self.add_float32(Keys.HyperConnection.EPSILON.format(arch=self.arch), value)
+
+    def add_hyper_connection_low_rank(self, value: int) -> None:
+        self.add_uint32(Keys.HyperConnection.LOW_RANK.format(arch=self.arch), value)
+
+    def add_ple_layers(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.PLE.LAYERS.format(arch=self.arch), values)
+
+    def add_ple_ngram_size(self, value: int) -> None:
+        self.add_uint32(Keys.PLE.NGRAM_SIZE.format(arch=self.arch), value)
+
+    def add_ple_heads_per_ngram(self, value: int) -> None:
+        self.add_uint32(Keys.PLE.HEADS_PER_NGRAM.format(arch=self.arch), value)
+
+    def add_ple_conv_kernel(self, value: int) -> None:
+        self.add_uint32(Keys.PLE.CONV_KERNEL.format(arch=self.arch), value)
+
+    # multipliers reach ~2.4e13; default INT32 inference would truncate them
+    def _add_u64_array(self, key: str, values: Sequence[int]) -> None:
+        self.add_key_value(key, list(values), GGUFValueType.ARRAY, GGUFValueType.UINT64)
+
+    def add_ple_layer_multipliers(self, values: Sequence[int]) -> None:
+        self._add_u64_array(Keys.PLE.LAYER_MULTIPLIERS.format(arch=self.arch), values)
+
+    def add_ple_head_offsets(self, values: Sequence[int]) -> None:
+        self._add_u64_array(Keys.PLE.HEAD_OFFSETS.format(arch=self.arch), values)
+
+    def add_ple_head_vocab_sizes(self, values: Sequence[int]) -> None:
+        self._add_u64_array(Keys.PLE.HEAD_VOCAB_SIZES.format(arch=self.arch), values)
+
+    def add_ple_eos_token_id(self, value: int) -> None:
+        self.add_uint32(Keys.PLE.EOS_TOKEN_ID.format(arch=self.arch), value)
+
+    def add_ple_image_token_id(self, value: int) -> None:
+        self.add_uint32(Keys.PLE.IMAGE_TOKEN_ID.format(arch=self.arch), value)
 
     def add_attention_scale(self, value: float) -> None:
         self.add_float32(Keys.Attention.SCALE.format(arch=self.arch), value)
@@ -1178,7 +1234,11 @@ class GGUFWriter:
     def add_precompiled_charsmap(self, charsmap: bytes) -> None:
         self.add_array(Keys.Tokenizer.PRECOMPILED_CHARSMAP, charsmap)
 
-    def add_chat_template(self, value: str | Sequence[Mapping[str, str]]) -> None:
+    def add_chat_template(self, value: str | Sequence[Mapping[str, str]] | None) -> None:
+        if value is None:
+            self.remove_key(Keys.Tokenizer.CHAT_TEMPLATE)
+            return
+
         if not isinstance(value, str):
             template_default = None
             template_names = set()
@@ -1225,6 +1285,24 @@ class GGUFWriter:
     def add_classifier_output_labels(self, labels: Sequence[str]) -> None:
         self.add_array(Keys.Classifier.OUTPUT_LABELS.format(arch=self.arch), labels)
 
+    def add_decision_type(self, value: str) -> None:
+        self.add_string(Keys.Decision.TYPE.format(arch=self.arch), value)
+
+    def add_decision_block_count(self, value: int) -> None:
+        self.add_uint32(Keys.Decision.BLOCK_COUNT.format(arch=self.arch), value)
+
+    def add_decision_routing_block_count(self, value: int) -> None:
+        self.add_uint32(Keys.Decision.ROUTING_BLOCK_COUNT.format(arch=self.arch), value)
+
+    def add_decision_head_count(self, value: int) -> None:
+        self.add_uint32(Keys.Decision.HEAD_COUNT.format(arch=self.arch), value)
+
+    def add_decision_max_head_tokens(self, value: int) -> None:
+        self.add_uint32(Keys.Decision.MAX_HEAD_TOKENS.format(arch=self.arch), value)
+
+    def add_decision_temperature(self, name: str, value: float) -> None:
+        self.add_float32(Keys.Decision.TEMPERATURE.format(arch=self.arch, name=name), value)
+
     # for vision models
 
     def add_clip_has_vision_encoder(self, value: bool) -> None:
@@ -1232,6 +1310,9 @@ class GGUFWriter:
 
     def add_clip_has_audio_encoder(self, value: bool) -> None:
         self.add_bool(Keys.Clip.HAS_AUDIO_ENCODER, value)
+
+    def add_clip_has_gen_audio_encoder(self, value: bool) -> None:
+        self.add_bool(Keys.Clip.HAS_GEN_AUDIO_ENCODER, value)
 
     def add_clip_projector_type(self, value: str) -> None:
         self.add_string(Keys.Clip.PROJECTOR_TYPE, value)
@@ -1434,6 +1515,32 @@ class GGUFWriter:
 
     def add_audio_projector_head_count(self, value: int) -> None:
         self.add_uint32(Keys.ClipAudio.Projector.HEAD_COUNT, value)
+
+    # audio generation (mmproj)
+
+    def add_clip_gen_audio_projector_type(self, value: str) -> None:
+        self.add_string(Keys.ClipGenAudio.PROJECTOR_TYPE, value)
+
+    def add_gen_audio_projection_dim(self, value: int) -> None:
+        self.add_uint32(Keys.ClipGenAudio.PROJECTION_DIM, value)
+
+    def add_gen_audio_embedding_length(self, value: int) -> None:
+        self.add_uint32(Keys.ClipGenAudio.EMBEDDING_LENGTH, value)
+
+    def add_gen_audio_feed_forward_length(self, value: int) -> None:
+        self.add_uint32(Keys.ClipGenAudio.FEED_FORWARD_LENGTH, value)
+
+    def add_gen_audio_block_count(self, value: int) -> None:
+        self.add_uint32(Keys.ClipGenAudio.BLOCK_COUNT, value)
+
+    def add_gen_audio_head_count(self, value: int) -> None:
+        self.add_uint32(Keys.ClipGenAudio.Attention.HEAD_COUNT, value)
+
+    def add_gen_audio_head_count_kv(self, value: int) -> None:
+        self.add_uint32(Keys.ClipGenAudio.Attention.HEAD_COUNT_KV, value)
+
+    def add_gen_audio_attention_layernorm_eps(self, value: float) -> None:
+        self.add_float32(Keys.ClipGenAudio.Attention.LAYERNORM_EPS, value)
 
     def add_xielu_alpha_p(self, values: Sequence[float]):
         self.add_array(Keys.xIELU.ALPHA_P, values)

@@ -14,6 +14,22 @@ inputs:
   sm-client-cert-password:
     description: "Password for the client authentication certificate (secrets.SM_CLIENT_CERT_PASSWORD)"
     required: true
+  scope:
+    description: >-
+      Which .exe/.dll files to sign and check: "all", or "runtime" = the files
+      matching runtime-patterns (what the app runs). Every signed file costs one
+      signature from the KeyLocker quota; with "runtime" the other tools in the
+      archive (llama-cli, llama-bench, test binaries, ...) stay unsigned.
+    required: false
+    default: "all"
+  runtime-patterns:
+    description: >-
+      Comma-separated file name wildcards for scope "runtime": llama-server.exe
+      and the DLLs it loads (the CPU backend variants are ggml-cpu-*.dll), plus
+      the CUDA runtime the CUDA archives bundle (NVIDIA's redistributable
+      archives ship it unsigned).
+    required: false
+    default: "llama-server.exe,llama-server-impl.dll,llama.dll,llama-common.dll,mtmd.dll,ggml*.dll,cudart64_*.dll,cublas64_*.dll,cublasLt64_*.dll"
 
 runs:
   using: "composite"
@@ -98,15 +114,25 @@ runs:
         SM_API_KEY: ${{ inputs.sm-api-key }}
         SM_CLIENT_CERT_PASSWORD: ${{ inputs.sm-client-cert-password }}
         SIGN_PATH: ${{ inputs.path }}
+        SIGN_SCOPE: ${{ inputs.scope }}
+        SIGN_RUNTIME_PATTERNS: ${{ inputs.runtime-patterns }}
       run: |
           if (-not $env:SM_CODE_SIGNING_CERT_SHA1_HASH) {
             throw "SM_CODE_SIGNING_CERT_SHA1_HASH is not set (certsync did not capture a fingerprint)"
           }
 
           $dir = Resolve-Path -LiteralPath $env:SIGN_PATH
-          $files = Get-ChildItem -Path $dir -File |
-            Where-Object { $_.Extension -in '.exe', '.dll' }
-          if (-not $files) { throw "No .exe/.dll found under $dir" }
+          if ($env:SIGN_SCOPE -notin 'all', 'runtime') { throw "scope must be 'all' or 'runtime', not '$env:SIGN_SCOPE'" }
+          $patterns = $env:SIGN_RUNTIME_PATTERNS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+          $files = Get-ChildItem -Path $dir -File | Where-Object {
+            $n = $_.Name
+            ($_.Extension -in '.exe', '.dll') -and
+              ($env:SIGN_SCOPE -eq 'all' -or @($patterns | Where-Object { $n -like $_ }).Count -gt 0)
+          }
+          if (-not $files) { throw "No .exe/.dll (scope $env:SIGN_SCOPE) found under $dir" }
+          if ($env:SIGN_SCOPE -eq 'runtime' -and -not ($files | Where-Object { $_.Name -eq 'llama-server.exe' })) {
+            throw "scope runtime: llama-server.exe not found under $dir"
+          }
 
           $signed = 0
           $skipped = 0
@@ -133,12 +159,18 @@ runs:
       shell: pwsh
       env:
         SIGN_PATH: ${{ inputs.path }}
+        SIGN_SCOPE: ${{ inputs.scope }}
+        SIGN_RUNTIME_PATTERNS: ${{ inputs.runtime-patterns }}
       run: |
           $dir = Resolve-Path -LiteralPath $env:SIGN_PATH
+          $patterns = $env:SIGN_RUNTIME_PATTERNS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
           $unsigned = @()
+          # every .exe/.dll is listed; with scope runtime only the runtime files must be signed
           foreach ($f in (Get-ChildItem -Path $dir -File | Where-Object { $_.Extension -in '.exe', '.dll' })) {
+            $n = $f.Name
+            $inScope = $env:SIGN_SCOPE -eq 'all' -or @($patterns | Where-Object { $n -like $_ }).Count -gt 0
             $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
             Write-Host ("{0,-28} {1,-12} {2}" -f $f.Name, $sig.Status, $sig.SignerCertificate.Subject)
-            if ($sig.Status -eq 'NotSigned') { $unsigned += $f.Name }
+            if ($inScope -and $sig.Status -eq 'NotSigned') { $unsigned += $f.Name }
           }
           if ($unsigned.Count -gt 0) { throw "Unsigned binaries in archive: $($unsigned -join ', ')" }

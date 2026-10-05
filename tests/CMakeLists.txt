@@ -150,6 +150,8 @@ endif ()
 
 llama_build(test-recurrent-state-rollback.cpp)
 
+llama_build_and_test(test-gdn-ingredient-replay.cpp LABEL "turbo")
+
 if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
     llama_build_and_test(test-sampling.cpp)
@@ -233,7 +235,15 @@ if (LLAMA_BUILD_TOOLS AND NOT EMSCRIPTEN)
     llama_build_and_test(test-decision-calib.cpp ARGS ${PROJECT_SOURCE_DIR}/tests/decision)
     llama_build_and_test(test-decision-router.cpp)
     llama_build_and_test(test-decision-reference.cpp ARGS ${PROJECT_SOURCE_DIR}/tests/decision/golden/router_cases.jsonl)
-    foreach (test_target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference)
+    # clef prompt against encode_record of the model repo (tests/clef/gen_golden.py), with the vocabulary of
+    # Cloudflare/clef-flash (convert_hf_to_gguf.py --vocab-only; models/ggml-vocab-qwen35.gguf has the Qwen3 vocabulary)
+    add_test(NAME test-decision-clef-vocab
+             COMMAND ${CMAKE_COMMAND} -E tar xzf ${PROJECT_SOURCE_DIR}/tests/clef/ggml-vocab-clef.tar.gz
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(test-decision-clef-vocab PROPERTIES FIXTURES_SETUP clef-vocab LABELS main)
+    llama_build_and_test(test-decision-clef.cpp ARGS ${CMAKE_CURRENT_BINARY_DIR}/ggml-vocab-clef.gguf ${PROJECT_SOURCE_DIR}/tests/clef/golden/prompts.jsonl)
+    set_tests_properties(test-decision-clef PROPERTIES FIXTURES_REQUIRED clef-vocab)
+    foreach (test_target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-decision-clef)
         target_link_libraries(${test_target} PRIVATE decision)
     endforeach()
 
@@ -323,15 +333,61 @@ llama_build_and_test(test-thread-safety.cpp ARGS -m "${MODEL_DEST}" -ngl 99 -p "
 set_tests_properties(test-thread-safety PROPERTIES FIXTURES_REQUIRED test-download-model)
 
 llama_build_and_test(test-arg-parser.cpp)
+if (NOT BUILD_SHARED_LIBS)
+    llama_build_and_test(test-kv-stream-plan.cpp ${PROJECT_SOURCE_DIR}/src/llama-kv-stream-plan.cpp)
+    target_include_directories(test-kv-stream-plan PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    llama_build_and_test(test-kv-stream-config.cpp ${PROJECT_SOURCE_DIR}/src/llama-kv-stream-config.cpp)
+    target_include_directories(test-kv-stream-config PRIVATE ${PROJECT_SOURCE_DIR}/src)
+endif()
+llama_build_and_test(test-kv-stream-softmax.cpp llama-kv-stream-softmax.cpp)
+if (GGML_CUDA)
+    llama_build_and_test(
+        test-kv-stream-bench-config.cpp
+        ${PROJECT_SOURCE_DIR}/tools/kv-stream-bench/kv-stream-bench-config.cpp)
+    target_include_directories(test-kv-stream-bench-config PRIVATE ${PROJECT_SOURCE_DIR}/tools/kv-stream-bench)
+    llama_build_and_test(test-kv-stream-cuda-buffer.cpp LABEL cuda)
+    target_include_directories(test-kv-stream-cuda-buffer PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
+    # The test exits 77 when no CUDA device is present (e.g. a CUDA build run
+    # on a GPU-less CI runner). ctest only treats that as a skip when
+    # SKIP_RETURN_CODE says so; without it the skip is recorded as a failure.
+    set_tests_properties(test-kv-stream-cuda-buffer PROPERTIES SKIP_RETURN_CODE 77)
+    llama_build_and_test(test-kv-stream-cuda-attn.cpp LABEL cuda)
+    target_include_directories(test-kv-stream-cuda-attn PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
+    llama_build_and_test(test-kv-stream-cuda-set-rows.cpp LABEL cuda)
+    target_include_directories(test-kv-stream-cuda-set-rows PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src/ggml-cuda)
+endif()
 llama_build_and_test(test-model-resolution.cpp)
 # the test serves its repos from an httplib server, and the library links it privately
 target_link_libraries(test-model-resolution PRIVATE cpp-httplib)
+llama_build_and_test(test-speculative-adaptive.cpp)
 
 if (NOT LLAMA_SANITIZE_ADDRESS AND NOT GGML_SCHED_NO_REALLOC)
   # TODO: repair known memory leaks
   llama_build_and_test(test-opt.cpp)
 endif()
 llama_build_and_test(test-backend-ops.cpp)
+if (NOT LLAMA_USE_SYSTEM_GGML)
+    llama_build(test-moe-cache.cpp)
+    if (GGML_CUDA)
+        # The test compares the cache's budget grants against cudaMemGetInfo,
+        # the same query the cache uses. On UMA devices (GB10, Jetson) the
+        # backend device memory API reports /proc/meminfo instead, so the
+        # reserve calculation must match the cache's own view.
+        find_package(CUDAToolkit QUIET)
+        if (CUDAToolkit_FOUND)
+            target_compile_definitions(test-moe-cache PRIVATE GGML_CUDA=1)
+            target_include_directories(test-moe-cache PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+            target_link_libraries(test-moe-cache PRIVATE CUDA::cudart)
+        endif()
+    endif()
+    llama_test(test-moe-cache LABEL "main;backend")
+    # The test exits 77 when no CUDA device is present. ctest only treats that
+    # as a skip when SKIP_RETURN_CODE says so; without it, every CPU-only
+    # runner records the skip as a failure.
+    set_tests_properties(test-moe-cache PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
+
+llama_build_and_test(test-moe-cache-fit.cpp)
 
 add_executable(test-flash-attn-bias test-flash-attn-bias.cpp)
 target_link_libraries(test-flash-attn-bias PRIVATE ggml)
@@ -398,6 +454,9 @@ endif()
 get_filename_component(TEST_TARGET test-c.c NAME_WE)
 add_executable(${TEST_TARGET} test-c.c)
 target_link_libraries(${TEST_TARGET} PRIVATE llama)
+
+# TurboQuant WHT round-trip test (links ggml turbo codec symbols via llama)
+llama_build_and_test(test-turbo-quant.c LABEL "turbo")
 
 if (NOT LLAMA_USE_SYSTEM_GGML)
     # Needs non-public ggml-impl.h

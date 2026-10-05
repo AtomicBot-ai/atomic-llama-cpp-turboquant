@@ -149,9 +149,6 @@ flake.lock
 # emscripten
 a.out.*
 
-.history/
-.scratch/
-
 # AGENTS
 
 AGENTS.local.md

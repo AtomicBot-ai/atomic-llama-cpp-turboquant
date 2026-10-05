@@ -1851,3 +1851,48 @@ def test_gguf_source_props():
     server.start()
     d = server.make_request("GET", "/props").body["decision"]
     assert d["source"] == "gguf" and d["cache_path"] is None and d["checkpoint"] is None
+
+
+def foreign_gguf(tmp_path, arch: str) -> str:
+    """ A GGUF with only general.architecture = arch, as the Laya repackagings on Hugging Face start """
+    import struct
+    path = os.path.join(tmp_path, arch + ".gguf")
+    key, val = b"general.architecture", arch.encode()
+    with open(path, "wb") as f:
+        f.write(b"GGUF" + struct.pack("<IQQ", 3, 0, 1))
+        f.write(struct.pack("<Q", len(key)) + key + struct.pack("<IQ", 8, len(val)) + val)
+    return path
+
+
+@pytest.mark.parametrize("arch,needle", [
+    ("ggmlc", "a compiled graph for the ggmlc runtime"),
+    ("modern-bert", "holds only an encoder"),
+    ("laya-head", "only the decision head of an NPU split"),
+])
+def test_foreign_laya_gguf_with_decision(tmp_path, arch, needle):
+    global server
+    server = tiny_laya_decision_server()
+    server.model_file = foreign_gguf(tmp_path, arch)
+    server.model_alias = None
+    server.log_path = os.path.join(tmp_path, "log.txt")
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=20)
+    log = read_log(server.log_path)
+    assert "is not a laya model" in log and needle in log and "llama-server --decision -m <checkpoint dir>" in log
+
+
+@pytest.mark.parametrize("arch,needle", [
+    ("ggmlc", "a compiled graph for the ggmlc runtime"),
+    ("laya-head", "only the decision head of an NPU split"),
+])
+def test_foreign_laya_gguf_without_decision(tmp_path, arch, needle):
+    # a modern-bert encoder is left alone here: it is a valid embedding model
+    global server
+    server = tiny_laya_decision_server()
+    server.model_file = foreign_gguf(tmp_path, arch)
+    server.model_alias = None
+    server.decision = False
+    server.log_path = os.path.join(tmp_path, "log.txt")
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=20)
+    assert needle in read_log(server.log_path)
