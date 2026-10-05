@@ -161,6 +161,15 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
   (18 of 18 files), and 6-19x faster (0.2-1.8 s per f16 file). A first start of
   `laya-multilingual` takes about 1.2-1.3 s instead of 0.3 s and peaks at about
   515 MiB instead of 372 MiB RSS.
+- **Cloudflare Clef decision models** (`Cloudflare/clef`, `Cloudflare/clef-flash`)
+  in `llama-server --decision` (layout `clef`, see "Clef" in `DECISION.md`). The
+  GGUF is the upstream one: `ggml-org/Clef-Flash-GGUF` / `ggml-org/Clef-GGUF` load
+  as they are, and `convert_hf_to_gguf.py` converts the Hugging Face repo. All
+  questions of a request go in one prompt and one forward pass (the joint schema
+  head), on the CPU or one GPU (`--decision-device gpu`); `-c` sets the longest
+  prompt (default 16384 tokens). Requests follow the reference: `instructions`
+  are optional, the confidence is the probability of the chosen option. Text
+  only for now (no images).
 
 ### Notes
 
