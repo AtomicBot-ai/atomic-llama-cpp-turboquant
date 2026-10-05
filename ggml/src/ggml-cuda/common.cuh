@@ -258,7 +258,7 @@ static const char * cu_get_error_str(CUresult err) {
 #define FP16_AVAILABLE
 #endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
 
-#if defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
+#if defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610 && __CUDA_ARCH__ != 600
 #define FAST_FP16_AVAILABLE
 #endif // defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
 
@@ -302,13 +302,13 @@ static bool fp16_available(const int cc) {
 
 static bool fast_fp16_available(const int cc) {
     return GGML_CUDA_CC_IS_AMD(cc) ||
-        (GGML_CUDA_CC_IS_NVIDIA(cc) && fp16_available(cc) && ggml_cuda_highest_compiled_arch(cc) != 610) ||
+        (GGML_CUDA_CC_IS_NVIDIA(cc) && fp16_available(cc) && ggml_cuda_highest_compiled_arch(cc) != 610 && ggml_cuda_highest_compiled_arch(cc) != 600) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && fp16_available(cc));
 }
 
 // To be used for feature selection of external libraries, e.g. cuBLAS.
 static bool fast_fp16_hardware_available(const int cc) {
-    return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_PASCAL && cc != 610) || GGML_CUDA_CC_IS_AMD(cc) ||
+    return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_PASCAL && cc != 610 && cc != 600) || GGML_CUDA_CC_IS_AMD(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
 }
 
@@ -1021,6 +1021,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q8_0> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_TQ4_1S> {
+    static constexpr int qk = QK_TQ4_1S;
+    static constexpr int qr = 1;              // QR_TQ4_1S
+    static constexpr int qi = QK_TQ4_1S / 4;  // = QK/(4*QR): 8 int8-quads per block
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_MXFP4> {
     static constexpr int qk = QK_MXFP4;
     static constexpr int qr = QR_MXFP4;
@@ -1169,6 +1176,9 @@ const ggml_cuda_device_info & ggml_cuda_info();
 void ggml_cuda_set_device(int device);
 int ggml_cuda_get_device();
 
+// raw device allocation, honors GGML_CUDA_ENABLE_UNIFIED_MEMORY. free with cudaFree
+cudaError_t ggml_cuda_device_malloc(void ** ptr, size_t size, int device);
+
 struct ggml_cuda_pool {
     virtual ~ggml_cuda_pool() = default;
 
@@ -1256,6 +1266,7 @@ struct ggml_cuda_graph {
         void *   node_src_data_ptrs[GGML_MAX_SRC];
         int64_t  node_src_ne[GGML_MAX_SRC][GGML_MAX_DIMS];
         size_t   node_src_nb[GGML_MAX_SRC][GGML_MAX_DIMS];
+        uint64_t kv_stream_generation;
     };
     std::vector<node_properties> node_props;
 
@@ -1427,14 +1438,109 @@ struct ggml_backend_cuda_context {
 
     int curr_stream_no = 0;
 
+    // Per-graph-eval shared-quantize cache for the mmvq path. Several matvecs in one decode
+    // layer consume the same normed activation (Q/V/K read attn_norm; the router, fused
+    // gate/up and shared-expert gate read attn_post_norm), and each used to re-quantize it to
+    // q8_1 — ~60% of all quantize launches were duplicates. The most recent quantization is
+    // kept in a persistent device buffer and reused when the same src1 tensor is seen again in
+    // the same graph eval with identical layout. Stream ordering makes overwrite safe (all
+    // consumers of the previous entry are already enqueued before the next quantize runs),
+    // and the buffer only grows on shape changes, which force a CUDA-graph re-capture anyway.
+    // Retired (outgrown) device buffers, freed at teardown. Named at class scope: MSVC mangles
+    // a type nested in an unnamed struct as <unnamed-tag>, so two identical nested copies
+    // collide into one decorated name and the linker rejects the object (LNK1179).
+    struct retired_buf { char * ptr; size_t cap; int dev; };
+
+    struct {
+        char *              ptr  = nullptr;      // raw device memory (not pool), grow-only
+        size_t              cap  = 0;            // usable bytes
+        int                 dev  = -1;           // device the buffer was allocated on
+        const ggml_tensor * src1 = nullptr;      // key: tensor identity ...
+        const void *        data = nullptr;      // ... and its data pointer
+        uint64_t            epoch = 0;           // valid only within this graph eval
+        size_t              size = 0;            // quantized bytes
+        int64_t             ne10_padded = 0;     // layout keys
+        ggml_type           type = GGML_TYPE_COUNT;
+        std::vector<retired_buf> retired;        // outgrown buffers, freed at teardown (captured graphs may still use them)
+    } q8_cache;
+
+    // Same idea for the TQ activation pre-rotation (forward block WHT + q8_1 quantize): the MoE
+    // gate and up projections consume the same normed activation, so the rotation ran twice per
+    // layer. Keyed by tensor identity, data pointer, size and graph-eval epoch; main-stream only.
+    struct {
+        char *              ptr  = nullptr;
+        size_t              cap  = 0;
+        int                 dev  = -1;
+        const ggml_tensor * src1 = nullptr;
+        const void *        data = nullptr;
+        uint64_t            epoch = 0;
+        size_t              size = 0;
+        std::vector<retired_buf> retired;        // outgrown buffers, freed at teardown (captured graphs may still use them)
+    } tq_rot_cache;
+
+    // Per-expert address tables for the MoE weight indirection (see tq_build_expert_table). One
+    // entry per expert tensor, built on first use and kept for the life of the context: a captured
+    // graph replays kernels that read this exact address, so it cannot be pool memory and cannot be
+    // freed early. Same discipline as the caches above.
+    struct moe_expert_table {
+        const void *  base      = nullptr;   // src0->data the table was built from
+        int64_t       nb_expert = 0;
+        int           n_expert  = 0;
+        int           dev       = -1;
+        const void ** ptr       = nullptr;   // device array of n_expert addresses
+    };
+    std::vector<moe_expert_table> moe_tables;
+    std::vector<retired_buf>      moe_tables_retired;
+
+    // The cached table for this expert tensor, built on first use. Stable across calls so a
+    // captured graph can keep referencing it.
+    const void ** moe_expert_table_get(const ggml_tensor * src0, int64_t nb_expert, cudaStream_t stream);
+
+    uint64_t graph_epoch = 1;
+
+    // Fusion hit counters. Read through ggml_backend_cuda_fusion_count(); test-backend-ops uses
+    // them to check that a fusion actually fired, not only that the fused result is right.
+    struct {
+        int64_t elem_chain    = 0;   // elementwise chains launched (ggml_cuda_fuse_elem_chain)
+        int64_t q8_cache_hits = 0;   // mmvq shared-quantize cache hits
+        int64_t fused_add     = 0;   // tuned multi-ADD runs (ggml_cuda_op_fused_add)
+        int64_t fused_mul     = 0;   // tuned multi-MUL runs (ggml_cuda_op_fused_mul)
+        int64_t mul_mat_bias  = 0;   // ADD epilogues folded into mul_mat_vec (bias or a full
+                                     // same-shape residual: both arrive as fusion x_bias)
+        int64_t mul_mat_glu   = 0;   // GLU epilogues folded into mul_mat_vec
+    } fusion_stats;
+    // Landing slots for paged-in experts. One slab per expert tensor, n_slots experts wide; the
+    // address table is pointed at a slot instead of at the expert's home address once it is copied.
+    struct moe_expert_slab {
+        const void * base = nullptr;
+        int64_t      nb_expert = 0;
+        int          n_slots = 0;
+        int          n_expert = 0;
+        int          n_routed = 0;
+        int          dev = -1;
+        void *       slab = nullptr;
+        // residency bookkeeping, all device-resident so the policy stays inside the graph
+        int32_t *    slot_expert = nullptr;   // n_slots,  expert in this slot or -1
+        int32_t *    claim       = nullptr;   // n_slots,  lowest routed index claiming it this call
+        int32_t *    hit         = nullptr;   // n_routed, already resident
+        int32_t *    won         = nullptr;   // n_routed, will read from a slot rather than in place
+        int32_t *    miss_expert = nullptr;   // n_routed
+        int32_t *    miss_slot   = nullptr;   // n_routed
+        int32_t *    n_miss      = nullptr;   // 1
+    };
+    std::vector<moe_expert_slab> moe_slabs;
+
+    moe_expert_slab * moe_expert_slab_get(const ggml_tensor * src0, int64_t nb_expert,
+                                          int n_expert, int n_routed, cudaStream_t stream);
+
 #ifdef USE_CUDA_GRAPH
-    // Map from first_node_ptr to cuda_graph - allows multiple graphs per context
-    // when the computation is split across CPU/GPU (e.g., with --n-cpu-moe)
-    std::unordered_map<const void *, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+    std::unordered_map<uint64_t, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+
+    static const size_t max_cuda_graphs = 64;
 
     int64_t last_graph_eviction_sweep = 0;
 
-    ggml_cuda_graph * cuda_graph(const void * first_node_ptr) {
+    ggml_cuda_graph * cuda_graph(uint64_t graph_key) {
         const int64_t time_now = ggml_time_us();
 
         // sweep every 5s, evicting cuda graphs unused for >=10s
@@ -1449,9 +1555,18 @@ struct ggml_backend_cuda_context {
             }
         }
 
-        auto it = cuda_graphs.find(first_node_ptr);
+        auto it = cuda_graphs.find(graph_key);
         if (it == cuda_graphs.end()) {
-            it = cuda_graphs.emplace(first_node_ptr, std::make_unique<ggml_cuda_graph>()).first;
+            while (cuda_graphs.size() >= max_cuda_graphs) {
+                auto lru = cuda_graphs.begin();
+                for (auto c = cuda_graphs.begin(); c != cuda_graphs.end(); ++c) {
+                    if (c->second->last_used_time < lru->second->last_used_time) {
+                        lru = c;
+                    }
+                }
+                cuda_graphs.erase(lru);
+            }
+            it = cuda_graphs.emplace(graph_key, std::make_unique<ggml_cuda_graph>()).first;
         }
         it->second->last_used_time = time_now;
         return it->second.get();
@@ -1671,4 +1786,3 @@ static __inline__ void ggml_cuda_kernel_launch(Kernel kernel, const ggml_cuda_ke
     kernel<<<launch_params.block_nums, launch_params.block_dims, launch_params.shmem, launch_params.stream>>>(std::forward<Args>(args)... );
     CUDA_CHECK(cudaGetLastError());
 }
-

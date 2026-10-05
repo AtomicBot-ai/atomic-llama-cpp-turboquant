@@ -11,9 +11,7 @@ extern "C" {
 #define RPC_PROTO_PATCH_VERSION    4
 
 #ifdef  __cplusplus
-// 103 = upstream 101 + the fork's GGML_OP_TURBO_WHT and GGML_OP_FLASH_ATTN_EXT_BANDED.
-// Bumped patch version because adding an op shifts the GGML_OP enum used in the RPC
-// wire protocol.
+// 103 = upstream 101 + TURBO_WHT + FLASH_ATTN_EXT_BANDED (upstream already has LIGHTNING_INDEXER and DSV4_HC_*)
 static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
 #endif
 

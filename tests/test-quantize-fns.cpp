@@ -50,8 +50,7 @@ static float array_rmse(const float * a1, const float * a2, size_t n) {
 
 // Total quantization error on test data
 static float total_quantization_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu, size_t test_size, const float * test_data) {
-    // Buffer must be large enough for the row's byte size. For types whose
-    // vec_dot_type is GGML_TYPE_F32 (e.g. turbo quants), from_float writes
+    // For types whose vec_dot_type is GGML_TYPE_F32 (e.g. turbo quants), from_float writes
     // test_size*sizeof(float) bytes, which exceeds the legacy 2*test_size sizing.
     std::vector<uint8_t> tmp_q(std::max<size_t>(2*test_size, test_size * sizeof(float)));
     std::vector<float> tmp_out(test_size);
@@ -89,8 +88,6 @@ static float dot_product(const float * a1, const float * a2, size_t test_size) {
 static float dot_product_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu, size_t test_size, const float * test_data1, const float * test_data2) {
     GGML_UNUSED(qfns);
 
-    // For turbo quants vec_dot_type is GGML_TYPE_F32, so vdot->from_float writes
-    // test_size*sizeof(float) bytes. Size buffers accordingly.
     std::vector<uint8_t> tmp_q1(std::max<size_t>(2*test_size, test_size * sizeof(float)));
     std::vector<uint8_t> tmp_q2(std::max<size_t>(2*test_size, test_size * sizeof(float)));
 

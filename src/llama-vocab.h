@@ -65,7 +65,7 @@ enum llama_vocab_pre_type {
     LLAMA_VOCAB_PRE_TYPE_GRANITE_EMB_MULTI = 54,
     LLAMA_VOCAB_PRE_TYPE_MELLUM2           = 55,
     LLAMA_VOCAB_PRE_TYPE_LAGUNA            = 56,
-    LLAMA_VOCAB_PRE_TYPE_INKLING           = 57, // upstream PR used 56; shifted to keep LAGUNA stable (runtime-only enum)
+    LLAMA_VOCAB_PRE_TYPE_INKLING           = 57,
 };
 
 struct LLM_KV;
@@ -152,6 +152,7 @@ struct llama_vocab {
     const normalizer_options & get_normalizer_opts() const;
 
     const std::vector<llama_token> & get_suppress_tokens() const;
+
 
     int max_token_len() const;
 

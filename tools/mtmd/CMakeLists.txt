@@ -18,6 +18,8 @@ add_library(mtmd
             mtmd-image.cpp
             mtmd.h
             mtmd-helper.cpp
+            mtmd-helper-gen.cpp
+            mtmd-helper-common.h
             mtmd-helper.h
             clip.cpp
             clip.h
@@ -38,11 +40,12 @@ add_library(mtmd
             models/granite4-vision.cpp
             models/hunyuanvl.cpp
             models/internvl.cpp
-            models/kimik3.cpp
             models/inkling.cpp
+            models/kimik3.cpp
             models/kimivl.cpp
             models/kimik25.cpp
             models/nemotron-v2-vl.cpp
+            models/muse-glimmer.cpp
             models/llama4.cpp
             models/llava.cpp
             models/minicpmv.cpp
@@ -54,6 +57,8 @@ add_library(mtmd
             models/mimovl.cpp
             models/qwen3a.cpp
             models/mimo-audio.cpp
+            models/qwen3tts-spkenc.cpp
+            models/qwen3tts-gen.cpp
             models/step3vl.cpp
             models/siglip.cpp
             models/whisper-enc.cpp

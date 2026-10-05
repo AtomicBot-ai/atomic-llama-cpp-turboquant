@@ -76,6 +76,12 @@
 #define cudaDeviceProp hipDeviceProp_t
 #define cudaDeviceSynchronize hipDeviceSynchronize
 #define cudaError_t hipError_t
+#ifndef cudaErrorUnknown
+#define cudaErrorUnknown hipErrorUnknown
+#endif
+#ifndef cudaErrorInvalidValue
+#define cudaErrorInvalidValue hipErrorInvalidValue
+#endif
 #define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaErrorPeerAccessNotEnabled hipErrorPeerAccessNotEnabled
@@ -86,6 +92,9 @@
 #define cudaEventSynchronize hipEventSynchronize
 #define cudaEvent_t hipEvent_t
 #define cudaEventDestroy hipEventDestroy
+#define cudaEventQuery hipEventQuery
+#define cudaEventElapsedTime hipEventElapsedTime
+#define cudaErrorNotReady hipErrorNotReady
 #define cudaFree hipFree
 #define cudaFreeHost hipHostFree
 #define cudaGetDevice hipGetDevice
@@ -93,10 +102,19 @@
 #define cudaGetDeviceProperties hipGetDeviceProperties
 #define cudaGetErrorString hipGetErrorString
 #define cudaGetLastError hipGetLastError
+#ifndef cudaPeekAtLastError
+#define cudaPeekAtLastError hipPeekAtLastError
+#endif
 #define cudaHostRegister hipHostRegister
 #define cudaHostRegisterPortable hipHostRegisterPortable
 #define cudaHostRegisterReadOnly hipHostRegisterReadOnly
 #define cudaHostUnregister hipHostUnregister
+#define cudaHostAlloc hipHostAlloc
+#define cudaHostAllocMapped hipHostMallocMapped
+#define cudaHostAllocPortable hipHostMallocPortable
+#define cudaHostAllocWriteCombined hipHostMallocWriteCombined
+#define cudaHostGetDevicePointer hipHostGetDevicePointer
+#define cudaHostGetFlags hipHostGetFlags
 #define cudaLaunchCooperativeKernel hipLaunchCooperativeKernel
 #define cudaLaunchHostFunc hipLaunchHostFunc
 #define cudaMalloc hipMalloc
@@ -116,6 +134,12 @@
 #define cudaMemGetInfo hipMemGetInfo
 #define cudaOccupancyMaxPotentialBlockSize hipOccupancyMaxPotentialBlockSize
 #define cudaSetDevice hipSetDevice
+#ifndef cudaDeviceGetStreamPriorityRange
+#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
+#endif
+#ifndef cudaStreamCreateWithPriority
+#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#endif
 #define cuDeviceGet hipDeviceGet
 #define CUdevice hipDevice_t
 #define CUdeviceptr hipDeviceptr_t
