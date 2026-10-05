@@ -1068,7 +1068,7 @@ jobs:
             -DLLAMA_FATAL_WARNINGS=ON \
             -DPython3_EXECUTABLE="$(command -v python)"
           cmake --build build --config Release -j $(nproc) \
-            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-laya-convert llama-server llama-laya-cli llama-laya-convert test-laya-backend-precision test-laya-backend-parity
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-decision-clef test-laya-convert llama-server llama-laya-cli llama-laya-convert test-laya-backend-precision test-laya-backend-parity
 
       # same toolchain as the server.yml Windows job
       - name: Build (Windows)
@@ -1086,7 +1086,7 @@ jobs:
             -DLLAMA_BUILD_EXAMPLES=OFF ^
             -DPython3_EXECUTABLE=%pythonLocation%\python.exe
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS% ^
-            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-laya-convert llama-server llama-laya-cli llama-laya-convert test-laya-backend-precision test-laya-backend-parity
+            --target test-decision-json test-decision-request test-decision-calib test-decision-router test-decision-reference test-decision-clef test-laya-convert llama-server llama-laya-cli llama-laya-convert test-laya-backend-precision test-laya-backend-parity
 
       # decision + the checkpoint converter (test-laya-convert, test-decision-checkpoint-cli); the Python
       # cross-check (label python) needs torch + transformers 5.17 and runs locally (make_tiny_hf_laya.py --check)
@@ -1108,14 +1108,14 @@ jobs:
           python tests/decision/gen_router_golden.py --check
           python -m pytest -v tests/decision/test_reference.py
 
-      # offline: the tests generate a tiny random laya GGUF
+      # offline: the tests generate a tiny random laya GGUF and a tiny random Clef GGUF
       - name: Server tests
         shell: bash
         env:
           PYTHONIOENCODING: ':replace'
         run: |
           cd tools/server/tests
-          python -m pytest -v unit/test_decision.py
+          python -m pytest -v unit/test_decision.py unit/test_decision_clef.py
 
       # offline: backend parity gate, identity records, corpus regenerates to the recorded sha256
       - name: Parity tooling tests
