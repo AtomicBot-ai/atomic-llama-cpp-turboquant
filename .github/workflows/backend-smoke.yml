@@ -123,6 +123,6 @@ jobs:
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
         run: |
-          vastai set api-key "$VAST_API_KEY" >/dev/null
+          vastai set api-key "$(printf '%s' "$VAST_API_KEY" | tr -d '[:space:]')" >/dev/null
           vastai destroy instance "${{ steps.rent.outputs.iid }}" || true
           echo "destroyed instance ${{ steps.rent.outputs.iid }}"

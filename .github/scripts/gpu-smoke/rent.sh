@@ -12,17 +12,23 @@ DISK_GB="${DISK_GB:-40}"
 MAX_OFFERS="${MAX_OFFERS:-5}"
 IMAGE="nvidia/cuda:12.8.0-runtime-ubuntu22.04"
 
+# a trailing newline in the secret breaks the API auth header
+VAST_API_KEY="$(printf '%s' "$VAST_API_KEY" | tr -d '[:space:]')"
 vastai set api-key "$VAST_API_KEY" >/dev/null
 
 vastai search offers \
   "$GPU_QUERY disk_space>=$DISK_GB inet_down>=500 reliability>0.98 rentable=true" \
   -o dph --raw > offers.json
+jq -e 'type == "array"' offers.json >/dev/null || { echo "::error::vast search failed: $(head -c 300 offers.json)"; exit 1; }
 N=$(jq 'length' offers.json)
 [ "$N" -gt 0 ] || { echo "::error::no vast offers match: $GPU_QUERY"; exit 1; }
 echo "offers found: $N, trying up to $MAX_OFFERS cheapest"
 
 IID=""
+RENTED=""
 cleanup() { [ -n "$IID" ] && vastai destroy instance "$IID" >/dev/null 2>&1 || true; }
+# the workflow only learns the instance id on success, so any failure after create must destroy it here
+trap '[ -n "$RENTED" ] || cleanup' EXIT
 
 for i in $(seq 0 $((MAX_OFFERS - 1))); do
   [ "$i" -lt "$N" ] || break
@@ -67,6 +73,7 @@ for i in $(seq 0 $((MAX_OFFERS - 1))); do
 
   echo "rented: iid=$IID $HOST:$PORT"
   { echo "iid=$IID"; echo "host=$HOST"; echo "port=$PORT"; } >> "$GITHUB_OUTPUT"
+  RENTED=1
   exit 0
 done
 
