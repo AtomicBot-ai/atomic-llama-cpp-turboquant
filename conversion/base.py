@@ -1142,6 +1142,13 @@ class ModelBase:
                 config = json.load(f)
             return config
 
+        # a laya checkpoint (rl_agent_config.json + encoder/config.json) can carry a root config.json that
+        # is not its model config (HF wrapper configs, copies of rl_agent_config.json): the laya reference
+        # never reads it, so the laya loader claims the directory before AutoConfig
+        if (dir_model / "rl_agent_config.json").is_file() and (dir_model / "encoder" / "config.json").is_file():
+            from conversion.laya import _load_laya_hparams
+            return _load_laya_hparams(dir_model)
+
         # checkpoints with a non-HF layout are matched by their own loader
         # models with a HF layout can also register a hparams loader to switch to a custom class
         config = ModelBase.load_hparams_guess(dir_model) if guess and dir_model.is_dir() else None
@@ -1182,6 +1189,14 @@ class ModelBase:
             model_type = ModelType.MMPROJ if modelcls.model_arch == gguf.MODEL_ARCH.MMPROJ else ModelType.TEXT
             for name in names:
                 cls._model_classes[model_type][name] = modelcls
+            return modelcls
+        return func
+
+    @classmethod
+    def example(cls, *hf_repos: str) -> Callable[[AnyModel], AnyModel]:
+        del hf_repos  # unused
+
+        def func(modelcls: AnyModel) -> AnyModel:
             return modelcls
         return func
 

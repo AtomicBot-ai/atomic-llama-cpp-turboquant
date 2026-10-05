@@ -104,6 +104,10 @@ struct laya_model_params {
 
 // load a laya GGUF (F16 or quantized; dequantization happens inside ggml mul_mat)
 laya_model * laya_model_load_from_file(const char * fname);
+// What to do with a GGUF of general.architecture `arch` that is a Laya repackaging this engine cannot
+// load (ggmlc compiled graphs, encoder-only modern-bert files, NPU head files): one sentence pointing
+// to the official checkpoint. "" for any other architecture.
+std::string laya_foreign_gguf_hint(const std::string & arch);
 laya_model * laya_model_load_from_file_ext(const char * fname, const laya_model_params & params);
 
 void laya_model_free(laya_model * model);

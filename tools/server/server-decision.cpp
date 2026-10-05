@@ -7,6 +7,7 @@
 #include "decision-request.h"
 #include "decision-router.h"
 #include "decision-spec.h"
+#include "laya.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -933,6 +934,11 @@ bool server_decision_prepare(common_params & params) {
 
 bool server_decision_is_checkpoint_dir(const std::string & path) {
     return decision_is_laya_checkpoint_dir(path);
+}
+
+std::string server_decision_foreign_laya_hint(const std::string & path) {
+    const std::string arch = server_decision_gguf_arch(path);
+    return arch == "ggmlc" || arch == "laya-head" ? laya_foreign_gguf_hint(arch) : std::string();
 }
 
 std::string server_decision_gguf_arch(const std::string & path) {
