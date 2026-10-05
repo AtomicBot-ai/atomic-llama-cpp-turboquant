@@ -51,6 +51,21 @@ tar -xzf llama-turboquant-linux-x64-vulkan.tar.gz
 macOS dev builds are signed but **not notarized** (release builds are):
 `xattr -dr com.apple.quarantine build/` after unpacking.
 
+### Build cache (ccache)
+
+The CUDA, ROCm and Windows CUDA jobs take 5-15 min with a warm ccache and
+1-2 h without it. The GitHub Actions cache is 10 GB per repository (least
+recently used entries are evicted), and a run can only restore caches from
+its own branch, the default branch (`master`) and, for a PR, its base branch.
+
+- `dev-build.yml` saves ccache only on a push to `dev`; every other run only
+  restores. `release-turboquant.yml` never saves (a tag cache is never read
+  again). This keeps the 10 GB for the `dev` caches.
+- Check a branch with a **PR into `dev`**: the PR restores the `dev` cache.
+  A manual `workflow_dispatch` run on a branch cannot see it and builds cold.
+- A large upstream sync builds cold once whatever the cache, because most
+  sources change; the first push to `dev` after it refills the cache.
+
 ## Versioning & stable releases
 
 Version format: **`<upstream-base>-<fork-semver>`**, e.g. `b10018-1.2.0`:

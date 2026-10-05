@@ -65,6 +65,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-vulkan
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       - name: Dependencies
@@ -135,6 +136,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-cuda-13.3
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       - name: Install CUDA Toolkit
@@ -223,6 +225,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-arm64-cuda-13.3
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       # GCC 14: GGML_CPU_ALL_VARIANTS builds armv9.2+sme CPU variants, which
@@ -327,6 +330,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-cpu
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       - name: Dependencies
@@ -395,6 +399,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-cuda-12.4
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       - name: Install CUDA Toolkit
@@ -489,6 +494,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-cuda-${{ matrix.cuda }}-real-arch-check
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       - name: Install CUDA Toolkit
@@ -535,6 +541,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-linux-x64-rocm
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       - name: Install ROCm
@@ -656,6 +663,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-windows-x64-${{ matrix.variant }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           # 500M (the action default) cannot hold a CUDA build, so the cache
           # thrashed and every run was effectively cold.
           max-size: ${{ startsWith(matrix.variant, 'cuda') && '2G' || '500M' }}
@@ -803,6 +811,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-windows-x64-rocm
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           # 9 gfx targets x every fattn/mmq template instance: a CUDA-sized build.
           max-size: 2G
           evict-old-files: 7d
@@ -978,6 +987,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-macos-arm64
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       # Signing runs only on push: PR runs may lack the secrets, and dev
@@ -1094,6 +1104,7 @@ jobs:
         uses: ggml-org/ccache-action@v1.2.21
         with:
           key: turboquant-decision-tests-${{ matrix.os }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
           evict-old-files: 1d
 
       # before the builds: CMake registers the tiny-GGUF fixture of test-laya-backend-parity only when
