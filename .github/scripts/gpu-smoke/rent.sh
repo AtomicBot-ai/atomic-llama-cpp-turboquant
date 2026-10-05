@@ -17,16 +17,19 @@ VAST_API_KEY="$(printf '%s' "$VAST_API_KEY" | tr -d '[:space:]')"
 vastai set api-key "$VAST_API_KEY" >/dev/null
 
 # which account the key belongs to, without leaking it into public logs: email hash prefix and a credit range
-vastai show user --raw > user.json 2>/dev/null || true
-EMAIL_HASH=$(jq -r '.email // empty' user.json 2>/dev/null | tr -d '\n' | sha256sum | cut -c1-8)
+vastai show user --raw > user.json 2>&1 || true
+if ! jq -e '.email' user.json >/dev/null 2>&1; then
+  echo "::error::vast rejected VAST_API_KEY: $(head -c 300 user.json)"; exit 1
+fi
+EMAIL_HASH=$(jq -r '.email' user.json | tr -d '\n' | sha256sum | cut -c1-8)
 CREDIT_RANGE=$(jq -r '(.credit // .balance // null) as $c | if $c == null then "unknown"
-  elif $c <= 0 then "<= 0" elif $c < 1 then "0..1" elif $c < 5 then "1..5" elif $c < 20 then "5..20" else ">= 20" end' user.json 2>/dev/null || echo unknown)
+  elif $c <= 0 then "<= 0" elif $c < 1 then "0..1" elif $c < 5 then "1..5" elif $c < 20 then "5..20" else ">= 20" end' user.json)
 echo "vast account: email sha256 prefix=$EMAIL_HASH, credit range=$CREDIT_RANGE"
 
 vastai search offers \
   "$GPU_QUERY disk_space>=$DISK_GB inet_down>=500 reliability>0.98 rentable=true" \
-  -o dph --raw > offers.json
-jq -e 'type == "array"' offers.json >/dev/null || { echo "::error::vast search failed: $(head -c 300 offers.json)"; exit 1; }
+  -o dph --raw > offers.json 2>&1 || true
+jq -e 'type == "array"' offers.json >/dev/null 2>&1 || { echo "::error::vast search failed: $(head -c 300 offers.json)"; exit 1; }
 N=$(jq 'length' offers.json)
 [ "$N" -gt 0 ] || { echo "::error::no vast offers match: $GPU_QUERY"; exit 1; }
 echo "offers found: $N, trying up to $MAX_OFFERS cheapest"
