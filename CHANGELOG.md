@@ -14,6 +14,18 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
 
 ### Added
 
+- **New TurboQuant+ base: `tqp-v0.4.0`** (TheTom's fork as of 2026-09-28; our
+  work was rebased onto it). What it brings:
+  - MoE expert cache (`--moe-cache`, see `docs/backend/MOE-CACHE.md`): faster
+    decode for MoE models whose experts stay in host memory. CUDA/HIP, Metal and
+    Vulkan; anything it cannot handle falls back to the CPU path.
+  - KV streaming (`--kv-stream-arena-mib`, `--kv-stream-stage-mib`, see
+    `docs/kv-stream.md`).
+  - ConvRot weight types `Q8_CR`, `Q5_CR`, `Q6_CR` in `llama-quantize`.
+  - TurboQuant K/V (`turbo2`/`turbo3`/`turbo4`) flash attention on Vulkan.
+  - Faster TQ4_1S/TQ3_1S on AMD (RDNA and CDNA MMQ), HIP graph capture, and many
+    CUDA/HIP/Vulkan/SYCL fixes.
+  - New architectures: Qwen4-Exp, Muse Glimmer; DFlash2 speculative decoding.
 - **Decision models in `llama-server`** (`--decision`, see `DECISION.md`). A
   separate server mode for Jev-class decision models: no chat routes, one
   worker (on the CPU unless `--decision-device` says otherwise), calibrated
@@ -177,6 +189,14 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
 
 ### Notes
 
+- **Context shift / `--cache-reuse` with a quantized K cache:** `q8_0`, `q4_0`
+  and the other ggml types no longer crash and now shift correctly. With
+  `turbo2`/`turbo3`/`turbo4` K the shift is still skipped, as in earlier
+  releases: no crash, but output quality drops after the context shifts. Size
+  `-c` so it does not shift, or use a ggml type for `-ctk` when you need it.
+- On Vulkan devices without int64/int8/fp16 shader arithmetic or 8-bit storage
+  (older iGPUs, some legacy AMD) the MoE cache turns itself off and the normal
+  expert path runs.
 - **Windows signing scope**: release archives Authenticode-sign what Atomic Chat
   runs, `llama-server.exe` and the DLLs it loads (`llama*.dll`, `mtmd.dll`,
   `ggml*.dll`, the bundled CUDA runtime). The other tools in the archive
@@ -209,6 +229,27 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
 
 ### Changed
 
+- **Supported platforms are unchanged:** same CUDA 12.4 / 13.3, ROCm 7.2.1 /
+  TheRock 10.0.0, Vulkan SDK and GPU architecture lists as b10269-1.7.0.
+  Released GGUFs (TQ3_1S/TQ4_1S, NVFP4, Kimi K3, BailingMoeV3, Inkling, laya)
+  load as before.
+- **`Q2_0` type id is now 42**, the same as upstream llama.cpp, so upstream Q2_0
+  GGUFs load. The fork used 47 before; a Q2_0 GGUF made by an older fork build
+  does not load.
+- **Breaking:** `--slot-save-path` / state files saved with a turbo KV cache by an
+  older build do not load (the turbo type ids moved). RPC client and server must
+  run the same build.
+- **Breaking (upstream):** `llama-tts` now runs Qwen3-TTS through mtmd; the
+  OuteTTS vocoder flags (`--model-vocoder`/`-mv`, `--hf-repo-v`, `--hf-file-v`,
+  `--tts-oute-default`, `--tts-use-guide-tokens`) are gone.
+- **Gemma 4 with `--cache-reuse`:** cache reuse is off again unless
+  `--swa-full` is set (upstream keeps the SWA cache size check for
+  correctness). Add `--swa-full` to get the fast time-to-first-token back.
+- Model suppress tokens are applied by the sampler instead of the Gemma 4 graph;
+  sampled output is the same, raw logits from the C API no longer carry `-inf`
+  for them.
+- `--spec-type mtp` / `nextn` and `--mtp-head` keep working (aliases of
+  `draft-mtp` and `--spec-draft-model`).
 - **Qwen3.5 / Qwen3-Next / Kimi-Linear / Kimi-K3 / BailingMoeV3 numerics:** the
   Gated DeltaNet q/k normalization now uses upstream's `rsqrt(sum(x^2) + eps)`
   form (upstream 5fdfa6282). Logits of these models shift slightly; results

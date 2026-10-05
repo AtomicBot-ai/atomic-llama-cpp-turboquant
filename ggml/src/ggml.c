@@ -748,6 +748,30 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .is_quantized             = true,
         .from_float_ref           = (ggml_from_float_t) quantize_row_q8_1_ref,
     },
+    [GGML_TYPE_Q8_CR] = {
+        .type_name                = "q8_cr",
+        .blck_size                = QK8_CR,
+        .type_size                = sizeof(block_q8_cr),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_q8_cr,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_q8_cr_ref,
+    },
+    [GGML_TYPE_Q5_CR] = {
+        .type_name                = "q5_cr",
+        .blck_size                = QK8_CR,
+        .type_size                = sizeof(block_q5_cr),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_q5_cr,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_q5_cr_ref,
+    },
+    [GGML_TYPE_Q6_CR] = {
+        .type_name                = "q6_cr",
+        .blck_size                = QK_K,
+        .type_size                = sizeof(block_q6_cr),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_q6_cr,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_q6_cr_ref,
+    },
     [GGML_TYPE_MXFP4] = {
         .type_name                = "mxfp4",
         .blck_size                = QK_MXFP4,
@@ -1481,6 +1505,9 @@ enum ggml_type ggml_ftype_to_ggml_type(enum ggml_ftype ftype) {
         case GGML_FTYPE_MOSTLY_Q5_0:          wtype = GGML_TYPE_Q5_0;  break;
         case GGML_FTYPE_MOSTLY_Q5_1:          wtype = GGML_TYPE_Q5_1;  break;
         case GGML_FTYPE_MOSTLY_Q8_0:          wtype = GGML_TYPE_Q8_0;  break;
+        case GGML_FTYPE_MOSTLY_Q8_CR:         wtype = GGML_TYPE_Q8_CR; break;
+        case GGML_FTYPE_MOSTLY_Q5_CR:         wtype = GGML_TYPE_Q5_CR; break;
+        case GGML_FTYPE_MOSTLY_Q6_CR:         wtype = GGML_TYPE_Q6_CR; break;
         case GGML_FTYPE_MOSTLY_MXFP4:         wtype = GGML_TYPE_MXFP4; break;
         case GGML_FTYPE_MOSTLY_NVFP4:         wtype = GGML_TYPE_NVFP4; break;
         case GGML_FTYPE_MOSTLY_Q2_K:          wtype = GGML_TYPE_Q2_K;  break;
@@ -5556,6 +5583,15 @@ enum ggml_prec ggml_flash_attn_ext_get_prec(
     return (enum ggml_prec) prec_i32;
 }
 
+void ggml_flash_attn_ext_set_n_kv_max(
+        struct ggml_tensor * a,
+        int32_t              n_kv_max) {
+    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
+    GGML_ASSERT(n_kv_max >= 0);
+
+    ggml_set_op_params_i32(a, 4, n_kv_max);
+}
+
 void ggml_flash_attn_ext_add_sinks(
         struct ggml_tensor * a,
         struct ggml_tensor * sinks) {
@@ -6354,7 +6390,9 @@ struct ggml_tensor * ggml_gated_delta_net(
         struct ggml_tensor  * g,
         struct ggml_tensor  * beta,
         struct ggml_tensor  * state,
-        int64_t               K) {
+        int64_t               K,
+        int32_t               emit_mode) {
+    GGML_ASSERT(emit_mode == 0 || emit_mode == 1);
     GGML_ASSERT(ggml_is_contiguous_rows(q));
     GGML_ASSERT(ggml_is_contiguous_rows(k));
     GGML_ASSERT(ggml_is_contiguous_rows(v));
@@ -6384,11 +6422,22 @@ struct ggml_tensor * ggml_gated_delta_net(
     GGML_ASSERT(state->ne[2] == H);
     GGML_ASSERT(state->ne[3] == n_seqs);
     GGML_ASSERT(K >= 1);
-    const int64_t state_rows = K * S_v * n_seqs;
+    // emit_mode == 0: K full [S_v, S_v, H] snapshots -> K * S_v rows per snap.
+    // emit_mode == 1: K ingredient sets (k, v, g, beta), each width S_v -> K * 4 rows per snap,
+    //                 plus one trailing full [S_v, S_v, H] final-state block (S_v rows, not
+    //                 scaled by K) so the true end-of-batch state is always available, plus (only
+    //                 when n_tokens > K) one further such block: the state immediately before the
+    //                 K-token retained window starts, free to capture since the recurrence already
+    //                 passes through it en route to the final state.
+    const bool    needs_ckpt  = emit_mode == 1 && n_tokens > K;
+    const int64_t state_rows  = emit_mode == 0
+        ? K * S_v * n_seqs
+        : K * 4 * n_seqs + S_v * n_seqs + (needs_ckpt ? S_v * n_seqs : 0);
     const int64_t ne[4] = { S_v * H, n_tokens * n_seqs + state_rows, 1, 1 };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
 
     ggml_set_op_params_i32(result, 0, (int32_t) K);
+    ggml_set_op_params_i32(result, 1, emit_mode);
 
     result->op     = GGML_OP_GATED_DELTA_NET;
     result->src[0] = q;
@@ -7325,6 +7374,10 @@ void ggml_build_forward_expand(struct ggml_cgraph * cgraph, struct ggml_tensor *
     ggml_build_forward_impl(cgraph, tensor, true, true);
 }
 
+void ggml_build_forward_order(struct ggml_cgraph * cgraph, struct ggml_tensor * tensor) {
+    ggml_build_forward_impl(cgraph, tensor, true, false);
+}
+
 void ggml_build_backward_expand(
         struct ggml_context *  ctx,
         struct ggml_cgraph  *  cgraph,
@@ -8069,6 +8122,9 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_Q5_0:    result = quantize_q5_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q5_1:    result = quantize_q5_1   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q8_0:    result = quantize_q8_0   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q8_CR:   result = quantize_q8_cr  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q5_CR:   result = quantize_q5_cr  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_Q6_CR:   result = quantize_q6_cr  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_MXFP4:   result = quantize_mxfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_NVFP4:   result = quantize_nvfp4  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_Q2_K:    result = quantize_q2_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

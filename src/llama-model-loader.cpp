@@ -44,6 +44,9 @@ const char * llama_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q5_0:      name = LLAMA_FTYPE_PREFIX "Q5_0"; break;
         case LLAMA_FTYPE_MOSTLY_Q5_1:      name = LLAMA_FTYPE_PREFIX "Q5_1"; break;
         case LLAMA_FTYPE_MOSTLY_Q8_0:      name = LLAMA_FTYPE_PREFIX "Q8_0"; break;
+        case LLAMA_FTYPE_MOSTLY_Q8_CR:     name = LLAMA_FTYPE_PREFIX "Q8_CR (ConvRot)"; break;
+        case LLAMA_FTYPE_MOSTLY_Q5_CR:     name = LLAMA_FTYPE_PREFIX "Q5_CR (ConvRot)"; break;
+        case LLAMA_FTYPE_MOSTLY_Q6_CR:     name = LLAMA_FTYPE_PREFIX "Q6_CR (ConvRot)"; break;
         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: name = LLAMA_FTYPE_PREFIX "MXFP4 MoE"; break;
         case LLAMA_FTYPE_MOSTLY_NVFP4:     name = LLAMA_FTYPE_PREFIX "NVFP4"; break;
         case LLAMA_FTYPE_MOSTLY_Q2_K:      name = LLAMA_FTYPE_PREFIX "Q2_K - Medium"; break;
@@ -58,8 +61,6 @@ const char * llama_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q6_K:      name = LLAMA_FTYPE_PREFIX "Q6_K"; break;
         case LLAMA_FTYPE_MOSTLY_TQ1_0:     name = LLAMA_FTYPE_PREFIX "TQ1_0 - 1.69 bpw ternary"; break;
         case LLAMA_FTYPE_MOSTLY_TQ2_0:     name = LLAMA_FTYPE_PREFIX "TQ2_0 - 2.06 bpw ternary"; break;
-        case LLAMA_FTYPE_MOSTLY_TQ3_1S:    name = LLAMA_FTYPE_PREFIX "TQ3_1S - 4.0 bpw WHT-rotated 3-bit"; break;
-        case LLAMA_FTYPE_MOSTLY_TQ4_1S:    name = LLAMA_FTYPE_PREFIX "TQ4_1S - 5.0 bpw WHT-rotated 4-bit"; break;
         case LLAMA_FTYPE_MOSTLY_IQ2_XXS:   name = LLAMA_FTYPE_PREFIX "IQ2_XXS - 2.0625 bpw"; break;
         case LLAMA_FTYPE_MOSTLY_IQ2_XS:    name = LLAMA_FTYPE_PREFIX "IQ2_XS - 2.3125 bpw"; break;
         case LLAMA_FTYPE_MOSTLY_IQ2_S:     name = LLAMA_FTYPE_PREFIX "IQ2_S - 2.5 bpw"; break;
@@ -318,14 +319,19 @@ namespace GGUFMeta {
         struct GGUFMeta::ArrayInfo arr_info =
             GGUFMeta::GKV<GGUFMeta::ArrayInfo>::get_kv(ctx, kid);
 
+        bool type_ok = false;
         switch (arr_info.gt) {
             case GGUF_TYPE_UINT32:
-            case GGUF_TYPE_INT32:   GGML_ASSERT((std::is_same<T,     int32_t>::value) ||
-                                                (std::is_same<T,    uint32_t>::value)); break;
-            case GGUF_TYPE_FLOAT32: GGML_ASSERT((std::is_same<T,       float>::value)); break;
-            case GGUF_TYPE_STRING:  GGML_ASSERT((std::is_same<T, std::string>::value)); break;
+            case GGUF_TYPE_INT32:   type_ok = (std::is_same<T,     int32_t>::value) ||
+                                              (std::is_same<T,    uint32_t>::value); break;
+            case GGUF_TYPE_UINT64:  type_ok = (std::is_same<T,    uint64_t>::value); break;
+            case GGUF_TYPE_FLOAT32: type_ok = (std::is_same<T,       float>::value); break;
+            case GGUF_TYPE_STRING:  type_ok = (std::is_same<T, std::string>::value); break;
             default:
-                throw std::runtime_error(format("%s is not a string/float32/uint32/int32 array", key.c_str()));
+                throw std::runtime_error(format("%s is not a string/float32/uint32/int32/uint64 array", key.c_str()));
+        }
+        if (!type_ok) {
+            throw std::runtime_error(format("%s has wrong array element type %s", key.c_str(), gguf_type_name(arr_info.gt)));
         }
 
         if constexpr (std::is_same<T, std::string>::value) {
@@ -359,15 +365,20 @@ namespace GGUFMeta {
         struct GGUFMeta::ArrayInfo arr_info =
             GGUFMeta::GKV<GGUFMeta::ArrayInfo>::get_kv(ctx, kid);
 
+        bool type_ok = false;
         switch (arr_info.gt) {
             case GGUF_TYPE_BOOL:
             case GGUF_TYPE_UINT32:
-            case GGUF_TYPE_INT32:   GGML_ASSERT((std::is_same<T,     int32_t>::value) ||
-                                                (std::is_same<T,    uint32_t>::value)); break;
-            case GGUF_TYPE_FLOAT32: GGML_ASSERT((std::is_same<T,       float>::value)); break;
-            case GGUF_TYPE_STRING:  GGML_ASSERT((std::is_same<T, std::string>::value)); break;
+            case GGUF_TYPE_INT32:   type_ok = (std::is_same<T,     int32_t>::value) ||
+                                              (std::is_same<T,    uint32_t>::value); break;
+            case GGUF_TYPE_UINT64:  type_ok = (std::is_same<T,    uint64_t>::value); break;
+            case GGUF_TYPE_FLOAT32: type_ok = (std::is_same<T,       float>::value); break;
+            case GGUF_TYPE_STRING:  type_ok = (std::is_same<T, std::string>::value); break;
             default:
-                throw std::runtime_error(format("%s is not a string/float32/uint32/int32 array", key.c_str()));
+                throw std::runtime_error(format("%s is not a string/float32/uint32/int32/uint64 array", key.c_str()));
+        }
+        if (!type_ok) {
+            throw std::runtime_error(format("%s has wrong array element type %s", key.c_str(), gguf_type_name(arr_info.gt)));
         }
 
         if (arr_info.length > N_MAX) {
@@ -404,6 +415,9 @@ namespace GGUFMeta {
     template bool llama_model_loader::get_arr<std::array<int32_t, 512>>(enum llm_kv kid, std::array<int32_t, 512> & result, bool required);
     template bool llama_model_loader::get_arr<std::vector<int32_t>>(enum llm_kv kid, std::vector<int32_t> & result, bool required);
     template bool llama_model_loader::get_arr<std::array<uint32_t, LLAMA_MAX_LAYERS>>(enum llm_kv kid, std::array<uint32_t, LLAMA_MAX_LAYERS> & result, bool required);
+    template bool llama_model_loader::get_arr<std::vector<uint32_t>>(enum llm_kv kid, std::vector<uint32_t> & result, bool required);
+    template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> & result, bool required);
+    template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_HEADS>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_HEADS> & result, bool required);
 
     template<typename T>
     bool llama_model_loader::get_key(const std::string & key, T & result, bool required) {
@@ -463,7 +477,7 @@ namespace GGUFMeta {
             struct GGUFMeta::ArrayInfo arr_info =
                 GGUFMeta::GKV<GGUFMeta::ArrayInfo>::get_kv(metadata, kid);
 
-            if (n != arr_info.length) {
+            if (n != 0 && n != arr_info.length) {
                 throw std::runtime_error(format("key %s has wrong array length; expected %u, got %u", key.c_str(), n, (uint32_t) arr_info.length));
             }
 
@@ -516,6 +530,9 @@ namespace GGUFMeta {
     template bool llama_model_loader::get_key_or_arr<std::array<int,      4>>  (enum llm_kv kid, std::array<int,      4>   & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<float,    512>>(enum llm_kv kid, std::array<float,    512> & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      3>>  (enum llm_kv kid, std::array<int,      3>   & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      5>>  (enum llm_kv kid, std::array<int,      5>   & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      6>>  (enum llm_kv kid, std::array<int,      6>   & result, uint32_t n, bool required);
 
 
 llama_model_loader::llama_model_loader(
@@ -545,7 +562,7 @@ llama_model_loader::llama_model_loader(
 
     tensor_buft_overrides = param_tensor_buft_overrides_p;
 
-    this->use_mmap      = load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
+    this->use_mmap      = load_mode == LLAMA_LOAD_MODE_AUTO || load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
     this->use_direct_io = load_mode == LLAMA_LOAD_MODE_DIRECT_IO;
 
     if (!fname.empty()) {
@@ -742,6 +759,9 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_Q5_0:    ftype = LLAMA_FTYPE_MOSTLY_Q5_0;    break;
             case GGML_TYPE_Q5_1:    ftype = LLAMA_FTYPE_MOSTLY_Q5_1;    break;
             case GGML_TYPE_Q8_0:    ftype = LLAMA_FTYPE_MOSTLY_Q8_0;    break;
+            case GGML_TYPE_Q8_CR:   ftype = LLAMA_FTYPE_MOSTLY_Q8_CR;   break;
+            case GGML_TYPE_Q5_CR:   ftype = LLAMA_FTYPE_MOSTLY_Q5_CR;   break;
+            case GGML_TYPE_Q6_CR:   ftype = LLAMA_FTYPE_MOSTLY_Q6_CR;   break;
             case GGML_TYPE_Q2_K:    ftype = LLAMA_FTYPE_MOSTLY_Q2_K;    break;
             case GGML_TYPE_Q3_K:    ftype = LLAMA_FTYPE_MOSTLY_Q3_K_M;  break;
             case GGML_TYPE_Q4_K:    ftype = LLAMA_FTYPE_MOSTLY_Q4_K_M;  break;
@@ -1253,7 +1273,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         for (size_t dim = 0; dim < GGML_MAX_DIMS; dim++) {
             t_meta.ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
             GGML_ASSERT(t_meta.ne[dim] >= 1);
-            t_meta.nb[dim] = dim == 0 ? ggml_type_size(type) : t_meta.ne[dim-1]*t_meta.nb[dim-1];
+            if (dim == 0) {
+                t_meta.nb[dim] = ggml_type_size(type);
+            } else if (dim == 1) {
+                t_meta.nb[dim] = ggml_row_size(type, t_meta.ne[dim-1]);
+            } else {
+                t_meta.nb[dim] = t_meta.nb[dim-1]*t_meta.ne[dim-1];
+            }
             GGML_ASSERT(t_meta.nb[dim] >= 1);
         }
         ggml_set_name(&t_meta, tn.str().c_str());
@@ -1272,13 +1298,33 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         return NULL;
     }
 
+    if ((flags & TENSOR_READ_LAZY) && use_mmap && tensor_read_lazy != LLAMA_TENSOR_READ_LAZY_OFF) {
+        // in auto mode, small tensors are cheap enough to keep resident
+        constexpr size_t auto_lazy_min_size = 4ull * 1024 * 1024 * 1024;
+        if (tensor_read_lazy == LLAMA_TENSOR_READ_LAZY_ON || ggml_nbytes(cur) > auto_lazy_min_size) {
+            const auto & w = require_weight(tn.str().c_str());
+            lazy_tensor_ranges[w.idx].emplace_back(w.offs, w.offs + ggml_nbytes(cur));
+
+            LLAMA_LOG_INFO("%s: tensor %s (size = %zu MiB) lazy read enabled\n",
+                    __func__, tn.str().c_str(), ggml_nbytes(cur)/1024/1024);
+        }
+    }
+
     ggml_tensor t_meta = *cur;
     if (flags & TENSOR_ALLOW_RESHAPE) {
         for (size_t dim = 0; dim < GGML_MAX_DIMS; dim++) {
             t_meta.ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
-            t_meta.nb[dim] = dim == 0 ? ggml_type_size(t_meta.type) : t_meta.ne[dim-1]*t_meta.nb[dim-1];
+            if (dim == 0) {
+                t_meta.nb[dim] = ggml_type_size(t_meta.type);
+            } else if (dim == 1) {
+                t_meta.nb[dim] = ggml_row_size(t_meta.type, t_meta.ne[dim-1]);
+            } else {
+                t_meta.nb[dim] = t_meta.ne[dim-1]*t_meta.nb[dim-1];
+            }
         }
     }
+
+    GGML_ASSERT(ggml_nbytes(&t_meta) == ggml_nbytes(cur));
 
     ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
     if (buft == nullptr) {
@@ -1331,7 +1377,9 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
     if (use_mmap) {
         mappings.reserve(files.size());
         mmaps_used.reserve(files.size());
-        for (const auto & file : files) {
+        for (uint32_t idx = 0; idx < files.size(); idx++) {
+            const auto & file = files[idx];
+
             bool is_numa = false;
 
             auto * dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
@@ -1343,7 +1391,11 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                 }
             }
 
-            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch ? -1 : 0, is_numa);
+            const auto it_lazy = lazy_tensor_ranges.find(idx);
+            static const llama_mmap::ranges no_lazy_ranges;
+
+            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch ? -1 : 0, is_numa,
+                    it_lazy != lazy_tensor_ranges.end() ? it_lazy->second : no_lazy_ranges);
             mmaps_used.emplace_back(mapping->size(), 0);
             if (mlock_mmaps) {
                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());

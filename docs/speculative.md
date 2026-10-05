@@ -8,172 +8,12 @@ llama.cpp supports speculative decoding, a technique that can significantly acce
 
 The `llama-server` application supports several implementations of speculative decoding. An implementation with draft model can be mixed with an implementation without draft model.
 
-### Multimodal (`--mmproj`) compatibility (atomic-llama-cpp-turboquant)
-
-When `--mmproj` is set, **`mtp`**, **`nextn`**, and **`eagle3`** speculative types remain **enabled at load**: their draft paths do not depend on `get_text_tokens()` / `prompt_tgt` the way `draft` and `ngram_*` do. Other types are auto-disabled at load with a warning. Mixed speculative chains (e.g. `ngram_simple` + `draft`) are rejected at slot init if any impl is not multimodal-safe.
-
-**Per-turn behaviour:**
-
-- **Text-only turns on a multimodal slot** — draft head runs as usual (same acceptance as without `--mmproj`).
-- **Turns containing an image chunk** — the slot logs `skipping speculative prime for multimodal prompt` and falls back to plain target decoding for that turn only. The image is still recognised correctly, just without draft speedup.
-
-The fallback is required because NextN / MTP prime needs per-token target hidden states for every prompt position, but mtmd image-decode currently only emits an output row for the last token of each image batch. Lifting this restriction is on the roadmap (mtmd batches need to mark every position with `logits[i] = true`, or be replayed teacher-forced).
-
-See `common_speculative_is_mtmd_safe` / `common_speculative_all_impls_mtmd_safe` in [`common/speculative.cpp`](../common/speculative.cpp), the `mmproj` gates and the `skip_draft_mtmd` per-turn gate in [`tools/server/server-context.cpp`](../tools/server/server-context.cpp). Validated configurations and the end-to-end recipe are documented in [`NEXTN.md` §10](../NEXTN.md#10-multimodal---mmproj--speculative-decoding-this-fork).
+Fork note (atomic-llama-cpp-turboquant): `--spec-type mtp` and `--spec-type nextn` are aliases of `draft-mtp`, and `--mtp-head FNAME` is an alias of `--spec-draft-model`. Model-specific recipes: [MTP.md](../MTP.md) (Gemma 4 assistant) and [NEXTN.md](../NEXTN.md) (Qwen 3.5/3.6 NextN).
 
 ### Draft Model (`draft`)
 
 A much smaller model (called the _draft model_) generates drafts.
 A draft model is the most used approach in speculative decoding.
-
-### Gemma 4 MTP assistant (`mtp`)
-
-For **Gemma 4** targets with the **gemma4_assistant** (MTP head) GGUF, use `--spec-type mtp`. The assistant is **not** a second `llama_context`: weights are loaded into the target model via `llama_model_load_mtp_from_file` (done automatically when using the server/CLI init path). Cross-attention in the MTP graph reads **K/V from the target KV cache** (shared full/sliding layers).
-
-- Prefer **`--mtp-head /path/to/assistant.gguf`** for clarity; **`--model-draft` (`-md`)** is accepted as a backward-compatible alias (same path field).
-- The per-round draft length is **`--spec-draft-n-max N`** (the head proposes `N` tokens per round; replaces the pre-b10018 `--draft-block-size B`, `N = B - 1`).
-- **`--gpu-layers-draft` / `-ngld`** and **`-ctkd` / `-ctvd`** still apply to how the **assistant tensors** are placed and typed when the assistant GGUF is loaded; the target uses `-ngl` and `-ctk`/`-ctv`.
-
-Example (paths illustrative). **TurboQuant** KV on the target: `-ctk`/`-ctv`. Assistant-side cache types follow the draft flags if you use them for offload/quant selection.
-
-```sh
-llama-server \
-  -m /path/to/gemma-4-target.gguf \
-  --mtp-head /path/to/gemma-4-assistant.gguf \
-  --spec-type mtp \
-  --spec-draft-n-max 3 \
-  -c 16384 \
-  -ngl 99 -ngld 99 \
-  -ctk turbo3 -ctv turbo3 \
-  -ctkd turbo3 -ctvd turbo3 \
-  -fa on \
-  --host 127.0.0.1 --port 8080
-```
-
-Repo helper (defaults under `.scratch/`): `scripts/run-gemma4-mtp-server.sh`.
-
-#### Async MTP draft pipeline
-
-The MTP draft head runs on a dedicated `ggml_backend_sched` (`sched_mtp`) and a
-worker thread, isolated from the target's scheduler. This is exposed via two C
-APIs:
-
-```c
-LLAMA_API int32_t llama_decode_mtp_async(
-        struct llama_context * ctx,
-        llama_seq_id  seq_id,
-        llama_pos     attn_pos,
-        llama_token   last_token,
-        const float * h_prev,
-        int32_t       n_steps);
-
-LLAMA_API int32_t llama_decode_mtp_wait(
-        struct llama_context * ctx,
-        llama_token * out_drafts,
-        float       * out_h_prev_last);
-```
-
-Contract:
-
-- At most **one in-flight request per context**. Calling `_async` while a
-  previous request has not been waited on returns `-7`.
-- `h_prev` is copied into the request, so the caller may free or reuse it
-  immediately after `_async` returns.
-- Target KV positions ≤ `attn_pos` must remain stable until `_wait` returns.
-  The current append-only KV cache satisfies this as long as no eviction or
-  overlapping `seq_rm` happens between submit and wait.
-- `llama_decode_mtp(...)` is preserved as a backward-compatible synchronous
-  facade (= `_async` immediately followed by `_wait`).
-
-Why use the async pair?
-
-- **Graph-cache isolation**: MTP graph reuse is no longer invalidated by target
-  decode resets. On Gemma 4 + Q4_K_XL, this alone delivered **~+8% throughput**
-  in single-slot benchmarks (95.3 → 102.8 tps at `--spec-draft-n-max 2`), with
-  identical accept rate.
-- **Pipeline depth-2 (pure overlap, `llama-server`)**: after target
-  sample/accept and `llama_memory_seq_rm`, the server calls
-  `common_speculative_prepare_next(spec, last_accepted_token)`, which submits
-  `llama_decode_mtp_async` for the *next* round. The blocking
-  `llama_decode_mtp_wait` is deferred to the start of the next
-  `common_speculative_draft`, so MTP work can overlap with post-accept
-  bookkeeping and token I/O. This uses the real sampled token (no optimistic
-  guess). **KV contract**: submit uses `attn_pos` after `seq_rm`; the next
-  `llama_decode` appends only positions `> attn_pos`, so backbone cells read by
-  MTP remain stable until `_wait` (append-only cache). Stale in-flight requests
-  are drained in `common_speculative_begin` and on skip / param-mismatch paths.
-- **In-graph argmax**: the MTP graph publishes a `ggml_argmax` of the final
-  logits (I32 [1]) via `llm_graph_result::get_argmax()`. Per draft step the host
-  reads back 4 bytes (one token id) instead of the full F32 [n_vocab] logits
-  row, and the serial CPU argmax over `n_vocab` is gone. The full logits are
-  still computed in-graph and can be fetched on demand by passing a non-null
-  `out_logits` to the synchronous `llama_decode_mtp(...)` API (diagnostic /
-  legacy path). On Gemma 4 + Q4_K_XL this delivered an additional **~+2-3%
-  throughput** (`109.5 → 112.5 tps` at `n=128`, `95.8 → 97.8 tps` at `n=512`),
-  with bit-identical greedy drafts.
-- **Future work**: optimistic last-token prediction could hide an additional
-  `llama_decode` latency on hits but risks wrong drafts on misses.
-
-#### Diagnostic: per-draft acceptance trace
-
-Set `LLAMA_MTP_ACC_TRACE` to enable a per-iteration NDJSON tracer in
-`common/speculative.cpp`. Each `mtp_draft` event records `iter`, `path`
-(`sync` / `lazy` / `skip-streak` / `skip-nsteps`), `seq_id`, `id_last`,
-`h_idx`, `attn_pos`, `n_steps`, `h_l2` (L2 norm of the input hidden state),
-and the drafted token ids; each `mtp_accept` event records the iteration
-counter, `n_accepted`, and `n_drafted_prev`. The host can pair them by `iter`
-to reconstruct per-position acceptance, MTP h_prev stability, and
-selection-bias breakdowns by `h_idx`.
-
-```sh
-# write trace to stderr
-LLAMA_MTP_ACC_TRACE=1 ./llama-server [...]
-# write trace to a file
-LLAMA_MTP_ACC_TRACE=/tmp/mtp.ndjson ./llama-server [...]
-```
-
-#### Throughput tuning (Edge assistants / heavy backends)
-
-Ordered-embeddings MTP (`use_ordered_embeddings`) runs a centroid LM head (`top_k`, routed `get_rows`) per draft step; the greedy graph still materializes a full-vocab logits row (masked fill + scatter) so argmax and optional full-row export stay consistent with verify.
-
-- **`LLAMA_MTP_SKIP_STREAK_THRESHOLD`**: **off by default** (`0` / unset). If set to `1`–`32`, after that many consecutive batches with **zero** accepted **MTP** drafts, MTP drafting is skipped for one verify-only batch, then retried.
-- Helper scripts `scripts/run-gemma4-e4b-mtp-server.sh` and `scripts/run-gemma4-e2b-mtp-server.sh` support **`MTP_PRESET`**: `throughput` (block 2 / max 6), `lift` (block 3 / max 8), `balanced`, or `quality`. Override with `DRAFT_BLOCK_SIZE`, `DRAFT_MAX`, and optionally `LLAMA_MTP_SKIP_STREAK_THRESHOLD`.
-
-Disabled at zero overhead (no env var or value `0` / empty); when enabled the
-extra cost is one `n_bb`-wide L2 reduction per draft and a small NDJSON write.
-
-#### Reconverting `gemma4_assistant` from Hugging Face
-
-Example (paths relative to repo root):
-
-```sh
-python convert_hf_to_gguf.py .scratch/gemma-4-26B-A4B-it-assistant \
-  --outfile .scratch/gemma-assistant-mtp.gguf --outtype f16
-```
-
-Use the resulting GGUF as `--mtp-head` (or `-md`) with `--spec-type mtp`. Older assistant GGUFs with `token_embd.weight` first axis 2816 (backbone width) instead of 1024 will fail load; run `scripts/verify-gemma4-assistant-gguf.py` on the file to check.
-
-### Qwen 3.x NextN (`nextn`)
-
-For **Qwen3.6** (and compatible) checkpoints that ship NextN head weights in the combined `*_MTP.gguf`, use `--spec-type nextn` with **`--model-draft` (`-md`)** pointing at the **same** GGUF as the main model. The server detects this and **reuses the already-loaded target `llama_model`** — a second `llama_context` is built over the same weights with `llama_context_params.nextn_draft = true`, which routes graph construction to `llm_build_qwen35_nextn` / `llm_build_qwen35moe_nextn` and sizes the draft KV cache only for the NextN layer (`kv_only_nextn = true`, mutated transparently inside `llama_context` ctor). There is **no second mmap of the GGUF**.
-
-- Drafting reads **CPU-copied** pre-final-norm hidden states (`embeddings_pre_norm` path); it does **not** use Gemma's `llama_decode_mtp_*` APIs.
-- **`llama_set_nextn`** only pairs target and draft for **`llama_context_nextn_seq_rm`**; see `NEXTN.md` for details.
-- Standalone NEXTN_ONLY GGUFs (`general.architecture = qwen35*_mtp`) are still supported as a fallback for users who ship the draft head as a separate artifact (the server then performs a second `llama_model_load_from_file` with `override_arch`); the shared-model path is preferred whenever `--model` and `--model-draft` point at the same combined `_MTP.gguf`.
-
-```sh
-llama-server \
-  -m /path/to/qwen3.6-MTP.gguf \
-  -md /path/to/qwen3.6-MTP.gguf \
-  --spec-type nextn \
-  --spec-draft-n-max 2 --spec-draft-n-min 1 \
-  -c 8192 -ngl 99 -ngld 99 -fa on \
-  --host 127.0.0.1 --port 8080
-```
-
-Pair with `-ctk turbo3 -ctv turbo3` to compose with **TurboQuant** KV — on MoE targets (e.g. Qwen 3.6 35B-A3B) this combination is **+24-36% tps** over the `turbo3` baseline at single-slot in the matrix bench (see `NEXTN.md §7`).
-
-Repo helpers: `scripts/run-qwen36-27b-nextn-server.sh`, `scripts/run-qwen36-35ba3b-nextn-server.sh`.
 
 ### EAGLE-3 (`draft-eagle3`)
 
@@ -239,6 +79,35 @@ llama-server -m Qwen3-4B.gguf -md Qwen3-4B-DFlash.gguf \
 See:
 
 - #22105
+
+
+### Chained MTP (`--spec-chain N`)
+
+Chained MTP drafts N tokens in one GPU decode. It currently supports dense Qwen3.5-family models and requires flash attention. For recurrent models, batch and ubatch sizes below N + 2 are raised to N + 2.
+
+
+### Adaptive MTP (`draft-mtp-adaptive`)
+
+Multi Token Prediction (MTP) with an adaptive draft depth. Same machinery as `draft-mtp`
+(MTP heads from the main model, see the Qwen3 MTP head docs), but the number of draft tokens is
+tuned per sequence at runtime by a hysteresis controller instead of being fixed at
+`--spec-draft-n-max`.
+
+The depth starts at the floor `max(1, --spec-draft-n-min-adaptive)` (default 3) and stays in
+`[floor, n_max]`. It climbs one step after a run of consecutive verifies that accepted every
+drafted token (the run length required is low at the floor and at depth, high in the middle), and
+drops one step when accumulated misses reach a depth-scaled budget. Content that verifies well
+quickly reaches high depth; content that keeps missing sheds depth until it stops wasting
+drafting compute. Use `--spec-draft-n-min-adaptive` to keep the depth above 1 on difficult
+content:
+
+```bash
+llama-server -m Qwen3-4B.gguf --spec-type draft-mtp-adaptive \
+    --spec-draft-n-max 8 --spec-draft-n-min-adaptive 2
+```
+
+`--spec-draft-n-min-adaptive` must be in `[1, --spec-draft-n-max]`.
+
 
 ### DSpark (`draft-dspark`)
 
@@ -367,7 +236,7 @@ If a draft model is combined with a draftless decoding the draftless decoding ha
 ### General Speculative Parameters
 
 ```
---spec-type [none|draft-simple|draft-eagle3|draft-dflash|draft-dspark|draft-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]
+--spec-type [none|draft-simple|draft-eagle3|draft-dflash|draft-dspark|draft-mtp|draft-mtp-adaptive|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]
                                         comma-separated list of types of speculative decoding to use
                                         (default: none)
                                         (env: LLAMA_ARG_SPEC_TYPE)
@@ -387,9 +256,16 @@ If a draft model is combined with a draftless decoding the draftless decoding ha
 --spec-draft-n-max                      N
                                         number of tokens to draft for speculative decoding (default: 3)
                                         (env: LLAMA_ARG_SPEC_DRAFT_N_MAX)
+--spec-chain                            0|1|N
+                                        chained MTP drafting: all draft tokens in one GPU decode (default: off).
+                                        Use N to enable and set the draft depth.
+                                        (env: LLAMA_ARG_SPEC_CHAIN)
 --spec-draft-n-min                      N
                                         minimum number of draft tokens to use for speculative decoding (default: 0)
                                         (env: LLAMA_ARG_SPEC_DRAFT_N_MIN)
+--spec-draft-n-min-adaptive             N
+                                        minimum adaptive MTP draft depth; the depth starts here and never drops below it (default: 3)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_N_MIN_ADAPTIVE)
 --spec-draft-p-split, --draft-p-split   P
                                         speculative decoding split probability (default: 0.10)
                                         (env: LLAMA_ARG_SPEC_DRAFT_P_SPLIT)
@@ -510,6 +386,7 @@ Specifies a comma-separated list of speculative decoding types to use.
 | `draft-dflash` | Use a DFlash block-diffusion draft model that emits a block per step |
 | `draft-dspark` | Use a DSpark draft model (DFlash backbone + semi-autoregressive Markov head) |
 | `draft-mtp` | Use Multi Token Prediction (MTP) heads from the main model |
+| `draft-mtp-adaptive` | MTP with an adaptive draft depth tuned per sequence at runtime |
 | `ngram-cache` | Use n-gram cache lookup |
 | `ngram-simple` | Use simple n-gram pattern matching |
 | `ngram-map-k` | Use n-gram pattern matching with n-gram-keys |
@@ -524,6 +401,17 @@ Specifies a comma-separated list of speculative decoding types to use.
 **Example:** Multiple speculative implementations.
 ```bash
 ./llama-server [...] --spec-type ngram-mod,ngram-map-k4v
+```
+
+**Laguna DFlash drafters** (for example `poolside/Laguna-XS-2.1-DFlash` for
+`poolside/Laguna-XS-2.1`) go through the same `draft-dflash` flow. Their GGUF is
+marked with `dflash.decoder_arch = laguna`, which switches the draft layers to the
+Laguna decoder contract (softplus attention gate, per-aux feature norms, context
+K/V through the input layernorm, causal noise block) instead of the generic DFlash
+contract:
+```bash
+./llama-server -m Laguna-XS-2.1.gguf -md Laguna-XS-2.1-DFlash.gguf \
+    --spec-type draft-dflash --spec-draft-n-max 15 -fa on --jinja
 ```
 
 ### `--spec-ngram-*-size-n N`

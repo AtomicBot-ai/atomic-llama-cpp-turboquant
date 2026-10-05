@@ -16,13 +16,6 @@
 #include <string>
 #include <unordered_map>
 
-// Signals between router parent and model child processes.
-// Also used by server.cpp (the child process entry point).
-// note: regular child state reports use CMD_CHILD_TO_ROUTER_STATE (see
-// server-models.cpp); ERROR is emitted by the child's ggml abort callback.
-#define CMD_ROUTER_TO_CHILD_EXIT  "cmd_router_to_child:exit"
-#define CMD_CHILD_TO_ROUTER_ERROR "cmd_child_to_router:error:"
-
 /**
  * state diagram:
  *
@@ -105,19 +98,6 @@ struct server_model_meta {
         return status == SERVER_MODEL_STATUS_UNLOADED && exit_code != 0;
     }
 
-    // true when the child was killed by a signal (e.g. SIGABRT from OOM,
-    // SIGTERM from force-kill).  exit_code is the negated signal number.
-    bool is_signaled() const {
-        return status == SERVER_MODEL_STATUS_UNLOADED && exit_code < 0;
-    }
-
-    // the signal number if is_signaled(), 0 otherwise
-    int exit_signal() const {
-        return is_signaled() ? -exit_code : 0;
-    }
-
-    std::string last_error = {}; // error message from CMD_CHILD_TO_ROUTER_ERROR or GGML_ABORT
-
     void update_args(common_preset_context & ctx_presets, std::string bin_path);
     void update_caps();
 };
@@ -139,6 +119,7 @@ private:
     std::condition_variable cv;
     std::map<std::string, instance_t> mapping;
 
+    // for stopping models
     std::condition_variable cv_stop;
     std::set<std::string> stopping_models;
 
@@ -268,10 +249,6 @@ public:
     // also send SSE notification to /models/sse endpoint
     void update_status(const std::string & name, const update_status_args & args);
     void update_download_progress(const std::string & name, const common_download_progress & progress, bool done, bool ok = true);
-
-    // fork: record a structured child error (CMD_CHILD_TO_ROUTER_ERROR) so it
-    // can be reported via /v1/models
-    void update_last_error(const std::string & name, const std::string & error);
 
     // remove a cache model from disk and update the list (thread-safe)
     // note: only cache models can be removed; returns false if the model doesn't exist or is not a cache model
