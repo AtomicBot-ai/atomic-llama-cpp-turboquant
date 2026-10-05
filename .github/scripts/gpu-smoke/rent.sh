@@ -16,6 +16,13 @@ IMAGE="nvidia/cuda:12.8.0-runtime-ubuntu22.04"
 VAST_API_KEY="$(printf '%s' "$VAST_API_KEY" | tr -d '[:space:]')"
 vastai set api-key "$VAST_API_KEY" >/dev/null
 
+# which account the key belongs to, without leaking it into public logs: email hash prefix and a credit range
+vastai show user --raw > user.json 2>/dev/null || true
+EMAIL_HASH=$(jq -r '.email // empty' user.json 2>/dev/null | tr -d '\n' | sha256sum | cut -c1-8)
+CREDIT_RANGE=$(jq -r '(.credit // .balance // null) as $c | if $c == null then "unknown"
+  elif $c <= 0 then "<= 0" elif $c < 1 then "0..1" elif $c < 5 then "1..5" elif $c < 20 then "5..20" else ">= 20" end' user.json 2>/dev/null || echo unknown)
+echo "vast account: email sha256 prefix=$EMAIL_HASH, credit range=$CREDIT_RANGE"
+
 vastai search offers \
   "$GPU_QUERY disk_space>=$DISK_GB inet_down>=500 reliability>0.98 rentable=true" \
   -o dph --raw > offers.json
