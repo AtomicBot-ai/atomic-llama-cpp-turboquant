@@ -40,7 +40,7 @@ for i in $(seq 0 $((MAX_OFFERS - 1))); do
     echo "create failed, next offer"; continue
   fi
   IID=$(jq -r '.new_contract // empty' create.json)
-  [ -n "$IID" ] || { echo "no contract id, next offer"; continue; }
+  [ -n "$IID" ] || { echo "no contract id, next offer: $(jq -c '{error, msg}' create.json 2>/dev/null || head -c 200 create.json)"; continue; }
 
   # created -> loading (image pull) -> running; give it 10 minutes
   for tick in $(seq 1 40); do
