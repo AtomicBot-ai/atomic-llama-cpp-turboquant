@@ -22,7 +22,8 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "== [1/6] runtime deps for $BACKEND =="
 apt-get update -q >/dev/null 2>&1 || true
-apt-get install -yq curl jq >/dev/null 2>&1 || fail "apt basic deps"
+# libgomp1: libggml-base links OpenMP; desktop distros ship it, the minimal CUDA runtime image does not
+apt-get install -yq curl jq libgomp1 >/dev/null 2>&1 || fail "apt basic deps"
 if [ "$BACKEND" = "linux-x64-vulkan" ]; then
   # Lessons from manual runs on vast boxes:
   #  - libGLX_nvidia (the vulkan ICD) silently needs X11 client libs
