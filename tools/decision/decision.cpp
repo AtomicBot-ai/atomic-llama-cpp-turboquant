@@ -95,6 +95,9 @@ std::unique_ptr<decision_engine> decision_engine_init(const decision_spec & spec
     if (spec.layout == "laya") {
         return decision_engine_laya_init(spec, params);
     }
+    if (spec.layout == "clef") {
+        return decision_engine_clef_init(spec, params);
+    }
     throw std::runtime_error("decision layout '" + spec.layout + "' is not supported yet (letters engine: Arbiter/JevK5 comes later)");
 }
 

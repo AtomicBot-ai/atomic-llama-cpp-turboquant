@@ -116,8 +116,8 @@ struct decision_output {
 };
 
 struct decision_caps {
-    std::string              layout;        // "laya", "semif-letters"
-    std::string              format;        // "laya-v1", "semif-v1"
+    std::string              layout;        // "laya", "clef", "semif-letters"
+    std::string              format;        // "laya-v1", "clef-v1", "semif-v1"
     std::string              plan;
     std::string              plan_independent; // plan of evaluate(independent = true): items never influence each other
     std::vector<std::string> plans;
@@ -201,6 +201,8 @@ struct decision_engine_params {
     // laya layer trace directory (laya_context_params.trace_dir); empty: off. It records the activations of
     // every request: llama-server passes LAYA_TRACE_DIR only with --decision-debug
     std::string trace_dir;
+    // clef: the longest prompt in tokens (context, batch and ubatch size); 0: CLEF_DEFAULT_MAX_TOKENS
+    int32_t     n_ctx = 0;
 };
 
 // default engine threads: the performance cores (macOS hw.perflevel0.physicalcpu, Windows the
@@ -226,3 +228,4 @@ std::vector<std::string> decision_utf8_args(int argc, char ** argv);
 std::unique_ptr<decision_engine> decision_engine_init(const decision_spec & spec, const decision_engine_params & params);
 
 std::unique_ptr<decision_engine> decision_engine_laya_init(const decision_spec & spec, const decision_engine_params & params);
+std::unique_ptr<decision_engine> decision_engine_clef_init(const decision_spec & spec, const decision_engine_params & params);

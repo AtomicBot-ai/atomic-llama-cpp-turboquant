@@ -11,6 +11,8 @@
 !decision/
 !decision/golden/
 !decision/bench/
+!clef/
+!clef/golden/
 *.o
 ggml-common.h
 **/*.swp

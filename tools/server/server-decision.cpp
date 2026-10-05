@@ -338,6 +338,7 @@ struct server_decision {
         eparams.use_mmap   = params.load_mode == LLAMA_LOAD_MODE_MMAP || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
         eparams.use_mlock  = params.load_mode == LLAMA_LOAD_MODE_MLOCK || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
         eparams.warmup     = params.warmup;
+        eparams.n_ctx      = params.n_ctx; // clef: the longest prompt (-c), 0: the engine default
         try {
             engine = decision_engine_init(spec, eparams);
         } catch (const std::exception & e) {

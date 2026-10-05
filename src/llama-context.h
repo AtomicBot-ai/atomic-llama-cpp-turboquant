@@ -127,6 +127,7 @@ struct llama_context {
     void set_embeddings_nextn(bool value, bool masked);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_nextn_layer_offset(int32_t offset);
+    void set_decision_order(const int32_t * order, int32_t n_tokens);
     void set_mtp_chain(bool value);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
@@ -360,6 +361,9 @@ private:
     // host buffers for output layer input embeddings, per layer
     // populated when cparams.output_layer_inp[il] is true
     std::vector<buffer_view<float>> embd_layer_inp;
+
+    // decision order of the next batch, see llama_set_decision_order()
+    std::vector<int32_t> decision_order_next;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active

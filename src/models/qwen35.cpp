@@ -48,7 +48,8 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
 
     // output
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
-    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
+    // clef reads output rows only (lexical vectors of the decision head), never as a matmul
+    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED | (arch == LLM_ARCH_CLEF ? TENSOR_GET_ROWS : 0));
 
     // if output is NULL, init from the input tok embed
     if (output == NULL) {

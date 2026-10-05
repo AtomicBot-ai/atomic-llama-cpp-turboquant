@@ -1996,6 +1996,14 @@ void llama_context::set_embeddings_nextn(bool value, bool masked) {
     cparams.embeddings_nextn_masked = masked;
 }
 
+void llama_context::set_decision_order(const int32_t * order, int32_t n_tokens) {
+    if (order == nullptr || n_tokens <= 0) {
+        decision_order_next.clear();
+        return;
+    }
+    decision_order_next.assign(order, order + n_tokens);
+}
+
 void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
     LLAMA_LOG_DEBUG("%s: lid = %d, enable = %d\n", __func__, lid, enable);
 
@@ -2281,7 +2289,16 @@ int llama_context::encode(const llama_batch & batch_inp) {
     if (!balloc->init(batch_inp, model.vocab, nullptr, n_embd, cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max,
                       true)) {
         LLAMA_LOG_ERROR("%s: failed to initialize batch\n", __func__);
+        decision_order_next.clear();
         return -1;
+    }
+
+    {
+        const bool ok = balloc->set_decision_order(decision_order_next);
+        decision_order_next.clear();
+        if (!ok) {
+            return -1;
+        }
     }
 
     const uint32_t n_tokens = balloc->get_n_tokens();
@@ -2636,7 +2653,16 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     if (!balloc->init(batch_inp, vocab, memory.get(), n_embd, n_seq_max, output_all)) {
         LLAMA_LOG_ERROR("%s: failed to initialize batch\n", __func__);
+        decision_order_next.clear();
         return -1;
+    }
+
+    {
+        const bool ok = balloc->set_decision_order(decision_order_next);
+        decision_order_next.clear();
+        if (!ok) {
+            return -1;
+        }
     }
 
     const uint32_t n_tokens_all  = balloc->get_n_tokens();
@@ -3005,7 +3031,8 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     const auto n_embd     = hparams.n_embd;
     const auto n_embd_out = hparams.n_embd_out();
 
-    bool has_logits     = true;
+    // the clef graph has no logits: n_vocab floats per token would be allocated and never written
+    bool has_logits     = model.arch != LLM_ARCH_CLEF;
     bool has_embd       = cparams.embeddings;
     bool has_embd_nextn = cparams.embeddings_nextn;
 
@@ -3271,6 +3298,7 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     if (model.arch == LLM_ARCH_QWEN3NEXT ||
         model.arch == LLM_ARCH_KIMI_LINEAR ||
         model.arch == LLM_ARCH_QWEN35 ||
+        model.arch == LLM_ARCH_CLEF ||
         model.arch == LLM_ARCH_QWEN35MOE ||
         model.arch == LLM_ARCH_QWEN4EXP ||
         model.arch == LLM_ARCH_DEEPSEEK4 ||
@@ -4716,6 +4744,10 @@ void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool valu
 
 void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
     ctx->set_nextn_layer_offset(offset);
+}
+
+void llama_set_decision_order(llama_context * ctx, const int32_t * order, int32_t n_tokens) {
+    ctx->set_decision_order(order, n_tokens);
 }
 
 bool llama_model_supports_mtp_chain(const llama_model * model) {

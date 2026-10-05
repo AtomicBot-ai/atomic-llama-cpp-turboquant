@@ -585,6 +585,34 @@ def tiny_laya_decision_server(english: bool = False, q8: bool = False) -> Server
     return server
 
 
+def tiny_clef_gguf() -> str:
+    """ Random tiny Clef GGUF (tests/clef/make_tiny_clef.py, numpy + gguf-py), cached by a hash of the generator. """
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../tests/clef/make_tiny_clef.py")
+    with open(script, "rb") as f:
+        gen_hash = hashlib.sha256(f.read()).hexdigest()[:12]
+    folder = os.path.join(TMP_DIR, "tiny-clef-" + gen_hash)
+    path = os.path.join(folder, "tiny-clef-decision.gguf")
+    if not os.path.exists(path):
+        os.makedirs(folder, exist_ok=True)
+        subprocess.run([sys.executable, script, path + ".tmp"], check=True)
+        os.replace(path + ".tmp", path)
+    return path
+
+
+def tiny_clef_decision_server() -> ServerProcess:
+    """ llama-server --decision on the tiny Clef GGUF (CPU). """
+    server = ServerProcess()
+    server.offline = True
+    server.model_hf_repo = None
+    server.model_hf_file = None
+    server.model_file = tiny_clef_gguf()
+    server.model_alias = "tiny-clef"
+    server.n_threads = 2
+    server.n_ctx = 2048
+    server.decision = True
+    return server
+
+
 class ServerPreset:
     @staticmethod
     def load_all() -> None:

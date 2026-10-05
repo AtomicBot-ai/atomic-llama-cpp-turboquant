@@ -85,9 +85,89 @@ static decision_question normalize_laya(const std::string & id, const json & q, 
     return out;
 }
 
+// layout clef: question semantics of joint_schema_model.py (model repo). instructions are optional (the
+// question id when missing, null or "") and any JSON value is rendered as compact JSON; one choice or score
+// option is enough; noul criteria replace the built-in true/false descriptions. Choice criteria may also be
+// a list (TypeSafe: dict.fromkeys(str(c))).
+static decision_question normalize_clef(const std::string & id, const json & q, const decision_limits & lim, const std::string & param) {
+    if (!q.is_object()) {
+        throw decision_error(DECISION_REASON_UNKNOWN_QUESTION_TYPE, "question must be an object", param);
+    }
+    decision_question out;
+    out.id = id;
+    const json type = q.contains("type") ? q.at("type") : json();
+    if (!type.is_string() || !decision_qtype_from_name(type.get<std::string>(), out.type)) {
+        throw decision_error(DECISION_REASON_UNKNOWN_QUESTION_TYPE, "unknown question type " + decision_py_dumps(type), param + ".type");
+    }
+    const json instructions = q.contains("instructions") ? q.at("instructions") : json();
+    if (instructions.is_null() || instructions == "") {
+        out.instructions = id;
+    } else if (instructions.is_string()) {
+        out.instructions = instructions.get<std::string>();
+    } else {
+        out.instructions = decision_py_dumps_compact_sorted(instructions);
+    }
+    if (out.instructions.empty()) {
+        throw decision_error(DECISION_REASON_EMPTY_INSTRUCTIONS, "question has no instructions and an empty id", param + ".instructions");
+    }
+
+    const json criteria = q.contains("criteria") ? q.at("criteria") : json();
+    const std::string cparam = param + ".criteria";
+    switch (out.type) {
+        case DECISION_QTYPE_NOUL:
+            if (!criteria.is_null() && !criteria.is_object()) {
+                throw decision_error(DECISION_REASON_INVALID_NOUL_CRITERIA, "noul criteria must be an object with true/false descriptions", cparam);
+            }
+            out.criteria = criteria;
+            out.keys = { "false", "true" };
+            break;
+        case DECISION_QTYPE_CHOICE:
+            if (criteria.is_array()) {
+                json keys = json::object();
+                for (const auto & c : criteria) {
+                    std::string k;
+                    if (!decision_py_str(c, k)) {
+                        throw decision_error(DECISION_REASON_UNSUPPORTED_CRITERIA_VALUE, "choice criteria list entries must be strings, numbers, booleans or null", cparam);
+                    }
+                    if (!keys.contains(k)) {
+                        keys[k] = nullptr;
+                    }
+                }
+                out.criteria = std::move(keys);
+            } else if (criteria.is_object()) {
+                out.criteria = criteria;
+            }
+            if (!out.criteria.is_object() || out.criteria.empty()) {
+                throw decision_error(DECISION_REASON_TOO_FEW_OPTIONS, "choice criteria must name at least one option", cparam);
+            }
+            for (auto it = out.criteria.begin(); it != out.criteria.end(); ++it) {
+                out.keys.push_back(it.key());
+            }
+            break;
+        case DECISION_QTYPE_SCORE:
+            if (!criteria.is_array() || criteria.empty()) {
+                throw decision_error(criteria.is_object() ? DECISION_REASON_UNSUPPORTED_CRITERIA_VALUE : DECISION_REASON_TOO_FEW_OPTIONS,
+                                     "score criteria must list at least one level", cparam);
+            }
+            out.criteria = criteria;
+            for (size_t i = 0; i < criteria.size(); ++i) {
+                out.keys.push_back(std::to_string(i));
+            }
+            break;
+    }
+    if ((int32_t) out.keys.size() > lim.max_options) {
+        throw decision_error(DECISION_REASON_TOO_MANY_OPTIONS,
+                             "at most " + std::to_string(lim.max_options) + " options are supported, got " + std::to_string(out.keys.size()), cparam);
+    }
+    return out;
+}
+
 decision_question decision_normalize_question(const std::string & id, const json & q, const decision_limits & lim, const std::string & param) {
     if (lim.layout == "laya") {
         return normalize_laya(id, q, lim, param);
+    }
+    if (lim.layout == "clef") {
+        return normalize_clef(id, q, lim, param);
     }
     if (!q.is_object()) {
         throw decision_error(DECISION_REASON_UNKNOWN_QUESTION_TYPE, "question must be an object", param);
@@ -173,6 +253,10 @@ decision_request decision_parse_systemone(const json & body, const decision_limi
     const bool laya = lim.layout == "laya";
     if (laya && req.state.is_null()) {
         // reference serve.py: serialize_state(None) would be the text "null"
+        throw decision_error(DECISION_REASON_INVALID_REQUEST, "state is required", "state");
+    }
+    if (lim.layout == "clef" && !body.contains("state")) {
+        // reference systemone(): a null state is the text "null", a missing one is an error
         throw decision_error(DECISION_REASON_INVALID_REQUEST, "state is required", "state");
     }
     // laya: an empty questions object gets empty answers (reference predict_batch)

@@ -69,6 +69,7 @@ struct llama_model_loader {
     static const int TENSOR_SKIP_IF_VIRTUAL = 1 << 3;
     static const int TENSOR_ALLOW_RESHAPE   = 1 << 4;
     static const int TENSOR_READ_LAZY       = 1 << 5; // read rows on demand instead of loading whole tensor; requires mmap for now
+    static const int TENSOR_GET_ROWS        = 1 << 6; // only read with GGML_OP_GET_ROWS: no buffer type without it (e.g. CPU repack)
 
     int n_kv      = 0;
     int n_tensors = 0;
