@@ -125,6 +125,16 @@ static void set_layout_defaults(decision_spec & spec, const std::string & layout
         spec.plan           = json{{"name", "sequential"}};
         spec.calibration.clamp_min = 0.5;
         spec.calibration.clamp_max = 5.0;
+    } else if (layout == "clef") {
+        // joint_schema_model.py of the model repo: special-token text is parsed (HF tokenizer), the answer
+        // confidence is the probability of the chosen option (systemone_answer)
+        spec.format         = "clef-v1";
+        spec.input_contract = "clef-v1";
+        spec.special_tokens = "parse";
+        spec.confidence     = "max_p";
+        spec.plan           = json{{"name", "joint"}};
+        spec.calibration.clamp_min = 0.05;
+        spec.calibration.clamp_max = 20.0;
     } else {
         spec.format         = "semif-v1";
         spec.input_contract = "semif-v1";
@@ -267,7 +277,8 @@ static bool check_required(const decision_spec & spec, std::string & err) {
     if (!spec.calibration.required) {
         return true;
     }
-    const int32_t layout_max = spec.layout == "laya" ? DECISION_LAYA_MAX_OPTIONS : DECISION_SEMIF_MAX_OPTIONS;
+    const int32_t layout_max = spec.layout == "laya" ? DECISION_LAYA_MAX_OPTIONS :
+                               spec.layout == "clef" ? DECISION_CLEF_MAX_OPTIONS : DECISION_SEMIF_MAX_OPTIONS;
     const int32_t max_options = spec.max_options > 0 ? std::min(spec.max_options, layout_max) : layout_max;
     std::string missing;
     if (!decision_calibration_covers(spec.calibration, max_options, missing)) {
@@ -315,8 +326,8 @@ bool decision_spec_from_json(const json & j, decision_spec & spec, std::string &
         return false;
     }
     if (!j.contains("layout") || !j.at("layout").is_string() ||
-        (j.at("layout") != "laya" && j.at("layout") != "semif-letters")) {
-        err = "layout must be \"laya\" or \"semif-letters\"";
+        (j.at("layout") != "laya" && j.at("layout") != "clef" && j.at("layout") != "semif-letters")) {
+        err = "layout must be \"laya\", \"clef\" or \"semif-letters\"";
         return false;
     }
 
@@ -348,6 +359,15 @@ bool decision_spec_from_json(const json & j, decision_spec & spec, std::string &
         }
         if (spec.input_contract == "laya-router-v1" && spec.special_tokens != "escape-control") {
             err = "input_contract \"laya-router-v1\" needs special_tokens \"escape-control\"";
+            return false;
+        }
+    } else if (spec.layout == "clef") {
+        if (spec.input_contract != "clef-v1") {
+            err = "input_contract must be \"clef-v1\" for layout clef";
+            return false;
+        }
+        if (spec.special_tokens != "parse") {
+            err = "special_tokens must be \"parse\" for layout clef";
             return false;
         }
     } else {
@@ -517,6 +537,8 @@ bool decision_spec_load(const std::string & model_path, const std::string & side
                 spec.calibration.version     = "gguf:laya.temperature";
             }
         }
+    } else if (spec.architecture == "clef") {
+        set_layout_defaults(spec, "clef");
     } else {
         set_layout_defaults(spec, "semif-letters");
     }
@@ -554,7 +576,7 @@ bool decision_spec_load(const std::string & model_path, const std::string & side
         spec.raw  = j;
         spec.text = text;
     } else {
-        if (spec.architecture != "laya") {
+        if (spec.architecture != "laya" && spec.architecture != "clef") {
             err = "GGUF (" + spec.architecture + ") has no decision.spec; pass --decision-spec FILE";
             return false;
         }
@@ -584,7 +606,7 @@ bool decision_spec_load(const std::string & model_path, const std::string & side
         }
     }
 
-    if ((spec.architecture == "laya") != (spec.layout == "laya")) {
+    if ((spec.architecture == "laya") != (spec.layout == "laya") || (spec.architecture == "clef") != (spec.layout == "clef")) {
         err = "decision spec layout '" + spec.layout + "' does not fit a '" + spec.architecture + "' GGUF";
         return false;
     }
