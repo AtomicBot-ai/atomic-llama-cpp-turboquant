@@ -1136,6 +1136,8 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             } else {
                 op = GGML_OP_ADD;
             }
+        } else if (flags & TENSOR_GET_ROWS) {
+            op = GGML_OP_GET_ROWS;
         } else {
             op = info.op;
         }

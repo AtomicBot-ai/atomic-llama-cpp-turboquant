@@ -50,6 +50,7 @@ struct llama_ubatch {
     llama_seq_id *  seq_id_unq; // [n_seqs_unq]       | s   | seq_id
     int32_t      *  seq_idx;    // [LLAMA_MAX_SEQ]    | -   | seq_idx
     int8_t       *  output;     // [n_tokens]         | i   | -
+    int32_t      *  decision_order; // [n_tokens], NULL if no entry has one, see llama_set_decision_order()
 
     struct data_t {
         std::vector<llama_token>    token;
@@ -60,6 +61,7 @@ struct llama_ubatch {
         std::vector<llama_seq_id>   seq_id_unq;
         std::vector<int32_t>        seq_idx;
         std::vector<int8_t>         output;
+        std::vector<int32_t>        decision_order;
 
         std::vector<llama_seq_id> seq_id_data;
     };
@@ -95,6 +97,9 @@ public:
     // min/max positions of each sequence in the current ubatch
     llama_pos seq_pos_min(llama_seq_id seq_id) const;
     llama_pos seq_pos_max(llama_seq_id seq_id) const;
+
+    // set after init(): one value per token of the batch, see llama_set_decision_order()
+    bool set_decision_order(const std::vector<int32_t> & order);
 
     // call once before splitting the batch to reset the internal state
     void split_reset();
@@ -145,6 +150,7 @@ private:
     std::vector<llama_seq_id>   seq_id_unq;
     std::vector<int32_t>        seq_idx;
     std::vector<int8_t>         output;
+    std::vector<int32_t>        decision_order; // empty if no entry has one
 
     using pos_set_t = std::set<llama_pos>;
     using seq_cpl_t = std::vector<bool>;
