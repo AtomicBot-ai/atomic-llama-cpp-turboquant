@@ -206,10 +206,6 @@ public:
 
     llama_tokens get_text_tokens() const;
 
-    // Replace LLAMA_TOKEN_NULL (mtmd media placeholders) for callers that need a flat token stream
-    // (e.g. Qwen NextN speculative begin / prime). Text tokens are unchanged.
-    llama_tokens replace_media_null_tokens(llama_token replacement) const;
-
     // for compatibility with speculative decoding
     void set_token(llama_pos pos, llama_token id);
 
@@ -236,15 +232,6 @@ public:
 
     // make sure all text tokens are within the vocab range
     bool validate(const struct llama_context * ctx) const;
-
-    // fork: encode and decode a media chunk on an extra (draft) context
-    int32_t process_chunk(
-                llama_context * ctx,
-                mtmd_context * mctx,
-                size_t idx,
-                llama_pos pos,
-                int32_t seq_id,
-                size_t & n_tokens_out) const;
 
     server_tokens clone() const;
 };

@@ -10,7 +10,9 @@ struct __builtin_align__(32) float8 {
 };
 #endif
 
-#if CUDART_VERSION >= 12080
+// Only the Blackwell NVFP4 activation quantizer below calls this; defining it for other arches
+// leaves an unreferenced function that nvcc 13 rejects under -Werror all-warnings.
+#if defined(BLACKWELL_MMA_AVAILABLE) && CUDART_VERSION >= 12080
 static __device__ __forceinline__ float nvfp4_native_scale_error(
         const float vals[QK_NVFP4_SUB], const float inv_col_scale, const float inv_scale, const float scale) {
     const float scale_dequant = 2.0f * scale;
@@ -48,7 +50,7 @@ static __device__ __forceinline__ float nvfp4_native_scale_error(
 
     return err;
 }
-#endif // CUDART_VERSION >= 12080
+#endif // defined(BLACKWELL_MMA_AVAILABLE) && CUDART_VERSION >= 12080
 
 __launch_bounds__(CUDA_QUANTIZE_BLOCK_SIZE, 1)
 static __global__ void quantize_q8_1(
@@ -83,21 +85,21 @@ static __global__ void quantize_q8_1(
     ggml_cuda_pdl_sync();
     const float xi = i0 < ne00 ? x[i03*s03 + i02*s02 + i01*s01 + i00] : 0.0f;
     float amax = fabsf(xi);
-    float sum = xi;
+    float sum = 0.0f;
 
     amax = warp_reduce_max<QK8_1>(amax);
-    sum  = warp_reduce_sum<QK8_1>(sum);
 
     const float  d = amax / 127.0f;
     const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
 
     y[ib].qs[iqs] = q;
+    sum = warp_reduce_sum<QK8_1>((float) q);
 
     if (iqs > 0) {
         return;
     }
 
-    y[ib].ds = make_half2(d, sum);
+    y[ib].ds = make_half2(d, d * sum);
 }
 
 __device__ __forceinline__ uint8_t compute_e8m0_scale(float amax) {

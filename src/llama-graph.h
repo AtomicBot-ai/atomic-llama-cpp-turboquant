@@ -26,6 +26,7 @@ class llama_kv_cache_dsa_context;
 class llama_kv_cache_msa_context;
 class llama_kv_cache_dsv4_raw_context;
 class llama_kv_cache_dsv4_context;
+
 class llama_kv_cache_iswa_context;
 class llama_memory_recurrent_context;
 class llama_memory_hybrid_context;
@@ -48,6 +49,7 @@ enum llm_fused_op {
     LLM_FUSED_OP_DSV4_HC_COMB,
     LLM_FUSED_OP_DSV4_HC_POST,
 };
+
 
 enum llm_ffn_op_type : int {
     LLM_FFN_NONE = 0,           // sentinel: unset; archs must assign before use
@@ -278,6 +280,11 @@ public:
     // used in view offsets, need to match for valid graph reuse
     uint32_t head;
     int32_t rs_z;
+
+    // DRC phase 2: pending-replay length baked into this graph's topology (an extra
+    // ggml_gated_delta_net(K=1) reconstruction per replay step) -- must match for valid reuse,
+    // same as head/rs_z above.
+    uint32_t replay_len = 0;
 };
 
 class llm_graph_input_cross_embd : public llm_graph_input_i {
@@ -720,15 +727,12 @@ public:
     std::map<llama_seq_id, llama_sampler *> samplers;
 };
 
-//
-// llm_graph_result
-//
+struct llm_graph_fused_node {
+    llm_fused_op op;
+    ggml_tensor * tensor;
+    int il;
+};
 
-// these objects deliver the result from the graph build process back to the llama_context
-// note that the input tensors created for the graph are referenced here - the goal is to be able to populate their
-//   specific data, by calling the set_inputs() method
-// along with the input tensors, the object also provides commonly used outputs tensors, such as logits, embeddings, etc.
-//   these are used by the llama_context to extact the relevant data, based on the compute parameters
 
 // callback that allows us to apply custom logic to each tensor (e.g. ggml-alloc, offloading, etc.)
 using llm_graph_cb = std::function<void(const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il)>;
@@ -841,6 +845,7 @@ struct llm_graph_params {
             cparams.embeddings              == other.cparams.embeddings              &&
             cparams.embeddings_nextn        == other.cparams.embeddings_nextn        &&
             cparams.embeddings_nextn_masked == other.cparams.embeddings_nextn_masked &&
+            cparams.mtp_chain               == other.cparams.mtp_chain               &&
             cparams.causal_attn             == other.cparams.causal_attn             &&
             arch  == other.arch  &&
             gtype == other.gtype &&
@@ -850,11 +855,6 @@ struct llm_graph_params {
     }
 };
 
-struct llm_graph_fused_node {
-    llm_fused_op op;
-    ggml_tensor * tensor;
-    int il;
-};
 
 class llm_graph_result {
 public:
@@ -895,6 +895,8 @@ public:
 
     void set_params(const llm_graph_params & params);
 
+
+
     // important graph nodes
     ggml_tensor * t_inp_tokens  = nullptr;
     ggml_tensor * t_inp_embd    = nullptr; // [n_embd_inp, n_tokens]
@@ -908,10 +910,10 @@ public:
     std::map<llama_seq_id, ggml_tensor *> t_sampled_logits;
     std::map<llama_seq_id, ggml_tensor *> t_candidates;
     std::map<llama_seq_id, ggml_tensor *> t_sampled;
+    std::vector<llm_graph_fused_node> fused_nodes;
     std::map<llama_seq_id, ggml_tensor *> t_sampled_probs;
 
     std::vector<llm_graph_input_ptr> inputs;
-    std::vector<llm_graph_fused_node> fused_nodes;
 
     ggml_context_ptr ctx_compute;
 
@@ -1110,7 +1112,6 @@ struct llm_graph_context {
              ggml_tensor * gate_exps_s = nullptr,
              ggml_tensor * down_exps_s = nullptr,
              ggml_tensor * selected_experts_in = nullptr) const;
-
     //
     // inputs
     //
@@ -1139,6 +1140,7 @@ struct llm_graph_context {
             ggml_tensor * kq_mask,
             ggml_tensor * sinks,   // [n_head_q]
             ggml_tensor * v_mla,   // [n_embd_head_v_mla, n_embd_head_v, n_head_v]
+                int64_t   n_kv_max,
                   float   kq_scale,
                     int   il) const;
 
@@ -1250,6 +1252,7 @@ struct llm_graph_context {
 
     ggml_tensor * build_attn(
             llm_graph_input_attn_cross * inp,
+
             ggml_tensor * wo,
             ggml_tensor * wo_b,
             ggml_tensor * wo_s,

@@ -7,7 +7,9 @@
 
 // bump if necessary
 #define LLAMA_MAX_LAYERS  512
-#define LLAMA_MAX_EXPERTS 1024 // Kimi K3 has 896 experts
+#define LLAMA_MAX_EXPERTS 1024 // Kimi K3
+#define LLAMA_MAX_PLE_NGRAM 8  // qwen4exp
+#define LLAMA_MAX_PLE_HEADS 64 // qwen4exp
 
 enum llama_expert_gating_func_type {
     LLAMA_EXPERT_GATING_FUNC_TYPE_NONE           = 0,
@@ -113,9 +115,6 @@ struct llama_hparams {
     uint32_t expert_gating_func   = LLAMA_EXPERT_GATING_FUNC_TYPE_NONE;
     uint32_t moe_every_n_layers   = 0;
     uint32_t moe_latent_size      = 0;
-
-    // When true, only NextN/MTP tail layers allocate KV (see has_kv()).
-    bool kv_only_nextn = false;
 
     float f_norm_eps;
     float f_norm_rms_eps;
@@ -265,6 +264,27 @@ struct llama_hparams {
     float    dsv4_hc_eps               = 0.0f;
     std::array<uint32_t, LLAMA_MAX_LAYERS> dsv4_compress_ratios;
 
+    // 0 = full rank (DeepSeek-V4)
+    uint32_t hc_low_rank = 0;
+
+    uint32_t ple_ngram_size      = 0;
+    uint32_t ple_heads_per_ngram = 0;
+    uint32_t ple_conv_kernel     = 0;
+    uint32_t ple_n_heads         = 0;   // (ngram_size - 1) * heads_per_ngram
+    uint32_t ple_head_dim        = 0;
+    uint32_t ple_eos_token_id    = 0;
+    // the id the PLE hash stands in at image positions; 0 makes the loader fall back to EOS
+    uint32_t ple_image_token_id  = 0;
+    std::array<uint32_t, LLAMA_MAX_LAYERS> is_ple_impl;
+    std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>  ple_layer_multipliers;
+    std::array<uint64_t, LLAMA_MAX_PLE_HEADS>  ple_head_offsets;
+    std::array<uint64_t, LLAMA_MAX_PLE_HEADS>  ple_head_vocab_sizes;
+
+    bool is_ple(uint32_t il) const;
+
+    // PLE conv history rows: (kernel - 1) * ngram_size; 0 without a PLE module
+    uint32_t ple_conv_state() const;
+
     // qwen3vl deepstack
     // When parsed from GGUF, this implies the first N layers consume the first
     // N deepstack embeddings. Use deepstack_mapping_arr if you need a more
@@ -279,14 +299,6 @@ struct llama_hparams {
 
     // gemma4 per-layer embedding
     uint32_t n_embd_per_layer = 0;
-
-    // gemma4 MTP assistant (speculative drafter)
-    uint32_t n_centroids              = 0;
-    uint32_t centroid_top_k           = 0;
-    uint32_t n_embd_backbone          = 0;
-    bool     attention_k_eq_v         = false;
-    bool     use_ordered_embeddings   = false;
-
     // needed by encoder-decoder models (e.g. T5, FLAN-T5)
     // ref: https://github.com/ggml-org/llama.cpp/pull/8141
     llama_token dec_start_token_id = LLAMA_TOKEN_NULL;
@@ -386,6 +398,10 @@ struct llama_hparams {
     // dimension of the recurrent state embeddings
     uint32_t n_embd_s() const;
 
+    // dimension of one ggml_gated_delta_net emit_mode==1 ingredient slot (4 rows of head_dim,
+    // one each for k/v/g/beta) -- only meaningful for GDN/KDA-style layers (n_embd_head_kda != 0).
+    uint32_t n_embd_s_ingredient() const;
+
     uint32_t n_pos_per_embd() const;
 
     // note: currently only support if either all or none of the layers are MLA
@@ -398,10 +414,10 @@ struct llama_hparams {
 
     // number of effective layers (excludes nextn layers)
     uint32_t n_layer() const;
-
-    // number of layers that carry a KV cache (respects n_layer_kv_from_start)
+    // number of layers with KV cache
     uint32_t n_layer_kv() const;
 
+    // number of layers with KV cache
     // note that this function uses different SWA parameters from those in the hparams
     // note: inlined on purpose for performance reasons
     // TODO: think of a better place for this function
@@ -444,6 +460,23 @@ struct llama_hparams {
 
 
     bool use_mrope() const;
+
+    // EAGLE3 draft model
+    std::array<int, 3> eagle3_extract_layers = {0, 0, 0};
+    uint32_t eagle3_target_hidden_size    = 0;
+    bool     eagle3_norm_before_residual  = false;
+
+    // DFlash draft model
+    uint32_t dflash_block_size              = 16;
+    uint32_t dflash_mask_token_id           = 0;
+    uint32_t dflash_conv_kernel_size        = 0;
+    uint32_t dflash_conv_group_size         = 0;
+    uint32_t dflash_selector_rank           = 0;
+    uint32_t dflash_selector_top_k          = 0;
+
+
+
+
 };
 
 static_assert(std::is_trivially_copyable<llama_hparams>::value, "llama_hparams must be trivially copyable");

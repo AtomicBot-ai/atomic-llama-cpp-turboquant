@@ -41,8 +41,7 @@ extern char **environ;
 
 #define DEFAULT_STOP_TIMEOUT 10 // seconds
 
-// note: CMD_ROUTER_TO_CHILD_EXIT and CMD_CHILD_TO_ROUTER_ERROR live in
-// server-models.h (shared with server.cpp's ggml abort callback)
+#define CMD_ROUTER_TO_CHILD_EXIT  "cmd_router_to_child:exit"
 #define CMD_CHILD_TO_ROUTER_STATE "cmd_child_to_router:state:" // followed by json string
 
 // address for child process, this is needed because router may run on 0.0.0.0
@@ -846,27 +845,7 @@ void server_models::load(const std::string & name, const load_options & opts) {
                     std::string str(buffer);
                     if (string_starts_with(buffer, CMD_CHILD_TO_ROUTER_STATE)) {
                         this->handle_child_state(name, str);
-                    } else if (string_starts_with(buffer, CMD_CHILD_TO_ROUTER_ERROR)) {
-                        // fork: structured error emitted by the child's ggml abort
-                        // callback (see server.cpp); surfaces crashes in /v1/models
-                        SRV_ERR("model name=%s loading error: %s\n", name.c_str(), buffer);
-                        std::string err_msg(buffer);
-                        size_t prefix_len = strlen(CMD_CHILD_TO_ROUTER_ERROR);
-                        if (err_msg.size() > prefix_len) {
-                            auto trimmed = err_msg.substr(prefix_len);
-                            while (!trimmed.empty() && (trimmed.back() == '\n' || trimmed.back() == '\r')) {
-                                trimmed.pop_back();
-                            }
-                            this->update_last_error(name, trimmed);
-                        }
-                        this->update_status(name, { SERVER_MODEL_STATUS_UNLOADED, /*exit_code =*/ 1 });
                     }
-                }
-                // EOF on stdout — child process exited (could be a crash).
-                // Immediately mark UNLOADED so /v1/models stops advertising
-                // this model as loaded.
-                if (feof(stdout_file)) {
-                    this->update_status(name, { SERVER_MODEL_STATUS_UNLOADED, /*exit_code =*/ 1 });
                 }
             } else {
                 SRV_ERR("failed to get stdout/stderr of child process for name=%s\n", name.c_str());
@@ -914,14 +893,6 @@ void server_models::load(const std::string & name, const load_options & opts) {
         // note: we cannot join() prior to this point because it will close stdin_file
         if (log_thread.joinable()) {
             log_thread.join();
-        }
-
-        // fork: the log thread may see EOF while the child process is still
-        // alive (e.g. the client side of the pipe was dropped). Kill it here so
-        // subprocess_join() below cannot hang and GPU memory is freed.
-        if (child_proc->is_alive()) {
-            SRV_WRN("model name=%s child still alive after log thread EOF, force-killing\n", name.c_str());
-            child_proc->terminate();
         }
 
         child_proc->stopped.store(true, std::memory_order_release);
@@ -1054,14 +1025,6 @@ void server_models::update_status(const std::string & name, const update_status_
         notify_sse("status_change", name, data);
     }
     cv.notify_all();
-}
-
-void server_models::update_last_error(const std::string & name, const std::string & error) {
-    std::unique_lock<std::mutex> lk(mutex);
-    auto it = mapping.find(name);
-    if (it != mapping.end()) {
-        it->second.meta.last_error = error;
-    }
 }
 
 void server_models::update_download_progress(const std::string & name, const common_download_progress & progress, bool done, bool ok) {
@@ -1683,12 +1646,6 @@ void server_models_routes::init_routes() {
             if (meta.is_failed()) {
                 status["exit_code"] = meta.exit_code;
                 status["failed"]    = true;
-                if (meta.is_signaled()) {
-                    status["exit_signal"] = meta.exit_signal();
-                }
-            }
-            if (!meta.last_error.empty()) {
-                status["last_error"] = meta.last_error;
             }
 
             // pi coding agent multimodal compatibility
@@ -2122,9 +2079,8 @@ server_http_proxy::server_http_proxy(
         return has_next; // false if EOF or pipe broken
     };
 
-    // wire up the HTTP client
-    // note: do NOT capture `this` pointer, as it may be destroyed before the thread ends
-    httplib::ResponseHandler response_handler = [pipe, cli](const httplib::Response & response) {
+    // build the header message forwarded to the reader thread, stripping internal proxy headers
+    auto make_header_msg = [](const httplib::Response & response) {
         msg_t msg;
         msg.status = response.status;
         for (const auto & [key, value] : response.headers) {
@@ -2138,7 +2094,17 @@ server_http_proxy::server_http_proxy(
             }
             msg.headers[key] = value;
         }
-        return pipe->write(std::move(msg)); // send headers first
+        return msg;
+    };
+
+    // true once response_handler has already forwarded the headers
+    auto headers_sent = std::make_shared<std::atomic<bool>>(false);
+
+    // wire up the HTTP client
+    // note: do NOT capture `this` pointer, as it may be destroyed before the thread ends
+    httplib::ResponseHandler response_handler = [pipe, headers_sent, make_header_msg](const httplib::Response & response) {
+        headers_sent->store(true);
+        return pipe->write(make_header_msg(response)); // send headers first
     };
     httplib::ContentReceiverWithProgress content_receiver = [pipe](const char * data, size_t data_length, size_t, size_t) {
         // send data chunks
@@ -2212,13 +2178,16 @@ server_http_proxy::server_http_proxy(
 
     // start the proxy thread
     SRV_DBG("start proxy thread %s %s\n", req.method.c_str(), req.path.c_str());
-    this->thread = std::thread([cli, pipe, req]() {
+    this->thread = std::thread([cli, pipe, req, headers_sent, make_header_msg]() {
         auto result = cli->send(std::move(req));
         if (result.error() != httplib::Error::Success) {
             auto err_str = httplib::to_string(result.error());
             SRV_ERR("http client error: %s\n", err_str.c_str());
             pipe->write({{}, 500, "", ""}); // header
             pipe->write({{}, 0, "proxy error: " + err_str, ""}); // body
+        } else if (!headers_sent->load()) {
+            // httplib skips response_handler for bodyless statuses like 204, send headers here instead
+            pipe->write(make_header_msg(*result));
         }
         pipe->close_write(); // signal EOF to reader
         SRV_DBG("%s", "client request thread ended\n");

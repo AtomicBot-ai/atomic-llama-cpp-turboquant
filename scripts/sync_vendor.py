@@ -24,61 +24,30 @@ vendor = {
     "https://raw.githubusercontent.com/sheredom/subprocess.h/8671cee1fc09f11a70ce3782a0ee13177c3aa387/subprocess.h": "vendor/sheredom/subprocess.h",
 }
 
-
-def _apply_wifsignaled_patch(path: str) -> None:
-    """Apply the WIFSIGNALED encoding patch — without it subprocess_join
-    and subprocess_alive collapse all signal deaths (SIGABRT, SIGTERM,
-    SIGKILL) to EXIT_FAILURE(1), making them indistinguishable from
-    normal errors.  Store the negated signal number so callers can
-    report the actual cause of death."""
-    with open(path) as f:
-        content = f.read()
-
-    # Replace the error-only else in subprocess_join
-    old = """    if (WIFEXITED(status)) {
-      process->return_status = WEXITSTATUS(status);
-    } else {
-      process->return_status = EXIT_FAILURE;
-    }"""
-    new = """    if (WIFEXITED(status)) {
-      process->return_status = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        // Store negated signal number so callers can distinguish signal death
-        // (e.g. -6 for SIGABRT from OOM, -15 for SIGTERM from force-kill) from
-        // normal error exit (positive exit code) and clean exit (exit code 0).
-        process->return_status = -WTERMSIG(status);
-    } else {
-      process->return_status = EXIT_FAILURE;
-    }"""
-    content = content.replace(old, new)
-
-    # Same fix in subprocess_alive
-    old = """    if (WIFEXITED(status)) {
-        process->return_status = WEXITSTATUS(status);
-      } else {
-        process->return_status = EXIT_FAILURE;
-      }"""
-    new = """    if (WIFEXITED(status)) {
-        process->return_status = WEXITSTATUS(status);
-      } else if (WIFSIGNALED(status)) {
-        // Store negated signal number so callers can distinguish signal death
-        // (e.g. -6 for SIGABRT from OOM, -15 for SIGTERM from force-kill) from
-        // normal error exit (positive exit code) and clean exit (exit code 0).
-        process->return_status = -WTERMSIG(status);
-      } else {
-        process->return_status = EXIT_FAILURE;
-      }"""
-    content = content.replace(old, new)
-
-    with open(path, "w") as f:
-        f.write(content)
-
+# TODO @ngxson : this is temporary, to be removed in the future
+patches = [
+    # https://github.com/sheredom/subprocess.h/pull/102
+    "vendor/sheredom/patch-bsd.patch",
+    # https://github.com/sheredom/subprocess.h/pull/101
+    "vendor/sheredom/patch-windows-quote-backslash.patch",
+    # https://github.com/sheredom/subprocess.h/pull/104
+    # note: must be applied after patch-bsd.patch, they touch adjacent lines
+    "vendor/sheredom/patch-glibc-older-than-2.29.patch",
+]
 
 for url, filename in vendor.items():
     print(f"downloading {url} to {filename}") # noqa: NP100
     urllib.request.urlretrieve(url, filename)
 
-_apply_wifsignaled_patch("vendor/sheredom/subprocess.h")
+for patch in patches:
+    print(f"applying {patch}") # noqa: NP100
+    try:
+        subprocess.check_call([
+            "git", "apply", "--directory", os.path.dirname(patch), patch
+        ])
+    except Exception as e:
+        print(f"Error: {e}") # noqa: NP100
+        sys.exit(1)
 
 print("Splitting httplib.h...") # noqa: NP100
 try:

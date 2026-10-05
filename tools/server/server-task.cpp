@@ -1560,6 +1560,11 @@ json server_task_result_metrics::to_json() {
         { "n_decode_total",                  n_decode_total },
         { "n_busy_slots_total",              n_busy_slots_total },
 
+        { "n_draft_tokens_total",            n_draft_tokens_total },
+        { "n_draft_accepted_total",          n_draft_accepted_total },
+        { "n_draft_verif_steps_total",       n_draft_verif_steps_total },
+        { "n_accepted_per_pos_total",        n_accepted_per_pos_total },
+
         { "slots",                           slots_data },
     };
 }
@@ -1839,8 +1844,10 @@ void server_prompt_cache::update() {
         }
     }
 
-    SRV_TRC(" - cache state: %zu prompts, %.3f MiB (limits: %.3f MiB, %zu tokens, %zu est)\n",
-            states.size(), size() / (1024.0 * 1024.0), limit_size / (1024.0 * 1024.0), limit_tokens, limit_tokens_cur);
+    // one line per update at info level: the cache is the largest host allocation the server makes,
+    // and its size has to be visible in ordinary logs
+    SRV_INF("prompt cache: %zu prompts, %.1f MiB (limit %.1f MiB, %zu tokens)\n",
+            states.size(), size() / (1024.0 * 1024.0), limit_size / (1024.0 * 1024.0), limit_tokens);
 
     for (const auto & state : states) {
         SRV_TRC("   - prompt %p: %7d tokens, checkpoints: %2zu, %9.3f MiB\n",

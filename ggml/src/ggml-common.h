@@ -255,6 +255,21 @@ typedef struct {
 } block_q8_0;
 static_assert(sizeof(block_q8_0) == sizeof(ggml_half) + QK8_0, "wrong q8_0 block size/padding");
 
+// Q8_CR / Q5_CR: same block layout as Q8_0 / Q5_0, but the blocks encode a
+// tensor rotated along rows in groups of QK8_CR with the normalized
+// Kronecker-Hadamard matrix (see ggml-quants.c). mul_mat must rotate the other
+// operand the same way before the dot products.
+#define QK8_CR 256
+typedef struct {
+    block_q8_0 blocks[QK8_CR/QK8_0];
+} block_q8_cr;
+static_assert(sizeof(block_q8_cr) == QK8_CR/QK8_0*(sizeof(ggml_half) + QK8_0), "wrong q8_cr block size/padding");
+
+typedef struct {
+    block_q5_0 blocks[QK8_CR/QK5_0];
+} block_q5_cr;
+static_assert(sizeof(block_q5_cr) == QK8_CR/QK5_0*(sizeof(ggml_half) + sizeof(uint32_t) + QK5_0/2), "wrong q5_cr block size/padding");
+
 #define QK8_1 32
 typedef struct {
     GGML_EXTENSION union {
@@ -320,10 +335,9 @@ static_assert(sizeof(block_turbo3_0) == sizeof(ggml_half) + QK_TURBO3/4 + QK_TUR
 // = 68 bytes per 128 values = 4.25 bits/value → 3.8× compression vs fp16
 typedef struct {
     ggml_half  norm;                    //  2 bytes
-    ggml_half  rnorm;                   //  2 bytes (reserved, unused in 4-bit mode)
     uint8_t    qs[QK_TURBO4 / 2];      // 64 bytes: 4-bit PolarQuant indices (nibble packed)
-} block_turbo4_0;                       // 68 bytes total
-static_assert(sizeof(block_turbo4_0) == 68, "wrong turbo4_0 block size");
+} block_turbo4_0;                       // 66 bytes total (4.125 bpw, dropped dead rnorm)
+static_assert(sizeof(block_turbo4_0) == 66, "wrong turbo4_0 block size");
 #else
 // Legacy 3-bit PolarQuant + 1-bit QJL (original paper design)
 // Per block: norm(fp16) + rnorm(fp16) + 3-bit indices (48 bytes) + 1-bit QJL signs (16 bytes)
@@ -411,6 +425,7 @@ typedef struct {
 } block_q3_K;
 static_assert(sizeof(block_q3_K) == sizeof(ggml_half) + QK_K / 4 + QK_K / 8 + 12, "wrong q3_K block size/padding");
 
+
 // 4-bit quantization
 // 8 blocks of 32 elements each
 // weight is represented as x = a * q + b
@@ -457,6 +472,11 @@ typedef struct {
     ggml_half d;             // super-block scale
 } block_q6_K;
 static_assert(sizeof(block_q6_K) == sizeof(ggml_half) + QK_K / 16 + 3*QK_K/4, "wrong q6_K block size/padding");
+
+// Q6_CR: same block layout as Q6_K, but the block encodes a ConvRot-rotated group of QK_K weights.
+// QK_K == QK8_CR == 256, so one block_q6_K is exactly one ConvRot group.
+typedef block_q6_K block_q6_cr;
+static_assert(sizeof(block_q6_cr) == sizeof(ggml_half) + QK_K / 16 + 3*QK_K/4, "wrong q6_cr block size/padding");
 
 // This is only used for intermediate quantization and dot products
 typedef struct {
@@ -1210,6 +1230,10 @@ GGML_TABLE_END()
 // TODO: fix name to kvalues_iq4_nl
 GGML_TABLE_BEGIN(int8_t, kvalues_iq4nl, 16)
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+GGML_TABLE_END()
+
+GGML_TABLE_BEGIN(int8_t, kvalues_tq4, 16)
+    -127, -96, -75, -58, -44, -31, -18, -6, 6, 18, 31, 44, 58, 75, 96, 127,
 GGML_TABLE_END()
 
 // e2m1 values (doubled), shared by MXFP4 and NVFP4

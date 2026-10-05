@@ -13,6 +13,33 @@ struct llama_hparams;
 struct llama_model;
 struct llama_context;
 
+// Auto-asymmetric turbo-K upgrade decision (see llama-kv-cache.cpp for the
+// full rationale: high-GQA-ratio models amplify turbo K's quantization
+// error, so symmetric turbo K+V gets K upgraded to q8_0). Exposed so
+// llama-context.cpp's block KV streaming page-geometry pre-scan can size
+// its bootstrap allocation off the same effective K type the llama_kv_cache
+// constructor will actually use, instead of the raw requested type - the
+// two must never diverge or the streaming runtime's bootstrap pool ends up
+// sized for the wrong page geometry.
+ggml_type llama_kv_cache_resolve_stream_type_k(
+        const llama_model & model, const llama_hparams & hparams,
+        ggml_type type_k, ggml_type type_v);
+
+// Layer-adaptive per-layer KV precision override (TURBO_LAYER_ADAPTIVE env
+// var - see llama-kv-cache.cpp for the mode legend). Exposed, like the
+// resolver above, so llama-context.cpp's block KV streaming pre-scan can
+// detect ahead of time whether a model will actually get non-uniform
+// per-layer KV types: the streamed page pool has one page size and one
+// buffer type for the whole arena, so mixed q8_0/turbo2/turbo4 layers would
+// otherwise pack differently-shaped rows into pages sized for a layer that
+// isn't theirs.
+int llama_kv_cache_turbo_layer_adaptive_mode(ggml_type type_v, uint32_t n_layer);
+
+ggml_type llama_kv_cache_turbo_layer_adaptive_type_k(
+        int mode, ggml_type type_k, ggml_type type_v, uint32_t il, uint32_t n_layer);
+ggml_type llama_kv_cache_turbo_layer_adaptive_type_v(
+        int mode, ggml_type type_k, ggml_type type_v, uint32_t il, uint32_t n_layer);
+
 //
 // llama_kv_cache
 //
@@ -112,7 +139,11 @@ public:
                llama_memory_t   mem_other,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
-        const  layer_share_cb & share);
+        const  layer_share_cb & share,
+                 const char *   name_tag = "",
+                          size_t kv_stream_stage_bytes = 0,
+                          void * kv_stream_phase_arena = nullptr,
+                          size_t kv_stream_maximum_pool_bytes = 0);
 
     ~llama_kv_cache() = default;
 
@@ -144,6 +175,9 @@ public:
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_target> get_kv_stream_targets() const override;
+
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
@@ -155,16 +189,36 @@ public:
 
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
+    std::vector<uint32_t> get_layer_ids() const;
+    ggml_tensor * get_k_storage(int32_t il) const;
+    ggml_tensor * get_v_storage(int32_t il) const;
+    bool get_v_transposed() const;
+
+    bool kv_stream_adapt(uint32_t active_tokens, uint32_t query_tokens);
+    bool kv_stream_resize_pool(
+        size_t pool_bytes, uint32_t active_tokens, uint32_t ring_slots);
 
     bool get_has_shift() const;
 
     ggml_type type_k() const;
     ggml_type type_v() const;
 
-    std::vector<uint32_t> get_layer_ids() const;
-    ggml_tensor * get_k_storage(int32_t il) const;
-
     const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
+
+    // state_read, plus the cells the restored tokens were placed in.
+    // a cache that mirrors another one cell for cell (the qwen4exp indexer) cannot search for
+    // its own cells here: a second independent search only happens to agree with the first.
+    //   sinfos_out: if set, resized to n_stream and filled with the layout used; a stream that
+    //               carried no cells leaves an empty entry
+    //   sinfos_in : if set, the layout to use instead of searching for one. it must have one
+    //               entry per stream and the entry must match the cell count in the blob,
+    //               otherwise the read fails as it would on any other corrupt input
+    void state_read_sinfo(
+            llama_io_read_i & io,
+               llama_seq_id   seq_id,
+      llama_state_seq_flags   flags,
+          slot_info_vec_t *   sinfos_out,
+     const slot_info_vec_t *   sinfos_in);
 
     //
     // graph_build API
@@ -206,9 +260,6 @@ public:
     // if cont == true, then the slot must be continuous
     // return empty slot_info on failure
     slot_info find_slot(const llama_ubatch & ubatch, bool cont) const;
-
-    // Gemma4 MTP: one-token slot_info pointing at the last populated cell for seq_id (read-only graphs).
-    slot_info mtp_slot_info(llama_seq_id seq_id) const;
 
     // emplace the ubatch context into slot: [sinfo.idxs[0...ubatch.n_tokens - 1]]
     void apply_ubatch(const slot_info & sinfo, const llama_ubatch & ubatch);
@@ -284,6 +335,47 @@ private:
     const llama_swa_type swa_type = LLAMA_SWA_TYPE_NONE;
 
     // ggml contexts for the KV cache along with the allocated backend buffers:
+    struct kv_stream_runtime_owner {
+        using feedback_fn_t = bool (*)(
+            void *, uint64_t *, uint64_t *, double *, uint32_t *,
+            uint32_t *, uint32_t *, uint32_t *);
+        using span_feedback_fn_t = bool (*)(void *, double);
+        using reconfigure_fn_t = bool (*)(void *, uint32_t, uint32_t);
+        using repartition_fn_t = bool (*)(void *, uint32_t);
+        using decode_layout_fn_t = bool (*)(void *, uint32_t);
+        using mark_dirty_rows_fn_t = bool (*)(void *, const int64_t *, size_t);
+        using resize_pool_fn_t = bool (*)(void *, size_t, uint32_t, uint32_t);
+
+        void * runtime = nullptr;
+        void (*free_fn)(void *) = nullptr;
+        feedback_fn_t feedback_fn = nullptr;
+        span_feedback_fn_t span_feedback_fn = nullptr;
+        reconfigure_fn_t reconfigure_fn = nullptr;
+        repartition_fn_t repartition_fn = nullptr;
+        decode_layout_fn_t decode_layout_fn = nullptr;
+        mark_dirty_rows_fn_t mark_dirty_rows_fn = nullptr;
+        resize_pool_fn_t resize_pool_fn = nullptr;
+        uint32_t layer_count = 0;
+        uint32_t minimum_ring_slots = 0;
+        uint32_t decode_layout_pages = 0;
+        uint32_t starved_evaluations = 0;
+        uint32_t overprovisioned_evaluations = 0;
+        uint32_t evaluations_since_repartition = UINT32_MAX;
+        uint64_t previous_deadline_samples = 0;
+        uint64_t previous_deadline_misses = 0;
+        int64_t previous_adapt_us = 0;
+        uint32_t previous_query_tokens = UINT32_MAX;
+
+        ~kv_stream_runtime_owner() {
+            if (runtime != nullptr) {
+                free_fn(runtime);
+            }
+        }
+    };
+
+    // Declared before ctxs_bufs so the custom buffers release their runtime
+    // references before this owner releases the initial reference.
+    kv_stream_runtime_owner kv_stream_runtime;
     std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
 
     // the current index from where we start searching for a free slot in the ring buffer of KV cells (see find_slot())
@@ -344,7 +436,8 @@ private:
     void state_write_meta(llama_io_write_i & io, const cell_ranges_t & cr, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const;
 
-    bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,       slot_info & sinfo, llama_seq_id dest_seq_id = -1);
+    // sinfo_in, when set, replaces the find_slot call: the cells are given by the caller
+    bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,       slot_info & sinfo, llama_seq_id dest_seq_id = -1, const slot_info * sinfo_in = nullptr);
     bool state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo);
 };
 
@@ -385,6 +478,9 @@ public:
 
     llama_memory_status  get_status() const override;
     const llama_ubatch & get_ubatch() const override;
+
+    bool has_kv_stream_targets() const override;
+    std::vector<llama_kv_stream_active_target> get_kv_stream_active_targets() const override;
 
     //
     // llama_kv_cache_context specific API

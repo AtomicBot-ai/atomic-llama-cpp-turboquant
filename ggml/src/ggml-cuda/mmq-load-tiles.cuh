@@ -524,6 +524,94 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     }
 }
 
+// TQ4_1S MMQ (gfx90a / CDNA MFMA-i8 only). The block-local WHT is cancelled on the
+// activation side (pre-rotation), so the weight reduces to a per-element int8 centroid
+// LUT + two per-16 scales (d0 = elems 0-15, d1 = elems 16-31). Consumed by the stock
+// vec_dot_q8_0_16_q8_1_mma. int8 centroid[i] = round(TQ4_CENTROIDS_WEIGHT[i]*127/2.733);
+// recover with x_df = d * (2.733/127).
+static __device__ __forceinline__ int tq4_1s_qs_to_int8x4(const uint8_t * __restrict__ qs, const int kqsx) {
+    // int kqsx (0..7) covers elems [4*kqsx .. 4*kqsx+3] = qs bytes [2*kqsx, 2*kqsx+1];
+    // elem 2k -> byte k low nibble, elem 2k+1 -> byte k high nibble.
+    // Expand the 4 nibbles -> 4 int8 centroids in natural order [e0,e1,e2,e3] using the hardware
+    // byte-permute table lookup (get_int_from_table_16 = v_perm_b32) instead of 4 serialized
+    // per-nibble LUT loads. q4 packs the 4 nibbles at indices 0-3; get_int_from_table_16 returns
+    // the even nibbles (e0,e2) in v.x and the odd (e1,e3) in v.y, then one more v_perm_b32
+    // reinterleaves them to natural order (source[0-3]=v.x, source[4-7]=v.y; sel picks 0,4,1,5).
+    const int  q4 = qs[2*kqsx + 0] | (qs[2*kqsx + 1] << 8);
+    const int2 v  = get_int_from_table_16(q4, kvalues_tq4);
+#if defined(GGML_USE_HIP)
+    return __builtin_amdgcn_perm(v.y, v.x, 0x05010400);
+#else
+    // nvcc / MUSA: prmt selector nibbles pick bytes 0-3 from the first operand and 4-7 from
+    // the second, so [v.x0, v.y0, v.x1, v.y1] is selector 0x5140. Same result as the HIP form.
+    return __byte_perm(v.x, v.y, 0x5140);
+#endif
+}
+
+template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_tq4_1s(
+        const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
+    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
+    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback);
+    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback);
+
+    constexpr float TQ4_CENTROID_I8_RESCALE = 2.733f / 127.0f;
+    constexpr int   QI_TQ = QK_TQ4_1S / 4;   // 8 ints (int8-quads) per block
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + 2*MMQ_TILE_NE_K);
+#else
+    // dp4a consumes a different tile layout: rows are padded by one int and the scales start
+    // after the (padded) quant region, not at a fixed 2*MMQ_TILE_NE_K offset.
+    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_TQ4_1S, I);
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + txs.qs);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+    constexpr int threads_per_row = 32;
+    constexpr int nrows = warp_size / threads_per_row;
+    const int txi  = warp_size > threads_per_row ? threadIdx.x % threads_per_row : threadIdx.x;
+    const int kbx  = txi / QI_TQ;   // block within the 32-int half
+    const int kqsx = txi % QI_TQ;   // int within the block
+
+#pragma unroll
+    for (int i0 = 0; i0 < I; i0 += nrows*nwarps) {
+        int i = i0 + (nrows == 1 ? threadIdx.y : threadIdx.y*nrows + threadIdx.x/threads_per_row);
+        if (fallback) {
+            i = min(i, i_max);
+        }
+        const block_tq4_1s * bxi = (const block_tq4_1s *) x + kbx0 + i*stride + kbx;
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        x_qs[i*sram_stride           + 0             + txi] = tq4_1s_qs_to_int8x4(bxi[0].qs,                   kqsx);
+        x_qs[i*sram_stride           + MMQ_TILE_NE_K + txi] = tq4_1s_qs_to_int8x4(bxi[MMQ_TILE_NE_K/QI_TQ].qs, kqsx);
+#else
+        x_qs[i*(2*MMQ_TILE_NE_K + 1) + 0             + txi] = tq4_1s_qs_to_int8x4(bxi[0].qs,                   kqsx);
+        x_qs[i*(2*MMQ_TILE_NE_K + 1) + MMQ_TILE_NE_K + txi] = tq4_1s_qs_to_int8x4(bxi[MMQ_TILE_NE_K/QI_TQ].qs, kqsx);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    }
+
+    // Two per-16 scales per block: slot 2*b = d0 (elems 0-15), slot 2*b+1 = d1 (elems 16-31).
+    constexpr int blocks_per_tile_x_row = 2*MMQ_TILE_NE_K / QI_TQ;   // 8 blocks
+    constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
+    const int kbxd = threadIdx.x % blocks_per_tile_x_row;            // block 0..7
+#pragma unroll
+    for (int i0 = 0; i0 < I; i0 += nwarps * rows_per_warp) {
+        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / blocks_per_tile_x_row;
+        if (fallback) {
+            i = min(i, i_max);
+        }
+        const block_tq4_1s * bxi = (const block_tq4_1s *) x + kbx0 + i*stride + kbxd;
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        x_df[i*sram_stride                             + 2*kbxd + 0] = __half2float(bxi->d0) * TQ4_CENTROID_I8_RESCALE;
+        x_df[i*sram_stride                             + 2*kbxd + 1] = __half2float(bxi->d1) * TQ4_CENTROID_I8_RESCALE;
+#else
+        x_df[i*(2*MMQ_TILE_NE_K*2/QI8_0) + i/(QI8_0/4) + 2*kbxd + 0] = __half2float(bxi->d0) * TQ4_CENTROID_I8_RESCALE;
+        x_df[i*(2*MMQ_TILE_NE_K*2/QI8_0) + i/(QI8_0/4) + 2*kbxd + 1] = __half2float(bxi->d1) * TQ4_CENTROID_I8_RESCALE;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q2_K(

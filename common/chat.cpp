@@ -920,6 +920,10 @@ static std::string common_chat_template_direct_apply_impl(
         bool enabled = inp["preserve_reasoning"].get<bool>();
         jinja::caps_apply_preserve_reasoning(ctx, enabled);
     }
+    if (inp.contains("reasoning_effort") && inp["reasoning_effort"].is_string() && !inp["reasoning_effort"].empty()) {
+        std::string reasoning_effort = inp["reasoning_effort"].get<std::string>();
+        jinja::caps_apply_reasoning_effort(ctx, reasoning_effort);
+    }
 
     jinja::global_from_json(ctx, inp, inputs.mark_input);
 
@@ -1900,7 +1904,7 @@ static common_chat_params common_chat_params_init_lfm2(const common_chat_templat
 
         auto reasoning = p.eps();
         if (extract_reasoning) {
-            // Allow optional whitespace before <think> - some models emit a
+            // Allow optional whitespace before <think> — some models emit a
             // newline between the generation prompt and the thinking tag.
             reasoning = p.optional(p.space() + THINK_START + p.reasoning(p.until(THINK_END)) + THINK_END);
         }
@@ -2258,7 +2262,7 @@ static common_chat_params common_chat_params_init_deepseek_v3_2(const common_cha
         }
 
         if (extract_reasoning && inputs.enable_thinking) {
-            // Allow optional whitespace before <think> - some models emit a
+            // Allow optional whitespace before <think> — some models emit a
             // newline between the generation prompt and the thinking tag.
             reasoning = p.optional(p.space() + THINK_START + p.reasoning(p.until(THINK_END)) + THINK_END);
             reasoning_with_tc = THINK_START +
@@ -2646,6 +2650,119 @@ static common_chat_params common_chat_params_init_cohere2moe(const common_chat_t
             { COMMON_GRAMMAR_TRIGGER_TYPE_WORD, ACTION_START }
         };
     }
+
+    return data;
+}
+
+// Inkling / TML typed-content-block parser: <|end_message|> separates blocks within a turn,
+// <|content_model_end_sampling|> is the sole end-of-generation token (mirrors sglang TmlDetector).
+static common_chat_params common_chat_params_init_inkling(const common_chat_template &          tmpl,
+                                                          const autoparser::generation_params & inputs) {
+    common_chat_params data;
+
+    const std::string MSG_MODEL    = "<|message_model|>";
+    const std::string MSG_USER     = "<|message_user|>";
+    const std::string MSG_SYSTEM   = "<|message_system|>";
+    const std::string MSG_TOOL     = "<|message_tool|>";
+    const std::string THINK        = "<|content_thinking|>";
+    const std::string TEXT         = "<|content_text|>";
+    const std::string END_MESSAGE  = "<|end_message|>";
+    const std::string END_SAMPLING = "<|content_model_end_sampling|>";
+    const std::string INVOKE_TOOL  = "<|content_invoke_tool_json|>";
+
+    data.prompt             = common_chat_template_direct_apply_impl(tmpl, inputs);
+    data.generation_prompt  = common_chat_template_generation_prompt_impl(tmpl, inputs);
+    data.format             = COMMON_CHAT_FORMAT_PEG_NATIVE;
+    data.supports_thinking  = true;
+    data.thinking_start_tag = THINK;
+    data.thinking_end_tags  = {END_MESSAGE};
+    data.preserved_tokens   = {
+        MSG_MODEL, MSG_USER, MSG_SYSTEM, MSG_TOOL,
+        THINK, TEXT, END_MESSAGE, END_SAMPLING, INVOKE_TOOL,
+    };
+
+    auto has_tools = inputs.tools.is_array() && !inputs.tools.empty();
+    data.message_delimiters = {
+        { COMMON_CHAT_ROLE_ASSISTANT, MSG_MODEL },
+        { COMMON_CHAT_ROLE_USER,      MSG_USER },
+        { COMMON_CHAT_ROLE_SYSTEM,    MSG_SYSTEM },
+        { COMMON_CHAT_ROLE_TOOL,      MSG_TOOL },
+    };
+
+    auto extract_reasoning = inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE;
+
+    if (inputs.has_continuation()) {
+        const auto & msg = inputs.continue_msg;
+
+        data.generation_prompt = MSG_MODEL + THINK + msg.reasoning_content;
+        if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
+            data.generation_prompt += END_MESSAGE + TEXT + msg.render_content();
+        }
+
+        data.prompt += data.generation_prompt;
+    }
+
+    auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
+        auto generation_prompt = p.literal(MSG_MODEL);
+        auto end               = p.end();
+
+        // thinking block; may also reappear mid-turn (after content), so it is both an optional
+        // prefix and a choice inside the block loops. With reasoning_format=NONE keep it
+        // (markers included) inline as content
+        common_peg_parser reasoning_block = p.eps();
+        if (extract_reasoning) {
+            reasoning_block = p.literal(THINK) +
+                              p.reasoning(p.until_one_of({ END_MESSAGE, TEXT, END_SAMPLING })) +
+                              p.optional(p.literal(END_MESSAGE));
+        } else {
+            reasoning_block = p.content(p.literal(THINK) +
+                                        p.until_one_of({ END_MESSAGE, TEXT, END_SAMPLING }) +
+                                        p.optional(p.literal(END_MESSAGE)));
+        }
+        auto reasoning = p.optional(reasoning_block);
+
+        // TML re-emits <|message_model|> before each content block; a turn may contain several
+        // text blocks (one per content part), so the block repeats and bodies concatenate.
+        // THINK stops the content scan so a mid-turn thinking block is never leaked as text
+        auto text_block = p.optional(p.literal(MSG_MODEL)) +
+                          p.optional(p.literal(TEXT)) +
+                          p.content(p.until_one_of({ THINK, END_MESSAGE, END_SAMPLING })) +
+                          p.optional(p.literal(END_MESSAGE));
+        auto text_content = p.one_or_more(p.choice({ reasoning_block, text_block }));
+
+        if (!has_tools || inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_NONE) {
+            return generation_prompt + reasoning + text_content +
+                   p.optional(p.literal(END_SAMPLING)) + end;
+        }
+
+        // each call is its own block (role opener + bare name echo + JSON section);
+        // force_tool_calls=true makes the JSON section required so a pure-text answer fails the
+        // block cleanly; parallel calls are separate blocks, hence repeat + parallel=false
+        auto tool_section = p.standard_json_tools(
+            INVOKE_TOOL, END_MESSAGE, inputs.tools, /* parallel_tool_calls = */ false,
+            /* force_tool_calls = */ true,
+            /* name_key          = */ "name",
+            /* args_key          = */ "args",
+            /* array_wrapped     = */ false);
+        // the name-echo scan must stop at any block marker: a greedy until(INVOKE_TOOL) returns
+        // NEED_MORE_INPUT mid-stream, which choice() treats as a match and shadows the text branch
+        auto tool_block = p.optional(p.literal(MSG_MODEL)) +
+                          p.until_one_of({ INVOKE_TOOL, TEXT, THINK, END_MESSAGE, END_SAMPLING }) +
+                          tool_section;
+        auto tool_calls = inputs.parallel_tool_calls ? p.one_or_more(tool_block) : tool_block;
+        // turns may interleave narration, thinking and calls; parse block-by-block (tool block
+        // first) since a whole-body choice would let the text branch swallow tool blocks into
+        // visible content
+        auto mixed_body = p.one_or_more(p.choice({ tool_block, reasoning_block, text_block }));
+        auto body       = inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED
+                              ? tool_calls
+                              : mixed_body;
+
+        return generation_prompt + reasoning + body +
+               p.optional(p.literal(END_SAMPLING)) + end;
+    });
+
+    data.parser = parser.save();
 
     return data;
 }
@@ -3273,288 +3390,145 @@ static common_chat_params common_chat_params_init_minicpm5(const common_chat_tem
     return data;
 }
 
-// Inkling / TML typed-content-block parser: <|end_message|> separates blocks within a turn,
-// <|content_model_end_sampling|> is the sole end-of-generation token (mirrors sglang TmlDetector).
-static common_chat_params common_chat_params_init_inkling(const common_chat_template &          tmpl,
-                                                          const autoparser::generation_params & inputs) {
+// An assistant turn is rendered as one or more messages, each
+// "<|start|>assistant to=<recipient><|message|>{content}{END}" where END is
+// <|eom|> (more messages follow) or <|eot|> (end of turn):
+//   - chain-of-thought: to=self, terminated by <|eom|>
+//   - final answer:     to=user, terminated by <|eot|>
+// The generation prompt is just "<|start|>assistant"; the model emits its own
+// " to=...<|message|>".
+static common_chat_params common_chat_params_init_muse_glimmer(const common_chat_template &          tmpl,
+                                                               const autoparser::generation_params & inputs) {
     common_chat_params data;
 
-    const std::string MSG_MODEL    = "<|message_model|>";
-    const std::string MSG_USER     = "<|message_user|>";
-    const std::string MSG_SYSTEM   = "<|message_system|>";
-    const std::string MSG_TOOL     = "<|message_tool|>";
-    const std::string THINK        = "<|content_thinking|>";
-    const std::string TEXT         = "<|content_text|>";
-    const std::string END_MESSAGE  = "<|end_message|>";
-    const std::string END_SAMPLING = "<|content_model_end_sampling|>";
-    const std::string INVOKE_TOOL  = "<|content_invoke_tool_json|>";
+    data.prompt            = common_chat_template_direct_apply_impl(tmpl, inputs);
+    data.generation_prompt = "<|start|>assistant";
+    data.format            = COMMON_CHAT_FORMAT_PEG_NATIVE;
+    data.supports_thinking = true;
 
-    data.prompt             = common_chat_template_direct_apply_impl(tmpl, inputs);
-    data.generation_prompt  = common_chat_template_generation_prompt_impl(tmpl, inputs);
-    data.format             = COMMON_CHAT_FORMAT_PEG_NATIVE;
-    data.supports_thinking  = true;
-    data.thinking_start_tag = THINK;
-    data.thinking_end_tags  = {END_MESSAGE};
-    data.preserved_tokens   = {
-        MSG_MODEL, MSG_USER, MSG_SYSTEM, MSG_TOOL,
-        THINK, TEXT, END_MESSAGE, END_SAMPLING, INVOKE_TOOL,
+    data.preserved_tokens = {
+        "<|start|>", "<|message|>", "<|eom|>", "<|eot|>",
+        // ATEM tool-call markup emitted on " to=<tool>" turns.
+        "<atem:function_calls>", "<atem:invoke", "<atem:parameter", "</atem:parameter>",
+        "</atem:invoke>", "</atem:function_calls>",
     };
 
-    auto has_tools = inputs.tools.is_array() && !inputs.tools.empty();
     data.message_delimiters = {
-        { COMMON_CHAT_ROLE_ASSISTANT, MSG_MODEL },
-        { COMMON_CHAT_ROLE_USER,      MSG_USER },
-        { COMMON_CHAT_ROLE_SYSTEM,    MSG_SYSTEM },
-        { COMMON_CHAT_ROLE_TOOL,      MSG_TOOL },
+        { COMMON_CHAT_ROLE_ASSISTANT, "<|start|>assistant" },
+        { COMMON_CHAT_ROLE_USER,      "<|start|>user"      },
+        { COMMON_CHAT_ROLE_SYSTEM,    "<|start|>system"    },
+        { COMMON_CHAT_ROLE_TOOL,      "<|start|>tool"      },
     };
-
-    auto extract_reasoning = inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE;
 
     if (inputs.has_continuation()) {
         const auto & msg = inputs.continue_msg;
 
-        data.generation_prompt = MSG_MODEL + THINK + msg.reasoning_content;
+        data.generation_prompt = "<|start|>assistant to=self<|message|>" + msg.reasoning_content;
         if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
-            data.generation_prompt += END_MESSAGE + TEXT + msg.render_content();
+            data.generation_prompt += "<|eom|><|start|>assistant to=user<|message|>" + msg.render_content();
         }
 
         data.prompt += data.generation_prompt;
     }
 
-    auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
-        auto generation_prompt = p.literal(MSG_MODEL);
-        auto end               = p.end();
-
-        // thinking block; may also reappear mid-turn (after content), so it is both an optional
-        // prefix and a choice inside the block loops. With reasoning_format=NONE keep it
-        // (markers included) inline as content
-        common_peg_parser reasoning_block = p.eps();
-        if (extract_reasoning) {
-            reasoning_block = p.literal(THINK) +
-                              p.reasoning(p.until_one_of({ END_MESSAGE, TEXT, END_SAMPLING })) +
-                              p.optional(p.literal(END_MESSAGE));
-        } else {
-            reasoning_block = p.content(p.literal(THINK) +
-                                        p.until_one_of({ END_MESSAGE, TEXT, END_SAMPLING }) +
-                                        p.optional(p.literal(END_MESSAGE)));
-        }
-        auto reasoning = p.optional(reasoning_block);
-
-        // TML re-emits <|message_model|> before each content block; a turn may contain several
-        // text blocks (one per content part), so the block repeats and bodies concatenate.
-        // THINK stops the content scan so a mid-turn thinking block is never leaked as text
-        auto text_block = p.optional(p.literal(MSG_MODEL)) +
-                          p.optional(p.literal(TEXT)) +
-                          p.content(p.until_one_of({ THINK, END_MESSAGE, END_SAMPLING })) +
-                          p.optional(p.literal(END_MESSAGE));
-        auto text_content = p.one_or_more(p.choice({ reasoning_block, text_block }));
-
-        if (!has_tools || inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_NONE) {
-            return generation_prompt + reasoning + text_content +
-                   p.optional(p.literal(END_SAMPLING)) + end;
-        }
-
-        // each call is its own block (role opener + bare name echo + JSON section);
-        // force_tool_calls=true makes the JSON section required so a pure-text answer fails the
-        // block cleanly; parallel calls are separate blocks, hence repeat + parallel=false
-        auto tool_section = p.standard_json_tools(
-            INVOKE_TOOL, END_MESSAGE, inputs.tools, /* parallel_tool_calls = */ false,
-            /* force_tool_calls = */ true,
-            /* name_key          = */ "name",
-            /* args_key          = */ "args",
-            /* array_wrapped     = */ false);
-        // the name-echo scan must stop at any block marker: a greedy until(INVOKE_TOOL) returns
-        // NEED_MORE_INPUT mid-stream, which choice() treats as a match and shadows the text branch
-        auto tool_block = p.optional(p.literal(MSG_MODEL)) +
-                          p.until_one_of({ INVOKE_TOOL, TEXT, THINK, END_MESSAGE, END_SAMPLING }) +
-                          tool_section;
-        auto tool_calls = inputs.parallel_tool_calls ? p.one_or_more(tool_block) : tool_block;
-        // turns may interleave narration, thinking and calls; parse block-by-block (tool block
-        // first) since a whole-body choice would let the text branch swallow tool blocks into
-        // visible content
-        auto mixed_body = p.one_or_more(p.choice({ tool_block, reasoning_block, text_block }));
-        auto body       = inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED
-                              ? tool_calls
-                              : mixed_body;
-
-        return generation_prompt + reasoning + body +
-               p.optional(p.literal(END_SAMPLING)) + end;
-    });
-
-    data.parser = parser.save();
-
-    return data;
-}
-
-static common_chat_params common_chat_params_init_laguna(const common_chat_template &    tmpl,
-                                                         const autoparser::generation_params & inputs) {
-    common_chat_params data;
-
-    data.prompt             = common_chat_template_direct_apply_impl(tmpl, inputs);
-    data.generation_prompt  = common_chat_template_generation_prompt_impl(tmpl, inputs);
-    data.format             = COMMON_CHAT_FORMAT_PEG_NATIVE;
-    data.supports_thinking  = true;
-    data.thinking_start_tag = "<think>";
-    data.thinking_end_tags  = {"</think>"};
-    data.preserved_tokens   = {
-        "<tool_call>", "</tool_call>",
-        "<arg_key>",   "</arg_key>",
-        "<arg_value>", "</arg_value>",
-        "<think>",     "</think>",
-        "<assistant>", "</assistant>",
-    };
-
-    // </assistant> ends the assistant turn. The single eot token (24) handles
-    // this when sampled directly, but the model occasionally emits the
-    // multi-token spelling; register it as a stop so generation always halts.
-    data.additional_stops.push_back("</assistant>");
-
-    const std::string THINK_START = "<think>";
-    const std::string THINK_END   = "</think>";
-    const std::string CALL_START  = "<tool_call>";
-    const std::string CALL_END    = "</tool_call>";
-    const std::string KEY_START   = "<arg_key>";
-    const std::string KEY_END     = "</arg_key>";
-    const std::string VAL_START   = "<arg_value>";
-    const std::string VAL_END     = "</arg_value>";
-
-    auto has_tools         = inputs.tools.is_array() && !inputs.tools.empty();
     auto extract_reasoning = inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE;
-    auto include_grammar   = has_tools && inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE;
+
+    auto has_tools = inputs.tools.is_array() && !inputs.tools.empty();
+    // Constrained grammar whenever tools are offered.
+    auto include_grammar = has_tools && inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE;
 
     auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
-        auto end = p.end();
+        auto start = p.rule("start", p.literal("<|start|>assistant"));
 
-        // The framework prepends data.generation_prompt to the parsed output:
-        // "<assistant>\n" followed by the opening <think> (thinking enabled) or
-        // </think> (disabled). Consume it, then capture reasoning. The model's
-        // output therefore starts with the reasoning text (no leading <think>).
-        const std::string GEN_PROMPT = "<assistant>\n";
-        auto head = p.eps();
-        if (extract_reasoning && inputs.enable_thinking) {
-            // The model normally closes reasoning with </think> before a tool
-            // call, but sometimes emits <tool_call> directly without it.
-            // Terminate reasoning on whichever marker comes first so the call is
-            // not swallowed into reasoning_content; consume </think> if present.
-            head = p.literal(GEN_PROMPT + THINK_START) +
-                   p.reasoning(p.until_one_of({ THINK_END, CALL_START })) +
-                   p.optional(p.literal(THINK_END));
-        } else if (extract_reasoning) {
-            head = p.literal(GEN_PROMPT + THINK_END);
+        if (!extract_reasoning && !include_grammar) {
+            return start + p.content(p.rest());
+        }
+
+        if (extract_reasoning) {
+            p.rule("analysis", p.literal(" to=self<|message|>") + p.reasoning(p.until("<|eom|>")) + p.literal("<|eom|>"));
         } else {
-            head = p.literal(GEN_PROMPT) +
-                   p.optional(p.literal(THINK_START)) + p.optional(p.literal(THINK_END));
+            p.rule("analysis", p.literal(" to=self<|message|>") + p.content(p.until("<|eom|>")) + p.literal("<|eom|>"));
+        }
+        auto analysis = p.ref("analysis");
+
+        auto recipient  = p.optional(p.literal(" to=user"));
+        auto final_msg  = p.rule("final", recipient + p.literal("<|message|>") + p.content(p.until("<|eot|>")));
+
+        if (has_tools && inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE) {
+            auto string_value = p.ac(
+                p.tool_arg_string_value(p.until("</atem:parameter>")) + p.tool_arg_close(p.literal("</atem:parameter>")),
+                "</atem:parameter>");
+
+            auto tool_choice = p.choice();
+            foreach_function(inputs.tools, [&](const json & tool) {
+                const auto &      function = tool.at("function");
+                const std::string name     = function.at("name");
+                auto              params   = function.contains("parameters") ? function.at("parameters") : json::object();
+
+                auto args = p.eps();
+                if (params.contains("properties") && params.at("properties").is_object() && !params.at("properties").empty()) {
+                    auto schema_info = common_schema_info();
+                    schema_info.resolve_refs(params);
+
+                    auto arg_choice = p.choice();
+                    for (const auto & [prop_name, prop_schema] : params.at("properties").items()) {
+                        auto value_parser = p.eps();
+                        if (schema_info.resolves_to_string(prop_schema)) {
+                            value_parser = string_value;
+                        } else {
+                            value_parser = p.tool_arg_json_value(
+                                    p.schema(p.json(), "tool-" + name + "-arg-" + prop_name + "-schema", prop_schema, false))
+                                + p.tool_arg_close(p.literal("</atem:parameter>"));
+                        }
+
+                        auto arg_rule = p.tool_arg(
+                            p.tool_arg_open(p.literal("<atem:parameter name=\"") + p.tool_arg_name(p.literal(prop_name)) + p.literal("\">")) +
+                            value_parser);
+
+                        arg_choice |= arg_rule;
+                    }
+                    args = p.zero_or_more(arg_choice + p.space());
+                }
+
+                auto tool_parser = p.tool(
+                    p.tool_open(p.literal(" to=") + p.until("<|message|>") +
+                                p.literal("<|message|><atem:function_calls>") + p.space() +
+                                p.literal("<atem:invoke name=\"") + p.tool_name(p.literal(name)) + p.literal("\">") + p.space())
+                    << p.tool_args(args)
+                    << p.tool_close(p.literal("</atem:invoke>") + p.space() + p.literal("</atem:function_calls>")));
+
+                tool_choice |= p.rule("tool-" + name, tool_parser);
+            });
+
+            auto tool_calls = inputs.parallel_tool_calls
+                ? p.trigger_rule("tool-call", tool_choice + p.zero_or_more(p.literal("<|eom|>") + start + tool_choice))
+                : p.trigger_rule("tool-call", tool_choice);
+
+
+            if (inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED) {
+                return p.zero_or_more(start + analysis) + start + tool_calls;
+            }
+            return p.zero_or_more(start + analysis) + start + (tool_calls | final_msg);
         }
 
-        if (!has_tools || inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_NONE) {
-            return head + p.content(p.until_one_of({ "</assistant>" })) +
-                   p.optional(p.literal("</assistant>")) + p.space() + end;
-        }
-
-        auto tool_choice = p.choice();
-        foreach_function(inputs.tools, [&](const json & tool) {
-            const auto & function = tool.at("function");
-            std::string  name     = function.at("name");
-            auto         params   = function.contains("parameters") ? function.at("parameters") : json::object();
-            const auto & props    = params.contains("properties") ? params.at("properties") : json::object();
-
-            std::set<std::string> required;
-            if (params.contains("required")) {
-                params.at("required").get_to(required);
-            }
-            auto schema_info = common_schema_info();
-            schema_info.resolve_refs(params);
-
-            std::vector<common_peg_parser> required_parsers;
-            std::vector<common_peg_parser> optional_parsers;
-            for (const auto & [param_name, param_schema] : props.items()) {
-                bool is_required = required.find(param_name) != required.end();
-                bool is_string   = schema_info.resolves_to_string(param_schema);
-
-                // <arg_key>name</arg_key>\n<arg_value>VALUE</arg_value>
-                auto arg = p.tool_arg(
-                    p.tool_arg_open(
-                        p.literal(KEY_START) + p.tool_arg_name(p.literal(param_name)) + p.literal(KEY_END) +
-                        p.space() + p.literal(VAL_START)) +
-                    (is_string
-                         ? p.tool_arg_string_value(p.until(VAL_END))
-                         : p.tool_arg_json_value(p.schema(p.json(),
-                                                          "tool-" + name + "-arg-" + param_name + "-schema",
-                                                          param_schema, false))) +
-                    p.tool_arg_close(p.literal(VAL_END)));
-
-                auto named_arg = p.rule("tool-" + name + "-arg-" + param_name, arg);
-                if (is_required) {
-                    required_parsers.push_back(named_arg);
-                } else {
-                    optional_parsers.push_back(named_arg);
-                }
-            }
-
-            common_peg_parser args_seq = p.eps();
-            for (size_t i = 0; i < required_parsers.size(); i++) {
-                if (i > 0) {
-                    args_seq = args_seq + p.space();
-                }
-                args_seq = args_seq + required_parsers[i];
-            }
-            if (!optional_parsers.empty()) {
-                common_peg_parser any_opt = p.choice();
-                for (const auto & opt : optional_parsers) {
-                    any_opt |= opt;
-                }
-                args_seq = args_seq + p.repeat(p.space() + any_opt, 0, -1);
-            }
-
-            // <tool_call>name\n {args} </tool_call>
-            auto func_parser = p.tool(
-                p.tool_open(p.literal(CALL_START) + p.tool_name(p.literal(name)) + p.literal("\n")) +
-                args_seq + p.space() +
-                p.tool_close(p.literal(CALL_END)));
-
-            tool_choice |= p.rule("tool-" + name, func_parser);
-        });
-
-        auto min_calls  = inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED ? 1 : 0;
-        auto max_calls  = inputs.parallel_tool_calls ? -1 : 1;
-        // Mirror the kimi_k2 structure: each tool is followed by optional
-        // whitespace, and the trigger rule ends with an optional </assistant>
-        // exit marker. This lets the (lazy) trigger rule COMPLETE once the model
-        // emits the turn-end, so the grammar disengages instead of offering
-        // another <tool_call> indefinitely (the parallel=true / max_calls=-1
-        // loop). Space is a suffix (not prefix) to avoid ambiguity with the exit.
-        auto tool_calls = p.rule("tool-calls",
-            p.trigger_rule("tool-call",
-                p.repeat(tool_choice + p.space(), min_calls, max_calls) +
-                p.optional(p.literal("</assistant>"))));
-
-        auto content_before_tools = p.content(p.until(CALL_START));
-
-        // After the tool call(s) the model may emit trailing text (Laguna is
-        // wrapper-less, so a repetitive model can ramble past the final call).
-        // Absorb anything up to the turn-end as content so a stray trailing
-        // fragment does not fail the whole parse — mirrors the reference
-        // implementation, which extracts the calls and ignores the remainder.
-        auto trailing = p.content(p.until_one_of({ "</assistant>" }));
-
-        return head + content_before_tools + tool_calls + trailing +
-               p.optional(p.literal("</assistant>")) + p.space() + end;
+        return p.zero_or_more(start + analysis) + start + final_msg;
     });
 
     data.parser = parser.save();
 
     if (include_grammar) {
-        data.grammar_lazy = inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_AUTO;
+        data.grammar_lazy = inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_REQUIRED;
         data.grammar      = build_grammar([&](const common_grammar_builder & builder) {
             foreach_function(inputs.tools, [&](const json & tool) {
                 const auto & function = tool.at("function");
-                auto         schema   = function.at("parameters");
+                auto         schema   = function.contains("parameters") ? function.at("parameters") : json::object();
                 builder.resolve_refs(schema);
             });
             parser.build_grammar(builder, data.grammar_lazy);
         });
         data.grammar_triggers = {
-            { COMMON_GRAMMAR_TRIGGER_TYPE_WORD, "<tool_call>" }
+            { COMMON_GRAMMAR_TRIGGER_TYPE_PATTERN,
+              "<\\|start\\|>assistant( to=(?!self<\\|message\\|>)(?!user<\\|message\\|>)[^<]*?<\\|message\\|>)" },
         };
     }
 
@@ -3583,20 +3557,16 @@ std::optional<common_chat_params> common_chat_try_specialized_template(
         return common_chat_params_init_ministral_3(tmpl, params);
     }
 
-    // Laguna (poolside) - GLM-4-MoE-style tool calls with <arg_key>/<arg_value>
-    // pairs, plus <assistant>/</assistant> role tags (distinct from GLM's
-    // <|assistant|>). Covers both Laguna-XS.2 and Laguna-M.1.
-    if (src.find("<arg_key>") != std::string::npos &&
-        src.find("<arg_value>") != std::string::npos &&
-        src.find("</assistant>") != std::string::npos) {
-        LOG_DBG("Using specialized template: Laguna\n");
-        return common_chat_params_init_laguna(tmpl, params);
-    }
-
     // GPT-OSS - has unique channel-based structure that needs dedicated handler
     if (src.find("<|channel|>") != std::string::npos) {
         LOG_DBG("Using specialized template: GPT-OSS\n");
         return common_chat_params_init_gpt_oss(tmpl, params);
+    }
+
+    // Muse Glimmer format using " to=<recipient>" recipients and <|eom|>/<|eot|> message terminators.
+    if (src.find("<atem:function_calls>") != std::string::npos && src.find("<|eom|>") != std::string::npos) {
+        LOG_DBG("Using specialized template: Muse Glimmer\n");
+        return common_chat_params_init_muse_glimmer(tmpl, params);
     }
 
     // Functionary v3.2 - uses recipient-based format with >>>recipient\n{content}

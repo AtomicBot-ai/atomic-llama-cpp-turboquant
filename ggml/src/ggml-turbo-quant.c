@@ -25,7 +25,11 @@
 GGML_API void turbo_cpu_fwht_inverse(float * x, int group_size);
 
 /* Global: WHT group size for CPU quantize path (set by CPU SET_ROWS handler) */
-GGML_API int turbo3_cpu_wht_group_size = 0;
+/* Declared with GGML_API so the symbol carries dllexport/visibility, then
+ * defined plainly: `GGML_API` now expands with `extern` on every path, and
+ * `extern int x = 0;` is rejected under -Werror (-Wextern-initializer). */
+GGML_API int turbo3_cpu_wht_group_size;
+int turbo3_cpu_wht_group_size = 0;
 
 /* ---------- constants ---------- */
 
@@ -40,8 +44,8 @@ static const float CENTROIDS_2BIT[4] = { -0.133462f, -0.039994f, 0.039994f, 0.13
 
 /* 3-bit: Lloyd-Max for N(0, 1/128), pre-computed */
 static const float CENTROIDS_3BIT[8] = {
-    -0.190685f, -0.117832f, -0.065717f, -0.021460f,
-     0.021460f,  0.065717f,  0.117832f,  0.190685f
+    -0.190207f, -0.118786f, -0.066822f, -0.021663f,
+     0.021663f,  0.066822f,  0.118786f,  0.190207f
 };
 
 /* ---------- rotation matrix (lazy init) ---------- */
@@ -72,16 +76,17 @@ static void turbo_init_rotation(void) {
 
     const int d = TURBO_D;
 
-    /* Generate random Gaussian matrix */
+    /* Generate random Gaussian matrix directly into turbo_rotation.
+     * Previous code used a 64KB stack-local G[] then memcpy'd — this
+     * caused stack overflow on llama.cpp worker threads with reduced
+     * stack sizes. */
     turbo_prng_seed(TURBO_SEED_ROTATION);
-    float G[TURBO_D * TURBO_D];
     for (int i = 0; i < d * d; i++) {
-        G[i] = (float)turbo_prng_normal();
+        turbo_rotation[i] = (float)turbo_prng_normal();
     }
 
     /* QR decomposition via modified Gram-Schmidt */
     /* Q stored column-major in turbo_rotation */
-    memcpy(turbo_rotation, G, d * d * sizeof(float));
 
     for (int j = 0; j < d; j++) {
         /* Normalize column j */
@@ -169,33 +174,33 @@ static int nearest_centroid_2bit(float val) {
 
 static int nearest_centroid_3bit(float val) {
     /* 8 centroids, find nearest via midpoints */
-    if (val < -0.154259f) return 0;
-    if (val < -0.091775f) return 1;
-    if (val < -0.043589f) return 2;
+    if (val < -0.154496f) return 0;
+    if (val < -0.092804f) return 1;
+    if (val < -0.044243f) return 2;
     if (val <  0.000000f) return 3;
-    if (val <  0.043589f) return 4;
-    if (val <  0.091775f) return 5;
-    if (val <  0.154259f) return 6;
+    if (val <  0.044243f) return 4;
+    if (val <  0.092804f) return 5;
+    if (val <  0.154496f) return 6;
     return 7;
 }
 
 static int nearest_centroid_4bit(float val) {
     /* 16 centroids, optimal for N(0, 1/sqrt(128)), find nearest via midpoints */
-    if (val < -0.145560f) return 0;
-    if (val < -0.103361f) return 1;
-    if (val < -0.079142f) return 2;
-    if (val < -0.060009f) return 3;
-    if (val < -0.043430f) return 4;
-    if (val < -0.028293f) return 5;
-    if (val < -0.013963f) return 6;
+    if (val < -0.212203f) return 0;
+    if (val < -0.162947f) return 1;
+    if (val < -0.127026f) return 2;
+    if (val < -0.097164f) return 3;
+    if (val < -0.070671f) return 4;
+    if (val < -0.046174f) return 5;
+    if (val < -0.022824f) return 6;
     if (val <  0.000000f) return 7;
-    if (val <  0.013963f) return 8;
-    if (val <  0.028293f) return 9;
-    if (val <  0.043430f) return 10;
-    if (val <  0.060009f) return 11;
-    if (val <  0.079142f) return 12;
-    if (val <  0.103361f) return 13;
-    if (val <  0.145560f) return 14;
+    if (val <  0.022824f) return 8;
+    if (val <  0.046174f) return 9;
+    if (val <  0.070671f) return 10;
+    if (val <  0.097164f) return 11;
+    if (val <  0.127026f) return 12;
+    if (val <  0.162947f) return 13;
+    if (val <  0.212203f) return 14;
     return 15;
 }
 
@@ -491,10 +496,10 @@ void quantize_row_turbo4_0_ref(const float * GGML_RESTRICT x, block_turbo4_0 * G
 #if TURBO4_USE_4BIT
         /* Step 3: 4-bit quantization (16 centroids) */
         static const float CENTROIDS_4BIT[16] = {
-            -0.173926f, -0.117195f, -0.089527f, -0.068756f,
-            -0.051262f, -0.035597f, -0.020989f, -0.006938f,
-             0.006938f,  0.020989f,  0.035597f,  0.051262f,
-             0.068756f,  0.089527f,  0.117195f,  0.173926f
+            -0.241529f, -0.182877f, -0.143016f, -0.111036f,
+            -0.083292f, -0.058050f, -0.034299f, -0.011349f,
+             0.011349f,  0.034299f,  0.058050f,  0.083292f,
+             0.111036f,  0.143016f,  0.182877f,  0.241529f
         };
         uint8_t indices[TURBO_D];
         for (int i = 0; i < d; i++) {
@@ -545,7 +550,6 @@ void quantize_row_turbo4_0_ref(const float * GGML_RESTRICT x, block_turbo4_0 * G
         for (int i = 0; i < d; i++) {
             y[block].qs[i / 2] |= (uint8_t)((indices[i] & 0xF) << ((i % 2) * 4));
         }
-        y[block].rnorm = GGML_FP32_TO_FP16(0.0f);
 #else
         /* Legacy 3-bit + QJL: pack 3-bit indices + QJL signs */
         memset(y[block].qs, 0, d * 3 / 8);
@@ -580,10 +584,10 @@ void dequantize_row_turbo4_0(const block_turbo4_0 * GGML_RESTRICT x, float * GGM
     /* 4-bit PolarQuant: nibble unpack → centroid → inverse rotate → scale */
     /* TODO: add proper 4-bit centroid table to C code (currently only in Metal) */
     static const float CENTROIDS_4BIT[16] = {
-        -0.173926f, -0.117195f, -0.089527f, -0.068756f,
-        -0.051262f, -0.035597f, -0.020989f, -0.006938f,
-         0.006938f,  0.020989f,  0.035597f,  0.051262f,
-         0.068756f,  0.089527f,  0.117195f,  0.173926f
+        -0.241529f, -0.182877f, -0.143016f, -0.111036f,
+        -0.083292f, -0.058050f, -0.034299f, -0.011349f,
+         0.011349f,  0.034299f,  0.058050f,  0.083292f,
+         0.111036f,  0.143016f,  0.182877f,  0.241529f
     };
     for (int block = 0; block < nb; block++) {
         float norm = GGML_FP16_TO_FP32(x[block].norm);
