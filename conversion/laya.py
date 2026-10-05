@@ -47,6 +47,16 @@ def _load_laya_hparams(dir_model: Path) -> dict[str, Any]:
 class LayaModel(ModernBertModel):
     model_arch = gguf.MODEL_ARCH.LAYA
 
+    def prepare_metadata(self, vocab_only: bool):
+        # a root config.json is not the model config of a laya checkpoint (ModelBase.load_hparams):
+        # keep its _name_or_path out of the name heuristics too
+        load_hf_parameters = gguf.Metadata.load_hf_parameters
+        gguf.Metadata.load_hf_parameters = staticmethod(lambda model_path=None: {})
+        try:
+            super().prepare_metadata(vocab_only)
+        finally:
+            gguf.Metadata.load_hf_parameters = load_hf_parameters
+
     # laya checkpoints keep the tokenizer files under a tokenizer/ subdirectory
     @property
     def _tokenizer_dir(self) -> Path:

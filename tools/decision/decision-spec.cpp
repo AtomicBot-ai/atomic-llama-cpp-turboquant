@@ -4,6 +4,7 @@
 #include "decision.h"
 
 #include "gguf.h"
+#include "laya.h"
 
 extern "C" {
 #include "sha256/sha256.h" // vendored in examples/gguf-hash/deps
@@ -555,7 +556,9 @@ bool decision_spec_load(const std::string & model_path, const std::string & side
         spec.text = text;
     } else {
         if (spec.architecture != "laya") {
-            err = "GGUF (" + spec.architecture + ") has no decision.spec; pass --decision-spec FILE";
+            const std::string hint = laya_foreign_gguf_hint(spec.architecture);
+            err = hint.empty() ? "GGUF (" + spec.architecture + ") has no decision.spec; pass --decision-spec FILE"
+                               : "GGUF (" + spec.architecture + ") is not a laya model: " + hint;
             return false;
         }
         spec.source = "default";

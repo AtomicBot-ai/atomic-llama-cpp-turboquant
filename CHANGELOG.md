@@ -173,6 +173,19 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
   (18 of 18 files), and 6-19x faster (0.2-1.8 s per f16 file). A first start of
   `laya-multilingual` takes about 1.2-1.3 s instead of 0.3 s and peaks at about
   515 MiB instead of 372 MiB RSS.
+- **Community Laya fine-tunes load with `-m <dir>`.** Both converters (C++ and
+  `convert_hf_to_gguf.py`) now ignore a root `config.json` next to
+  `rl_agent_config.json` + `encoder/config.json` and a
+  `tokenizer/special_tokens_map.json` that only restates `tokenizer_config.json`;
+  until now both files made the conversion fail (Python mapped the checkpoint as a
+  plain ModernBERT). This opens fine-tunes such as `cklxx/laya-browser`,
+  `Wouze/laya-ara-rag`, `impacte/mimir-laya-router` or `gtm-k/*`. The output is
+  the same as for the directory without those files. Their accuracy is the
+  fine-tune author's; only the official checkpoints are measured in `DECISION.md`.
+- **Hints for Laya repackagings this engine cannot load**: `ggmlc` GGUFs
+  (`mys/laya-*-GGUF`), encoder-only `modern-bert` GGUFs with a separate head
+  (`Weidows/*`, `fr0stbit3/*`, with `--decision`) and `laya-head` files now fail
+  with a pointer to the official checkpoint and `--decision -m <dir>`.
 
 ### Notes
 
@@ -184,6 +197,12 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
 - On Vulkan devices without int64/int8/fp16 shader arithmetic or 8-bit storage
   (older iGPUs, some legacy AMD) the MoE cache turns itself off and the normal
   expert path runs.
+- **Windows signing scope**: release archives Authenticode-sign what Atomic Chat
+  runs, `llama-server.exe` and the DLLs it loads (`llama*.dll`, `mtmd.dll`,
+  `ggml*.dll`, the bundled CUDA runtime). The other tools in the archive
+  (`llama-cli`, `llama-bench`, `llama-quantize`, ...) are no longer signed, so
+  SmartScreen may warn when you start one by hand. `dev-latest` builds are
+  unsigned unless a run asks for signing.
 - Decision mode runs on the CPU by default (`--decision-device cpu`); next to a
   GPU chat server keep it there and start it with `--device none`.
 - **Stricter laya GGUF checks**: a GGUF without `laya.attention.sliding_window`,

@@ -18,6 +18,10 @@ readers must sort). The output is deterministic, the fixtures are committed.
 
 golden.sha256 holds the sha256 of the Python converter's GGUF for each case (convert_hf_to_gguf.py with
 this tree's gguf-py). test-laya-convert checks the C++ output against it without Python.
+
+--check also converts community copies of both fixtures (add_community_files: a root config.json that
+is not the model config, and a special_tokens_map.json that restates tokenizer_config.json). Both
+converters must ignore those files: the output equals the golden of the plain fixture.
 """
 import argparse
 import hashlib
@@ -340,6 +344,30 @@ def make_bl(out):
 
 # ---------------------------------------------------------------------------------------------
 
+COMMUNITY_CASES = [("laya-tiny-ms-v0.1-8M", "f16"), ("laya-bl-tiny-instruct-30K", "f16"), ("laya-bl-tiny-instruct-30K", "q8_0")]
+SPECIAL_KEYS = ("bos_token", "eos_token", "unk_token", "sep_token", "pad_token", "cls_token", "mask_token")
+
+
+def add_community_files(d):
+    """What community laya fine-tunes ship next to the checkpoint files: a root config.json that is not
+    the model config (an HF wrapper with an _name_or_path the name heuristics would use), and
+    tokenizer/special_tokens_map.json restating tokenizer_config.json (string form for the first
+    token, AddedToken objects with the tokenizer.json flags for the rest)."""
+    write_json(os.path.join(d, "config.json"), {
+        "_name_or_path": "someorg/wrapper-model-v9", "architectures": ["ModernBertModel"], "model_type": "modernbert",
+        "hidden_size": 8, "num_hidden_layers": 1, "num_attention_heads": 2, "intermediate_size": 8, "vocab_size": 64})
+    with open(os.path.join(d, "tokenizer", "tokenizer_config.json"), encoding="utf-8") as f:
+        tc = json.load(f)
+    with open(os.path.join(d, "tokenizer", "tokenizer.json"), encoding="utf-8") as f:
+        added = {a["content"]: a for a in json.load(f)["added_tokens"]}
+    sm = {}
+    for k in SPECIAL_KEYS:
+        if isinstance(tc.get(k), str):
+            a = added[tc[k]]
+            sm[k] = tc[k] if not sm else {f: a[f] for f in ("content", "lstrip", "normalized", "rstrip", "single_word")}
+    write_json(os.path.join(d, "tokenizer", "special_tokens_map.json"), sm)
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -421,7 +449,24 @@ def main():
                 r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 print("%-40s %s" % (case_file(fixture, outtype, name), r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "(no output)"), flush=True)
                 bad += r.returncode != 0
-            print("%d/%d cases identical" % (len(CASES) - bad, len(CASES)), flush=True)
+            # community copies: same directory name, so the output must equal the plain fixture's
+            for fixture, outtype in COMMUNITY_CASES:
+                cdir = os.path.join(tmp, "community", fixture)
+                if not os.path.isdir(cdir):
+                    shutil.copytree(os.path.join(tmp, fixture), cdir)
+                    add_community_files(cdir)
+                plain = os.path.join(tmp, "py-" + case_file(fixture, outtype, None))
+                ref = os.path.join(tmp, "py-community-" + case_file(fixture, outtype, None))
+                out = os.path.join(tmp, "cv-community-" + case_file(fixture, outtype, None))
+                py_convert(py, env, cdir, ref, outtype, None)
+                same = sha256_file(ref) == sha256_file(plain)
+                r = subprocess.run([args.check, cdir, "-o", out, "--outtype", outtype, "--verify-against", ref],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                print("%-40s python %s plain; %s" % ("community-" + case_file(fixture, outtype, None), "==" if same else "!=",
+                      r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "(no output)"), flush=True)
+                bad += (r.returncode != 0) + (not same)
+            n = len(CASES) + len(COMMUNITY_CASES)
+            print("%d/%d cases identical" % (n - bad, n), flush=True)
             return 1 if bad else 0
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

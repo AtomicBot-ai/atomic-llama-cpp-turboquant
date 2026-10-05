@@ -3,10 +3,12 @@
 // usage: test-laya-convert <tests/laya/convert> <scratch-dir>
 //
 // 1. converts the tiny fixtures (tests/laya/make_tiny_hf_laya.py) and checks each GGUF against the sha256
-//    of the Python converter's output (golden.sha256), also through non-ASCII paths
+//    of the Python converter's output (golden.sha256), also through non-ASCII paths and as community
+//    copies (a root config.json and a special_tokens_map.json that the converter ignores)
 // 2. broken inputs: truncated / overflowing / inconsistent safetensors, missing files, unknown names,
 //    non-finite q8_0 input, bad YAML, deep JSON, model-specific tokenizer classes, modules.json, a shard
-//    index without model*.safetensors, generation_config.json that only Python reads; each must fail
+//    index without model*.safetensors, generation_config.json that only Python reads, a root config.json
+//    without encoder/config.json, a special_tokens_map.json that changes something; each must fail
 //    with a clear error and leave no output behind. Big README.md inputs must stay fast (linear).
 // 3. fp16 conversions and the gguf-py name heuristics on fixed cases (values from numpy / gguf-py)
 
@@ -23,6 +25,7 @@ extern "C" {
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -157,6 +160,35 @@ static void expect_fail(const std::string & what, const std::string & dir, const
     }
 }
 
+// what community fine-tunes ship (tests/laya/make_tiny_hf_laya.py add_community_files): a root
+// config.json that is not the model config, and tokenizer/special_tokens_map.json restating
+// tokenizer_config.json (string form for the first token, AddedToken objects with the tokenizer.json flags)
+static void add_community_files(const std::string & dir) {
+    write_all(dir + "/config.json", json({ { "_name_or_path", "someorg/wrapper-model-v9" },
+                                           { "architectures", json::array({ "ModernBertModel" }) },
+                                           { "model_type", "modernbert" } }).dump());
+    const json tc = json::parse(read_all(dir + "/tokenizer/tokenizer_config.json"));
+    const json tj = json::parse(read_all(dir + "/tokenizer/tokenizer.json"));
+    json sm = json::object();
+    for (const char * k : { "bos_token", "eos_token", "unk_token", "sep_token", "pad_token", "cls_token", "mask_token" }) {
+        if (!tc.contains(k) || !tc[k].is_string()) {
+            continue;
+        }
+        const std::string content = tc[k].get<std::string>();
+        if (sm.empty()) {
+            sm[k] = content;
+            continue;
+        }
+        for (const json & a : tj["added_tokens"]) {
+            if (a["content"] == content) {
+                sm[k] = { { "content", content }, { "lstrip", a["lstrip"] }, { "normalized", a["normalized"] },
+                          { "rstrip", a["rstrip"] }, { "single_word", a["single_word"] } };
+            }
+        }
+    }
+    write_all(dir + "/tokenizer/special_tokens_map.json", sm.dump(2));
+}
+
 static uint32_t f32_bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 static float bits_f32(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
 
@@ -175,6 +207,7 @@ int main(int argc, char ** argv) {
     std::istringstream golden(read_all(fixtures + "/golden.sha256"));
     std::string line;
     int n_cases = 0;
+    std::map<std::string, std::string> golden_sha; // file -> sha256
     while (std::getline(golden, line)) {
         if (line.empty() || line[0] == '#') {
             continue;
@@ -193,6 +226,7 @@ int main(int argc, char ** argv) {
         CHECK(data.size() == size && got == sha, "%s: %zu bytes sha256 %s, golden %llu bytes %s", file.c_str(), data.size(), got.c_str(),
               (unsigned long long) size, sha.c_str());
         printf("  %s %-40s %s\n", got == sha ? "ok " : "BAD", file.c_str(), got.c_str());
+        golden_sha[file] = sha;
         n_cases++;
     }
     CHECK(n_cases >= 7, "golden.sha256 has %d cases", n_cases);
@@ -214,6 +248,21 @@ int main(int argc, char ** argv) {
         CHECK(err.empty(), "non-ASCII input dir: %s", err.c_str());
         CHECK(read_all(out2) == read_all(ms_f16), "non-ASCII input directory gives different bytes");
         printf("  ok  non-ASCII output path and input directory\n");
+    }
+
+    // community fine-tunes: a root config.json that is not the model config and a special_tokens_map.json
+    // restating tokenizer_config.json are ignored (same directory name: the bytes equal the golden)
+    for (const char * fixture : { "laya-tiny-ms-v0.1-8M", "laya-bl-tiny-instruct-30K" }) {
+        const std::string dir = scratch + "/community/" + fixture;
+        copy_dir(fixtures + "/" + fixture, dir);
+        add_community_files(dir);
+        const std::string file = std::string(fixture) + "-f16.gguf";
+        const std::string out = scratch + "/community-" + file;
+        const std::string err = convert(dir, out, LAYA_CONVERT_F16);
+        CHECK(err.empty(), "community %s: %s", fixture, err.c_str());
+        const std::string got = sha256_hex(read_all(out));
+        CHECK(got == golden_sha[file], "community %s: sha256 %s, golden %s", fixture, got.c_str(), golden_sha[file].c_str());
+        printf("  %s community copy of %s (root config.json, special_tokens_map.json)\n", got == golden_sha[file] ? "ok " : "BAD", fixture);
     }
 
     // compare: identical, and a one-byte change is found
@@ -297,7 +346,40 @@ int main(int argc, char ** argv) {
 
     fresh();
     write_all(bad + "/config.json", "{}");
-    expect_fail("root config.json", bad, out, "config.json in the checkpoint root");
+    fs::remove(u8(bad + "/encoder/config.json"), ec);
+    expect_fail("root config.json, no encoder config", bad, out, "config.json in the checkpoint root without");
+
+    fresh();
+    write_all(bad + "/hf_quant_config.json", "{}");
+    expect_fail("hf_quant_config.json", bad, out, "hf_quant_config.json in the checkpoint root");
+
+    // special_tokens_map.json that would change what AutoTokenizer does
+    {
+        const std::string sm = bad + "/tokenizer/special_tokens_map.json";
+        auto with_map = [&](const std::string & what, const json & m, const std::string & needle) {
+            fresh();
+            write_all(sm, m.dump());
+            expect_fail(what, bad, out, needle);
+        };
+        with_map("special map: other content", { { "mask_token", "<unk>" } }, "differs from tokenizer_config.json");
+        with_map("special map: not in tokenizer_config", { { "foo_token", "<unk>" } }, "is not one of the special token attributes");
+        with_map("special map: additional tokens", { { "additional_special_tokens", json::array({ "<unk>" }) } }, "is not one of the special token attributes");
+        with_map("special map: other flags", { { "mask_token", { { "content", "<mask>" }, { "lstrip", false } } } }, "sets lstrip false");
+        with_map("special map: unknown field", { { "mask_token", { { "content", "<mask>" }, { "weird", true } } } }, "unknown AddedToken field");
+        with_map("special map: not an object", json::array(), "not a JSON object");
+        fresh();
+        {
+            json tc = json::parse(read_all(bad + "/tokenizer/tokenizer_config.json"));
+            tc.erase("pad_token");
+            write_all(bad + "/tokenizer/tokenizer_config.json", tc.dump());
+        }
+        write_all(sm, json({ { "pad_token", "<pad>" } }).dump());
+        expect_fail("special map: unset in tokenizer_config", bad, out, "is not set in tokenizer_config.json");
+    }
+
+    fresh();
+    write_all(bad + "/tokenizer/added_tokens.json", "{}");
+    expect_fail("added_tokens.json", bad, out, "added_tokens.json: not supported");
 
     fresh();
     fs::remove(u8(st), ec);

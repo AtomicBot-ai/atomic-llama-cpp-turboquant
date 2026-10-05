@@ -1142,6 +1142,13 @@ class ModelBase:
                 config = json.load(f)
             return config
 
+        # a laya checkpoint (rl_agent_config.json + encoder/config.json) can carry a root config.json that
+        # is not its model config (HF wrapper configs, copies of rl_agent_config.json): the laya reference
+        # never reads it, so the laya loader claims the directory before AutoConfig
+        if (dir_model / "rl_agent_config.json").is_file() and (dir_model / "encoder" / "config.json").is_file():
+            from conversion.laya import _load_laya_hparams
+            return _load_laya_hparams(dir_model)
+
         try:
             # for security reason, we don't allow loading remote code by default
             # if a model need remote code, we will fallback to config.json
