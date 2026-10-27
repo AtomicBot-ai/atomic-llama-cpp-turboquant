@@ -3285,6 +3285,10 @@ void llama_context::output_reorder() {
 //
 
 uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+    if (model.arch == LLM_ARCH_UNLIMITEDOCR2) {
+        return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
+    }
+
     if (model.arch == LLM_ARCH_DFLASH && model.hparams.dflash_selector_rank > 0) {
         // DFlash2's convolutions and selector are shape work rather than matmuls,
         // so they cost about 8.6 nodes per tensor against 5.9 for plain DFlash.

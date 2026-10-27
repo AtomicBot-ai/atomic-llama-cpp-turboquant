@@ -487,6 +487,7 @@ struct mtmd_context {
     const int n_embd_text = -1; // -1 means llm context not provided, skip checking this
     const llama_vocab * vocab = nullptr; // can be nullptr if text_model is not provided
     mtmd_pos_type pos_type;
+    bool text_uocr2 = false; // Unlimited-OCR-2: page boundaries come from the exact "<PAGE><image>..." tokens
 
     // these are not token, but strings used to mark the beginning and end of image/audio embeddings
     std::string img_beg;
@@ -539,6 +540,10 @@ struct mtmd_context {
         }
 
         if (text_model) {
+            char arch[64] = {0};
+            llama_model_meta_val_str(text_model, "general.architecture", arch, sizeof(arch));
+            text_uocr2 = std::string(arch) == "unlimited-ocr2";
+
             auto decoder_rope_type = llama_model_rope_type(text_model);
             switch (decoder_rope_type) {
                 case LLAMA_ROPE_TYPE_NONE:
@@ -878,6 +883,10 @@ struct mtmd_context {
             case PROJECTOR_TYPE_DEEPSEEKOCR2:
                 {
                     img_end = "\n"; // prevent empty batch on llama-server
+                    if (text_uocr2) {
+                        // Unlimited-OCR-2 derives its page boundaries from the exact "<PAGE><image>..." token stream
+                        img_end = "";
+                    }
                     image_preproc = std::make_unique<mtmd_image_preprocessor_deepseekocr>(ctx_v);
                     ov_img_first = false;
                 } break;

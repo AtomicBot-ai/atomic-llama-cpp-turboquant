@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -1618,11 +1619,18 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
 
             cells.pos_set(idx, ubatch.pos[i]);
 
-            if (ubatch.is_pos_2d()) {
-                llama_kv_cell_ext ext {
-                    /*.x =*/ ubatch.pos[i + ubatch.n_tokens*2],
-                    /*.y =*/ ubatch.pos[i + ubatch.n_tokens],
-                };
+            if (ubatch.is_pos_2d() || ubatch.token) {
+                llama_kv_cell_ext ext;
+
+                if (ubatch.is_pos_2d()) {
+                    ext.x = ubatch.pos[i + ubatch.n_tokens*2];
+                    ext.y = ubatch.pos[i + ubatch.n_tokens];
+                }
+
+                if (ubatch.token) {
+                    ext.tok = ubatch.token[i];
+                }
+
                 cells.ext_set(idx, ext);
             }
 
@@ -1660,7 +1668,20 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
     }
 }
 
+size_t llama_kv_cache::cell_ext_io_size() const {
+    // M-RoPE keeps writing the 2D position only (the saved layout of those models does not change);
+    // unlimited-ocr2 also needs the token id, its page positions are rebuilt from the token history
+    if (model.arch == LLM_ARCH_UNLIMITEDOCR2) {
+        return sizeof(llama_kv_cell_ext);
+    }
+    return hparams.n_pos_per_embd() > 1 ? offsetof(llama_kv_cell_ext, tok) : 0;
+}
+
 bool llama_kv_cache::get_can_shift() const {
+    // unlimited-ocr2 rebuilds page-2D positions from the token history: a shifted K would not match them
+    if (model.arch == LLM_ARCH_UNLIMITEDOCR2) {
+        return false;
+    }
     // Block KV streaming refuses seq_add: K-shift rewrites K in place on the GPU while the
     // host cache is authoritative. Report shifting as unsupported so callers disable context
     // shift up front (common_init_from_params does exactly that) instead of discovering it
@@ -2993,9 +3014,9 @@ void llama_kv_cache::state_write_meta(llama_io_write_i & io, const cell_ranges_t
             io.write(&pos,      sizeof(pos));
             io.write(&n_seq_id, sizeof(n_seq_id));
 
-            if (hparams.n_pos_per_embd() > 1) {
+            if (cell_ext_io_size() > 0) {
                 const llama_kv_cell_ext ext = cells.ext_get(i);
-                io.write(&ext, sizeof(ext));
+                io.write(&ext, cell_ext_io_size());
             }
 
             for (const auto & seq_id : seq_ids) {
@@ -3118,7 +3139,7 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
         // the ext as it was saved, to put back after apply_ubatch()
         std::vector<llama_kv_cell_ext> exts;
-        if (hparams.n_pos_per_embd() > 1) {
+        if (cell_ext_io_size() > 0) {
             exts.resize(cell_count);
         }
 
@@ -3134,12 +3155,14 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
                 return false;
             }
 
-            if (hparams.n_pos_per_embd() > 1) {
+            if (cell_ext_io_size() > 0) {
                 llama_kv_cell_ext ext;
-                io.read(&ext, sizeof(ext));
+                io.read(&ext, cell_ext_io_size());
 
-                ubatch.pos[i + ubatch.n_tokens]   = ext.y;
-                ubatch.pos[i + ubatch.n_tokens*2] = ext.x;
+                if (hparams.n_pos_per_embd() > 1) {
+                    ubatch.pos[i + ubatch.n_tokens]   = ext.y;
+                    ubatch.pos[i + ubatch.n_tokens*2] = ext.x;
+                }
 
                 exts[i] = ext;
             }
@@ -3237,9 +3260,9 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 
             cells.pos_set(i, pos);
 
-            if (hparams.n_pos_per_embd() > 1) {
+            if (cell_ext_io_size() > 0) {
                 llama_kv_cell_ext ext;
-                io.read(&ext, sizeof(ext));
+                io.read(&ext, cell_ext_io_size());
                 cells.ext_set(i, ext);
             }
 
