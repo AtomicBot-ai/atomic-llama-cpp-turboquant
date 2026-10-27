@@ -250,6 +250,16 @@ struct llama_hparams {
     uint32_t indexer_block_size  = 0;
     uint32_t indexer_local_blocks = 0;
 
+    // Unlimited-OCR-2 (DASH routing + page-2D rope)
+    uint32_t dash_top_m          = 0;
+    float    dash_scale          = 0.0f;
+    float    dash_prior_floor    = 0.0f;
+    float    dash_sigma          = 1.0f;
+    uint32_t page_token_id       = 0;
+    float    rope_page_freq_base = 0.0f;
+    uint32_t rope_page_pairs     = 0;
+    uint32_t rope_page_mod       = 0;
+
     // Indexer is "full" (1) or "shared" (0)
     // Shared indexers reuse top-k from previous full layer
     std::array<uint32_t, LLAMA_MAX_LAYERS> is_indexer_full_impl;

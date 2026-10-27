@@ -138,6 +138,9 @@ public:
     void set_input_pos_slot(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_pos_mask(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
+    // token id stored at each position of a sequence: LLAMA_TOKEN_NULL for embedding input, -2 for no cell
+    void get_seq_tokens(llama_seq_id seq_id, std::vector<llama_token> & toks) const;
+
 private:
     llama_kv_cache_msa * kv;
 

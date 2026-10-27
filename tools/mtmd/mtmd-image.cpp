@@ -1385,8 +1385,13 @@ mtmd_image_preproc_out mtmd_image_preprocessor_deepseekocr::preprocess(const cli
     output.append_overview(hparams, padded, true);
     output.overview.add_viewsep = true;
 
+    // a token budget below the global view + 2 tiles selects the "base" mode (overview only)
+    const int n_q        = tile_size / hparams.patch_size / 4;
+    const int min_tiled  = 273 + (2*n_q + 1)*n_q;
+    const bool base_mode = hparams.custom_image_max_tokens > 0 && hparams.custom_image_max_tokens < min_tiled;
+
     // if this condition doesn't hold, the output is overview only, no tiles
-    if (img_size.width > tile_size || img_size.height > tile_size) {
+    if (!base_mode && (img_size.width > tile_size || img_size.height > tile_size)) {
         const float           aspect_ratio  = static_cast<float>(img_size.width) / img_size.height;
         const auto            target_ratios = get_target_ratios();
         const clip_image_size grid =

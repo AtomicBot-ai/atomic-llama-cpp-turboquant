@@ -190,6 +190,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_deepseek2(params);
         case LLM_ARCH_DEEPSEEK2OCR:
             return new llama_model_deepseek2ocr(params);
+        case LLM_ARCH_UNLIMITEDOCR2:
+            return new llama_model_unlimitedocr2(params);
         case LLM_ARCH_DEEPSEEK32:
             return new llama_model_deepseek32(params);
         case LLM_ARCH_DEEPSEEK4:
@@ -2253,10 +2255,13 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 res = nullptr;
             } break;
         case LLM_ARCH_MINIMAX_M3:
+        case LLM_ARCH_UNLIMITEDOCR2:
             {
                 // sparse (MSA) layers carry an indexer key cache, but leading dense layers do not
+                // Unlimited-OCR-2 routes every layer (DASH), so every layer keeps router keys
+                const bool idx_all = arch == LLM_ARCH_UNLIMITEDOCR2;
                 llama_kv_cache::layer_filter_cb filter_idx =
-                    [&](int32_t il) { return (uint32_t) il >= hparams.n_layer_dense_lead; };
+                    [&, idx_all](int32_t il) { return idx_all || (uint32_t) il >= hparams.n_layer_dense_lead; };
 
                 res = new llama_kv_cache_msa(
                         *this,
@@ -2833,6 +2838,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_DEEPSEEK:
         case LLM_ARCH_DEEPSEEK2:
         case LLM_ARCH_DEEPSEEK2OCR:
+        case LLM_ARCH_UNLIMITEDOCR2:
         case LLM_ARCH_DEEPSEEK32:
         case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_MUSE_GLIMMER:
