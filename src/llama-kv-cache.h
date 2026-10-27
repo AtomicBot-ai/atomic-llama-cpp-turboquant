@@ -162,6 +162,9 @@ public:
 
     bool get_can_shift() const override;
 
+    // bytes of llama_kv_cell_ext saved per cell in the sequence state (0 = none)
+    size_t cell_ext_io_size() const;
+
     void clear(bool data) override;
 
     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;

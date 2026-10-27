@@ -393,3 +393,21 @@ void llama_kv_cache_msa_context::set_input_pos_mask(ggml_tensor * dst, const lla
         }
     }
 }
+
+void llama_kv_cache_msa_context::get_seq_tokens(llama_seq_id seq_id, std::vector<llama_token> & toks) const {
+    std::fill(toks.begin(), toks.end(), -2);
+
+    const auto & cells = kv->get_base()->get_cells(seq_id);
+
+    for (uint32_t j = 0; j < cells.size(); ++j) {
+        if (cells.is_empty(j) || !cells.seq_has(j, seq_id)) {
+            continue;
+        }
+
+        const llama_pos p = cells.pos_get(j);
+
+        if (p >= 0 && p < (llama_pos) toks.size()) {
+            toks[p] = cells.ext_get(j).tok;
+        }
+    }
+}
