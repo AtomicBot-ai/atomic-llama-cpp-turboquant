@@ -466,6 +466,9 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_DEEPSEEK2OCR) {
         return false;
     }
+    if (arch == LLM_ARCH_UNLIMITEDOCR2) {
+        return false; // TODO fixture params for dash.* / page_token_id; positions need a <PAGE> + image token stream
+    }
     if (arch == LLM_ARCH_DEEPSEEK4) {
         return false;
     }
