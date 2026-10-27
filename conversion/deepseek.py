@@ -93,6 +93,10 @@ class DeepseekOCRVisionModel(MmprojModel):
         if name.startswith(("lm_head.", "model.embed_tokens.", "model.layers.", "model.norm.")):
             return None
 
+        # non-persistent buffer saved by Unlimited-OCR-2, recomputed at runtime
+        if name.endswith("embeddings.position_ids"):
+            return None
+
         if name.endswith("pos_embed") or name.endswith("rel_pos_h") or name.endswith("rel_pos_w"):
             name += ".weight"
 
@@ -244,6 +248,13 @@ class DeepseekV2Model(TextModel):
         # special handling for Deepseek OCR
         if self.origin_hf_arch in ("DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM", "UnlimitedOCRForCausalLM"):
             self.model_arch = gguf.MODEL_ARCH.DEEPSEEK2OCR
+            # Unlimited-OCR-2: page-2D RoPE + DASH block-sparse attention
+            if hparams.get("sparse_attention_config", {}).get("training_stage") == "dash":
+                self.model_arch = gguf.MODEL_ARCH.UNLIMITEDOCR2
+                self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+                # the decoder uses the page-2D rope (no YaRN); its token-axis theta is the rope base
+                sp = hparams["sparse_attention_config"]
+                self.rope_parameters = {"rope_theta": sp["sparse_rope_tok_theta"]}
             self.gguf_writer.arch = gguf.MODEL_ARCH_NAMES[self.model_arch]
             self.gguf_writer.add_architecture()
             # default jinja template
@@ -254,6 +265,9 @@ class DeepseekV2Model(TextModel):
         name, _ = item
         # DeepSeek-OCR vision encoder (SAM + DeepSeek-OCR-2 qwen2 tower)
         if "sam_model" in name or "qwen2_model" in name:
+            return None
+        # Unlimited-OCR-2: the training-time indexer only hosts rope/page helpers at inference (DASH routes with dash_router)
+        if ".self_attn.indexer." in name:
             return None
         return super().filter_tensors(item)
 
@@ -312,7 +326,7 @@ class DeepseekV2Model(TextModel):
             raise NotImplementedError(f"Deepseek pre-tokenizer {tokpre!r} is not supported yet!")
 
     def set_gguf_parameters(self):
-        is_ocr = (self.model_arch == gguf.MODEL_ARCH.DEEPSEEK2OCR)
+        is_ocr = self.model_arch in (gguf.MODEL_ARCH.DEEPSEEK2OCR, gguf.MODEL_ARCH.UNLIMITEDOCR2)
 
         if is_ocr:
             self.hparams['rope_theta'] = self.hparams.get('rope_theta', 10000.0)
@@ -374,11 +388,44 @@ class DeepseekV2Model(TextModel):
             if sliding_window:
                 self.gguf_writer.add_sliding_window(sliding_window)
 
+        if self.model_arch == gguf.MODEL_ARCH.UNLIMITEDOCR2:
+            self._set_dash_parameters(hparams["sparse_attention_config"])
+
         if (rope_mscale_all := self.rope_parameters.get("mscale_all_dim")) is not None:
             # [TAG_DEEPSEEK2_YARN_LOG_MUL_FIX]
             # note: for legacy reasons, this is not consistent with the other usages of self.gguf_writer.add_rope_scaling_yarn_log_mul
             # ref https://github.com/ggml-org/llama.cpp/pull/17945
             self.gguf_writer.add_rope_scaling_yarn_log_mul(0.1 * rope_mscale_all)
+
+    def _set_dash_parameters(self, sp: dict):
+        # values the HF/vLLM inference path reads (modeling_deepseekv2.configure_dash_inference)
+        n_layer = self.block_count
+        for key in ("dash_scale_per_layer", "dash_floor_per_layer", "sparse_attention_freq"):
+            vals = sp.get(key)
+            if vals is not None and len(set(vals)) != 1:
+                raise NotImplementedError(f"Unlimited-OCR-2: per-layer {key} is not supported: {vals}")
+        if sp.get("dash_stage0") != "head_cls" or sp.get("sparse_main_rope_mode") != "page2d"                 or sp.get("sparse_rope_mode") != "page2d" or not sp.get("dash_image_only", True)                 or not sp.get("image_bucket_constraint", True) or sp.get("sparse_rope_page_span", 0) != 0:
+            raise NotImplementedError("Unlimited-OCR-2: unsupported sparse_attention_config variant")
+        if sp.get("sparse_main_rope_tok_freq_mode") != "resample" or sp.get("sparse_rope_tok_freq_mode") != "resample":
+            raise NotImplementedError("Unlimited-OCR-2: only 'resample' token rope frequencies are supported")
+        assert sp["sparse_index_dim"] == self.hparams["hidden_size"] // self.hparams["num_attention_heads"]
+        assert len(sp.get("dash_scale_per_layer", [0] * n_layer)) == n_layer
+
+        arch = gguf.MODEL_ARCH_NAMES[self.model_arch]
+        self.gguf_writer.add_indexer_head_count(sp.get("sparse_num_index_heads", 1))
+        self.gguf_writer.add_indexer_key_length(sp["sparse_index_dim"])
+        self.gguf_writer.add_indexer_top_k(sp["dash_topk_blocks"])
+        self.gguf_writer.add_indexer_block_size(sp["sparse_block_size"])
+        self.gguf_writer.add_indexer_local_blocks(sp["sparse_local_block"])
+        self.gguf_writer.add_uint32(f"{arch}.dash.top_m", 16)  # DASH_INFER_TOPM deploy default
+        self.gguf_writer.add_float32(f"{arch}.dash.scale", sp["dash_scale_per_layer"][0])
+        self.gguf_writer.add_float32(f"{arch}.dash.prior_floor", sp["dash_floor_per_layer"][0])
+        self.gguf_writer.add_float32(f"{arch}.dash.sigma", sp.get("dash_sigma", 1.0))
+        self.gguf_writer.add_uint32(f"{arch}.page_token_id", sp["page_token_id"])
+        # page-2D rope: token axis uses all but `page_pairs` frequency pairs, base = rope.freq_base
+        self.gguf_writer.add_float32(f"{arch}.rope.page.freq_base", sp["sparse_rope_page_theta"])
+        self.gguf_writer.add_uint32(f"{arch}.rope.page.pairs", sp["sparse_rope_page_pairs"])
+        self.gguf_writer.add_uint32(f"{arch}.rope.page.mod", sp["sparse_rope_page_mod"])
 
     _experts: list[dict[str, Tensor]] | None = None
 
@@ -424,6 +471,10 @@ class DeepseekV2Model(TextModel):
                 return
             else:
                 return
+
+        # Unlimited-OCR-2 router norms are gemma-style: scale = 1 + weight
+        if ".dash_router." in name and name.endswith(("q_norm.weight", "k_norm.weight")):
+            data_torch = data_torch.float() + 1
 
         # note: MLA with the absorption optimization, needs these two split and k_b_proj transposed
         if name.endswith("kv_b_proj.weight"):

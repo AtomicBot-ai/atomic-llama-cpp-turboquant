@@ -14,6 +14,11 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
 
 ### Added
 
+- **Unlimited-OCR-2** (arch `unlimited-ocr2`): Baidu's 3.3B OCR model that turns page images into text
+  with layout. Page-aware 2D RoPE and routed sparse attention (DASH), ported from the community patch by
+  RX5950XT; GGUFs with a matching chat template at `AtomicChat/Unlimited-OCR-2-GGUF`. One request at a
+  time (`--parallel 1`, the Atomic Chat default); context shift is off for this model. The same change
+  fixes a CUDA graph crash on graphs with source-less ops such as `arange`.
 - **New TurboQuant+ base: `tqp-v0.4.0`** (TheTom's fork as of 2026-09-28; our
   work was rebased onto it). What it brings:
   - MoE expert cache (`--moe-cache`, see `docs/backend/MOE-CACHE.md`): faster
