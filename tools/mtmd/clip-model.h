@@ -34,6 +34,7 @@ enum resize_algo {
     RESIZE_ALGO_BICUBIC, // center-crop when aspect ratio doesn't match
     RESIZE_ALGO_BICUBIC_PILLOW,
     RESIZE_ALGO_LANCZOS,
+    RESIZE_ALGO_BICUBIC_PILLOW_EXACT, // BICUBIC_PILLOW with Pillow's fixed-point weight rounding (upstream's bicubic)
 };
 
 // Padding style for img_tool::resize
