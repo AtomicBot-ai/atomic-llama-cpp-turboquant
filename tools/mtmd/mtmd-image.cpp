@@ -68,6 +68,9 @@ struct img_tool {
                 case RESIZE_ALGO_BICUBIC_PILLOW:
                     resize_bicubic_pillow(src, dst, target_resolution.width, target_resolution.height);
                     break;
+                case RESIZE_ALGO_BICUBIC_PILLOW_EXACT:
+                    resize_pillow(src, dst, target_resolution.width, target_resolution.height, /*use_lanczos=*/false, /*pillow_round=*/true);
+                    break;
                 case RESIZE_ALGO_LANCZOS:
                     resize_lanczos_pillow(src, dst, target_resolution.width, target_resolution.height);
                     break;
@@ -99,6 +102,9 @@ struct img_tool {
                     break;
                 case RESIZE_ALGO_BICUBIC_PILLOW:
                     resize_bicubic_pillow(src, resized_image, new_width, new_height);
+                    break;
+                case RESIZE_ALGO_BICUBIC_PILLOW_EXACT:
+                    resize_pillow(src, resized_image, new_width, new_height, /*use_lanczos=*/false, /*pillow_round=*/true);
                     break;
                 case RESIZE_ALGO_LANCZOS:
                     resize_lanczos_pillow(src, resized_image, new_width, new_height);
@@ -364,7 +370,8 @@ private:
             clip_image_u8 & dst,
             int target_width,
             int target_height,
-            bool use_lanczos) {
+            bool use_lanczos,
+            bool pillow_round = false) {
         // Fixed-point precision: 22 bits = 32 (int32_t) - 8 (uint8_t pixels) - 2 (headroom for accumulation)
         // This allows encoding fractional weights as integers: weight * 2^22
         const int PRECISION_BITS = 32 - 8 - 2;
@@ -497,7 +504,7 @@ private:
             const double fxp_scale = std::ldexp(1.0, PRECISION_BITS); // 1.0 * 2^PRECISION_BITS
 
             for (int i = 0; i < outSize * ksize; i++) {
-                if (use_lanczos) {
+                if (use_lanczos || pillow_round) {
                     // Pillow adds +/- 0.5 then truncates toward zero; std::round would round twice
                     const double rounded = pre_weights[i] * fxp_scale + (pre_weights[i] < 0 ? -0.5 : 0.5);
                     weights[i] = static_cast<int32_t>(rounded);
@@ -927,7 +934,7 @@ clip_image_size mtmd_image_preprocessor_llava_uhd::select_best_resolution(const 
 }
 
 int mtmd_image_preprocessor_llava_uhd::ensure_divide(int length, int patch_size) {
-    return std::max(static_cast<int>(std::round(static_cast<float>(length) / patch_size) * patch_size), patch_size);
+    return std::max(align_round_div(length, patch_size) * patch_size, patch_size);
 }
 
 clip_image_size mtmd_image_preprocessor_llava_uhd::get_refine_size(const clip_image_size & original_size, const clip_image_size & grid, int scale_resolution, int patch_size, bool allow_upscale) {
