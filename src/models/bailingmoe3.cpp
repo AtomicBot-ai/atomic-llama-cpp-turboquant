@@ -21,6 +21,17 @@ void llama_model_bailingmoe3::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_KDA_HEAD_DIM,                hparams.n_embd_head_kda);
     ml.get_key(LLM_KV_KDA_GATE_LOWER_BOUND,        hparams.kda_gate_lower_bound);
 
+    // upstream files carry the MTP block as the last layer
+    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.n_layer_nextn, false);
+    GGML_ASSERT(hparams.n_layer_nextn < hparams.n_layer_all);
+    if (hparams.n_layer_nextn > 0) {
+        // the August 2026 converter wrote the key but dropped the MTP block, so all layers are trunk
+        const std::string mtp_probe = "blk." + std::to_string(hparams.n_layer()) + ".nextn.eh_proj.weight";
+        if (ml.get_weight(mtp_probe.c_str()) == nullptr) {
+            hparams.n_layer_nextn = 0;
+        }
+    }
+
     // n_head_kv == 0 marks the KDA (recurrent) layers, the rest are full attention
     for (uint32_t i = 0; i < hparams.n_layer(); ++i) {
         hparams.is_recr_impl[i] = hparams.n_head_kv(i) == 0;
@@ -82,8 +93,15 @@ void llama_model_bailingmoe3::load_arch_tensors(llama_model_loader &) {
             create_tensor_qkv(layer, i, n_embd, d_inner, d_inner, d_inner, 0);
 
             // full-rank forget/output gate projections (no_kda_lora)
-            layer.ssm_f = create_tensor(tn(LLM_TENSOR_SSM_F, "weight", i), {n_embd, d_inner}, 0);
-            layer.ssm_g = create_tensor(tn(LLM_TENSOR_SSM_G, "weight", i), {n_embd, d_inner}, 0);
+            // upstream names them ssm_f_a/ssm_g_a, the August 2026 converter ssm_f/ssm_g
+            layer.ssm_f = create_tensor(tn(LLM_TENSOR_SSM_F_A, "weight", i), {n_embd, d_inner}, TENSOR_NOT_REQUIRED);
+            if (!layer.ssm_f) {
+                layer.ssm_f = create_tensor(tn(LLM_TENSOR_SSM_F, "weight", i), {n_embd, d_inner}, 0);
+            }
+            layer.ssm_g = create_tensor(tn(LLM_TENSOR_SSM_G_A, "weight", i), {n_embd, d_inner}, TENSOR_NOT_REQUIRED);
+            if (!layer.ssm_g) {
+                layer.ssm_g = create_tensor(tn(LLM_TENSOR_SSM_G, "weight", i), {n_embd, d_inner}, 0);
+            }
 
             layer.ssm_beta = create_tensor(tn(LLM_TENSOR_SSM_BETA, "weight", i), {n_embd, n_head}, 0);
 
@@ -144,6 +162,44 @@ void llama_model_bailingmoe3::load_arch_tensors(llama_model_loader &) {
             layer.ffn_down_shexp = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), {n_ff_shexp, n_embd}, 0);
             layer.ffn_up_shexp   = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,   "weight", i), {n_embd, n_ff_shexp}, 0);
         }
+    }
+
+    // MTP block (gated MLA + MoE + NextN head): not used yet, skip it
+    for (int i = n_layer; i < n_layer_all; ++i) {
+        auto & layer = layers[i];
+
+        const int flags = TENSOR_SKIP | TENSOR_NOT_REQUIRED;
+
+        const int64_t kv_lora_rank      = hparams.n_lora_kv;
+        const int64_t n_embd_head_k_mla = hparams.n_embd_head_k_mla();
+        const int64_t n_embd_head_v_mla = hparams.n_embd_head_v_mla();
+        const int64_t qk_rope_head_dim  = hparams.n_rot();
+        const int64_t n_ff_exp          = hparams.n_ff_exp;
+        const int64_t n_ff_shexp        = hparams.n_ff_shexp > 0 ? hparams.n_ff_shexp : n_ff_exp * hparams.n_expert_shared;
+
+        create_tensor(tn(LLM_TENSOR_ATTN_NORM,      "weight", i), {n_embd}, flags);
+        create_tensor(tn(LLM_TENSOR_ATTN_Q,         "weight", i), {n_embd, n_head * n_embd_head_k_mla}, flags);
+        create_tensor(tn(LLM_TENSOR_ATTN_KV_A_NORM, "weight", i), {kv_lora_rank}, flags);
+        create_tensor(tn(LLM_TENSOR_ATTN_KV_A_MQA,  "weight", i), {n_embd, kv_lora_rank + qk_rope_head_dim}, flags);
+        create_tensor(tn(LLM_TENSOR_ATTN_K_B,       "weight", i), {n_embd_head_k_mla - qk_rope_head_dim, kv_lora_rank, n_head}, flags);
+        create_tensor(tn(LLM_TENSOR_ATTN_V_B,       "weight", i), {kv_lora_rank, n_embd_head_v_mla, n_head}, flags);
+        create_tensor(tn(LLM_TENSOR_ATTN_GATE,      "weight", i), {n_embd, n_head}, flags);
+        create_tensor(tn(LLM_TENSOR_ATTN_OUT,       "weight", i), {n_head * n_embd_head_v_mla, n_embd}, flags);
+
+        create_tensor(tn(LLM_TENSOR_FFN_NORM,        "weight", i), {n_embd}, flags);
+        create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,    "weight", i), {n_embd, n_expert}, flags);
+        create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "bias",   i), {n_expert}, flags);
+        create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS,   "weight", i), {n_embd, n_ff_exp, n_expert}, flags);
+        create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS,   "weight", i), {n_ff_exp, n_embd, n_expert}, flags);
+        create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,     "weight", i), {n_embd, n_ff_exp, n_expert}, flags);
+        create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP,  "weight", i), {n_embd, n_ff_shexp}, flags);
+        create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,  "weight", i), {n_ff_shexp, n_embd}, flags);
+        create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,    "weight", i), {n_embd, n_ff_shexp}, flags);
+
+        create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,   "weight", i), {2 * n_embd, n_embd}, flags);
+        create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,     "weight", i), {n_embd}, flags);
+        create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,     "weight", i), {n_embd}, flags);
+        create_tensor(tn(LLM_TENSOR_LAYER_OUT_NORM,  "weight", i), {n_embd}, flags);
     }
 }
 
