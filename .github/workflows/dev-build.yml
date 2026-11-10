@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       sign:
-        description: "Authenticode-sign the Windows runtime binaries (costs KeyLocker signatures)"
+        description: "Authenticode-sign the Windows runtime binaries with the Azure Key Vault key"
         type: boolean
         default: false
   push:
@@ -641,6 +641,16 @@ jobs:
 
   windows-x64:
     runs-on: windows-2022
+    # Signing goes through Azure Key Vault: the OIDC federated credential is
+    # bound to the codesign environment, which also holds the AZURE_*
+    # variables. Only runs that sign enter it (same condition as the "Sign
+    # Windows binaries" step), so PR and unsigned runs create no deployment.
+    environment: ${{ (github.event_name != 'pull_request' && (inputs.sign || vars.SIGN_DEV_BUILDS == 'true')) && 'codesign' || '' }}
+    # Job-level permissions replace the defaults: contents for the checkout,
+    # id-token for the Azure sign-in.
+    permissions:
+      contents: read
+      id-token: write
 
     strategy:
       fail-fast: false
@@ -755,12 +765,13 @@ jobs:
               Copy-Item $_.FullName -Destination $dst -Force
             }
 
-      # Dev binaries are for internal testing: unsigned by default. Every signed
-      # file costs one KeyLocker signature (about 200 per push when everything
-      # was signed). Sign on demand: a manual run with "sign", or the repository
-      # variable SIGN_DEV_BUILDS=true; then only the runtime the app runs, and a
-      # signing failure (quota, DigiCert outage) does not stop the archives from
-      # being published. Signed before staging, so the archive carries them.
+      # Dev binaries are for internal testing: unsigned by default. Sign on
+      # demand: a manual run with "sign", or the repository variable
+      # SIGN_DEV_BUILDS=true; then only the runtime the app runs, and a signing
+      # failure (Azure sign-in, Key Vault or timestamp outage) does not stop
+      # the archives from being published. Signed before staging, so the
+      # archive carries them. Keep this condition in sync with the job's
+      # environment.
       - name: Sign Windows binaries
         if: ${{ github.event_name != 'pull_request' && (inputs.sign || vars.SIGN_DEV_BUILDS == 'true') }}
         continue-on-error: true
@@ -768,9 +779,10 @@ jobs:
         with:
           path: build\bin\Release
           scope: runtime
-          sm-api-key: ${{ secrets.SM_API_KEY }}
-          sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
-          sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          key-vault: ${{ vars.AZURE_KEY_VAULT }}
+          certificate: ${{ vars.AZURE_CODESIGN_CERT }}
 
       - name: Prepare archive
         shell: pwsh
@@ -804,6 +816,12 @@ jobs:
   # row: different toolchain, and the matrix row names are required checks.
   windows-x64-rocm:
     runs-on: windows-2022
+    # Same signing setup as windows-x64: enters the codesign environment only
+    # when the "Sign HIP backend" step will run.
+    environment: ${{ (github.event_name != 'pull_request' && (inputs.sign || vars.SIGN_DEV_BUILDS == 'true')) && 'codesign' || '' }}
+    permissions:
+      contents: read
+      id-token: write
     env:
       # ROCm wheels (TheRock). Keep in sync with the upstream `windows-rocm` job.
       ROCM_VERSION: "10.0.0"
@@ -975,9 +993,10 @@ jobs:
         uses: ./.github/actions/windows-code-sign
         with:
           path: hip-out
-          sm-api-key: ${{ secrets.SM_API_KEY }}
-          sm-client-cert-b64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
-          sm-client-cert-password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          key-vault: ${{ vars.AZURE_KEY_VAULT }}
+          certificate: ${{ vars.AZURE_CODESIGN_CERT }}
 
       - name: Upload HIP backend
         uses: actions/upload-artifact@v4
