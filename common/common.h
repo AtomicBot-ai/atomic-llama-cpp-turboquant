@@ -609,6 +609,15 @@ struct common_params {
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
+    size_t engine_budget = 0; // total UMA admission budget, enables disk expert streaming
+    size_t engine_ram_budget = 0;  // separate RAM/VRAM caps opt into CUDA expert streaming
+    size_t engine_vram_budget = 0;
+    std::string engine_prefix_checkpoints; // private disk workspace for the Qwen4Exp CUDA server
+    bool engine_prefill_window = false; // opt-in Qwen4Exp/Metal layer windows
+    bool engine_memory_auto = false;
+    size_t engine_memory_min = 0;
+    size_t engine_memory_reserve = size_t(1024) * 1024 * 1024;
+
     size_t moe_cache_size      = 0;    // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
     float  moe_cache_cpu_share = 0.0f; // share of the MoE cache misses computed on the CPU instead of uploaded
 

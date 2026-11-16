@@ -1,0 +1,152 @@
+--- a/src/models/qwen35moe.cpp
++++ b/src/models/qwen35moe.cpp
+@@ -1,6 +1,8 @@
+ #include "models.h"
+ #include "llama-memory-recurrent.h"
+ 
++#include <cstdlib>
++
+ void llama_model_qwen35moe::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all, false);
+     ml.get_key(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_shexp, false);
+@@ -170,6 +172,11 @@
+ 
+     ggml_tensor * inp_pos     = build_inp_pos();
+     ggml_tensor * inp_out_ids = build_inp_out_ids();
++    const bool capture_last_layer = model.memory_contract && cparams.embeddings_nextn &&
++            !cparams.embeddings_nextn_masked && n_outputs == 1 && n_tokens > 1 &&
++            std::getenv("LLAMA_ATOMIC_MTP_SPLIT_PREFILL");
++    ggml_tensor * full_residual = nullptr;
++    ggml_tensor * full_attention = nullptr;
+ 
+     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
+     for (int il = 0; il < n_layer; ++il) {
+@@ -191,9 +198,15 @@
+             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il);
+         }
+ 
+-        if (il == n_layer - 1 && crop_before_nextn(inp_out_ids)) {
+-            cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+-            inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
++        if (il == n_layer - 1) {
++            if (capture_last_layer) {
++                full_attention = cur;
++                full_residual = inpSA;
++            }
++            if (capture_last_layer || crop_before_nextn(inp_out_ids)) {
++                cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
++                inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
++            }
+         }
+ 
+         // Residual connection
+@@ -229,7 +242,7 @@
+     cb(cur, "h_nextn", -1);
+     res->t_h_nextn = cur;
+ 
+-    if (crop_after_nextn(inp_out_ids)) {
++    if (!capture_last_layer && crop_after_nextn(inp_out_ids)) {
+         cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+     }
+ 
+@@ -241,6 +254,21 @@
+ 
+     cb(cur, "result_output", -1);
+     res->t_logits = cur;
++
++    if (capture_last_layer) {
++        // Preserve the ordinary logits branch, then compute dense NextN rows
++        // from the same last-layer attention and residual.
++        ggml_build_forward_expand(gf, cur);
++        const int il = n_layer - 1;
++        auto * residual = ggml_add(ctx0, full_attention, full_residual);
++        auto * ffn_input = build_norm(residual, model.layers[il].attn_post_norm, nullptr, LLM_NORM_RMS, il);
++        auto * dense = build_layer_ffn(ffn_input, il);
++        dense = build_cvec(ggml_add(ctx0, dense, residual), il);
++        dense = build_norm(dense, model.output_norm, nullptr, LLM_NORM_RMS, -1);
++        cb(dense, "h_nextn_dense", -1);
++        ggml_build_forward_expand(gf, dense);
++        res->t_h_nextn = dense;
++    }
+ }
+ 
+ std::pair<ggml_tensor *, ggml_tensor *> llama_model_qwen35moe::graph::build_qkvz(
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -352,7 +352,7 @@
+         llama_context * draft, const std::vector<llama_token> & prompt, llama_token seed, size_t vocab_size,
+         bool try_batch_commit, mtp_layer_probe * layers, int (*q8_probe)(bool), int (*router_probe)(bool),
+         bool retain_draft_prefix = false, mtp_hidden_tail * tail = nullptr, bool force_rejection = false,
+-        bool offline_control = false) {
++        bool offline_control = false, bool prefill_hidden = false) {
+     const size_t width = llama_model_n_embd_out(&model);
+     const llama_pos pos = prompt.size();
+     auto ledger = model.memory_contract->ledger;
+@@ -375,7 +375,7 @@
+ 
+     // Capturing every hidden row changes the graph shape. Replay the prompt
+     // speculatively and keep the original target state for verification.
+-    const bool replay = !tail || tail->last < 0;
++    const bool replay = !prefill_hidden && (!tail || tail->last < 0);
+     if (replay) {
+         llama_memory_clear(llama_get_memory(target), true);
+         llama_set_embeddings_nextn(target, true, false);
+@@ -397,9 +397,11 @@
+     std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> greedy(llama_sampler_init_greedy(), llama_sampler_free);
+     std::vector<float> zero(width);
+     row_ticket.commit();
+-    const float * rows = replay ? llama_get_embeddings_nextn(target) : nullptr;
+-    if (replay && !rows) { throw std::runtime_error("target nextn rows missing"); }
+-    auto hidden_at = [&](llama_pos i) { return replay ? rows + i * width : tail->at(i); };
++    if (prefill_hidden) { tail->append(target, pos - 1, pos - 1); }
++    const bool dense_hidden = replay || prefill_hidden;
++    const float * rows = dense_hidden ? llama_get_embeddings_nextn(target) : nullptr;
++    if (dense_hidden && !rows) { throw std::runtime_error("target nextn rows missing"); }
++    auto hidden_at = [&](llama_pos i) { return dense_hidden ? rows + i * width : tail->at(i); };
+     for (size_t i = draft_prefix; i < prompt.size(); ++i) {
+         add_draft_input(batch.get(), prompt[i], i, i ? hidden_at(i - 1) : zero.data(), width, false);
+     }
+@@ -726,6 +728,7 @@
+         bool mtp_carry_hidden = false;
+         int mtp_reject_step = -1;
+         bool mtp_offline_control = false;
++        bool mtp_one_prefill = false;
+         bool mtp_trace_layers = false;
+         bool mtp_q8_rows = false, mtp_router_rows = false;
+         int read_overlap = -1;
+@@ -821,6 +824,7 @@
+             else if (arg == "--mtp-retain-draft-prefix") { mtp_retain_draft_prefix = true; }
+             else if (arg == "--mtp-carry-hidden") { mtp_carry_hidden = true; }
+             else if (arg == "--mtp-offline-control") { mtp_offline_control = true; }
++            else if (arg == "--mtp-one-prefill") { mtp_one_prefill = true; }
+             else if (arg == "--mtp-reject-step") {
+                 mtp_reject_step = std::stoi(value());
+                 if (mtp_reject_step < 0) { throw std::invalid_argument("MTP rejection step must be nonnegative"); }
+@@ -890,6 +894,9 @@
+         }
+         if (mtp_offline_control && (!mtp_carry_hidden || !capture_state || logits_path.empty())) {
+             throw std::invalid_argument("MTP offline control requires hidden carry, the state digest and a logits file");
++        }
++        if (mtp_one_prefill && !mtp_offline_control) {
++            throw std::invalid_argument("one-pass MTP prefill requires offline comparison artifacts");
+         }
+         if (mtp_multi_round_probe && (mtp_trace_layers || !mtp_router_rows || ubatch < 2 || tokens < 5)) {
+             throw std::invalid_argument("multi-round probe requires both matvec overrides and room for two pairs");
+@@ -1073,6 +1080,7 @@
+             row["resizes"] = json::array();
+             const auto start = steady_clock::now();
+             set_batch(batch.get(), input, 0);
++            if (mtp_one_prefill) { llama_set_embeddings_nextn(ctx.get(), true, false); }
+             if (preview.file) { preview.begin_call(0); }
+             if (llama_process(ctx.get(), LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) { throw std::runtime_error("prefill failed"); }
+             row["prefill_seconds"] = seconds(start);
+@@ -1117,7 +1125,8 @@
+                     prefix.insert(prefix.end(), committed.begin(), committed.end());
+                     auto round = probe_mtp(*model, ctx.get(), batch.get(), draft.ctx.get(), prefix, token,
+                             llama_vocab_n_tokens(vocab), true, nullptr, q8_probe, router_probe, mtp_retain_draft_prefix,
+-                            mtp_carry_hidden ? &hidden_tail : nullptr, step == mtp_reject_step, mtp_offline_control);
++                            mtp_carry_hidden ? &hidden_tail : nullptr, step == mtp_reject_step, mtp_offline_control,
++                            mtp_one_prefill && step == 0);
+                     round["step"] = step;
+                     rejection_exercised |= round.contains("forced_rejection");
+                     if (round["batch_committed"].get<bool>()) { pair_second = step + 1; }

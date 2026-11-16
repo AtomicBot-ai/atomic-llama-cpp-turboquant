@@ -1,9 +1,11 @@
+#include "ggml-metal-expert.h"
 #include "ggml-metal.h"
 
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
 #include "ggml-metal-device.h"
+#include "ggml-metal-expert-buffer.h"
 #include "ggml-metal-fusion.h"
 #include "ggml-metal-context.h"
 #include "ggml-metal-ops.h"
@@ -21,6 +23,7 @@ static int g_devices = 1;
 
 // forward declaration
 static bool ggml_backend_buffer_is_metal(ggml_backend_buffer_t buffer);
+static void ggml_backend_metal_expert_free_buffer(ggml_backend_buffer_t buffer);
 
 ////////////////////////////////////////////////////////////////////////////////
 // backend interface
@@ -246,7 +249,18 @@ static ggml_backend_buffer_i ggml_backend_metal_buffer_private_i = {
 
 static bool ggml_backend_buffer_is_metal(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_metal_buffer_shared_free_buffer ||
-           buffer->iface.free_buffer == ggml_backend_metal_buffer_private_free_buffer;
+           buffer->iface.free_buffer == ggml_backend_metal_buffer_private_free_buffer ||
+           buffer->iface.free_buffer == ggml_backend_metal_expert_free_buffer;
+}
+
+// Synchronous writes are permitted only while the caller exclusively owns the
+// buffer and no GPU work references it. Private storage never exposes a pointer.
+void * ggml_backend_metal_buffer_get_host_base(ggml_backend_buffer_t buffer) {
+    if (!buffer || !ggml_backend_buffer_is_metal(buffer)) {
+        return nullptr;
+    }
+    auto ctx = (ggml_metal_buffer_t) buffer->context;
+    return ggml_metal_buffer_is_shared(ctx) ? ggml_metal_buffer_get_base(ctx) : nullptr;
 }
 
 //
@@ -826,12 +840,15 @@ static bool ggml_backend_metal_device_supports_op(ggml_backend_dev_t dev, const 
     return ggml_metal_device_supports_op(ctx_dev, op);
 }
 
+#include "ggml-metal-expert-buffer.cpp.inc"
+
 static bool ggml_backend_metal_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
     return
         buft->device == dev && (
         buft->iface.get_name == ggml_backend_metal_buffer_type_shared_get_name ||
         buft->iface.get_name == ggml_backend_metal_buffer_type_private_get_name ||
-        buft->iface.get_name == ggml_backend_metal_buffer_type_mapped_get_name);
+        buft->iface.get_name == ggml_backend_metal_buffer_type_mapped_get_name ||
+        buft->iface.get_name == ggml_backend_metal_expert_buffer_name);
 
     GGML_UNUSED(dev);
 }
@@ -1012,7 +1029,21 @@ static void ggml_backend_metal_fusion_set_enabled(ggml_backend_fusion_t finfo, b
     ggml_metal_fusion_info_set_enabled((struct ggml_metal_fusion_info *) finfo, enabled);
 }
 
+static bool ggml_backend_metal_last_graph_timing(ggml_backend_t backend, uint64_t * gpu_ns, uint64_t * buffers) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+    return ggml_metal_last_graph_timing((ggml_metal_t) backend->context, gpu_ns, buffers);
+}
+
 static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    if (strcmp(name, "ggml_backend_metal_prepare_single_expert") == 0) {
+        return (void *) ggml_backend_metal_prepare_single_expert;
+    }
+    if (strcmp(name, "ggml_backend_metal_buffer_get_host_base") == 0) {
+        return (void *) ggml_backend_metal_buffer_get_host_base;
+    }
+    if (strcmp(name, "ggml_backend_metal_last_graph_timing") == 0) {
+        return (void *) ggml_backend_metal_last_graph_timing;
+    }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_metal_get_features;
     }
@@ -1050,6 +1081,12 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_backend_fusion_set_enabled") == 0) {
         return (void *)ggml_backend_metal_fusion_set_enabled;
+    }
+    if (strcmp(name, "ggml_backend_metal_create_expert_buffer_type") == 0) {
+        return (void *) ggml_backend_metal_create_expert_buffer_type;
+    }
+    if (strcmp(name, "ggml_backend_metal_free_expert_buffer_type") == 0) {
+        return (void *) ggml_backend_metal_free_expert_buffer_type;
     }
 
     return NULL;

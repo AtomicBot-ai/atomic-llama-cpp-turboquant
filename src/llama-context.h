@@ -2,12 +2,14 @@
 
 #include "llama.h"
 #include "llama-ext.h"
+#include "llama-atomic.h"
 #include "llama-cparams.h"
 #include "llama-graph.h"
 #include "llama-adapter.h"
 #include "llama-impl.h"
 #include "llama-memory.h"
 #include "llama-moe-cache.h"
+#include "llama-expert-executor.h"
 
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
@@ -161,7 +163,7 @@ struct llama_context {
                        ggml_status & ret);
 
     int encode(const llama_batch_ext & batch_inp);
-    int decode(const llama_batch_ext & batch_inp);
+    int decode(const llama_batch_ext & batch_inp, size_t uncached_prompt_tokens = 0);
 
     // compat version
     int encode(const llama_batch & batch_inp);
@@ -196,7 +198,8 @@ struct llama_context {
             const char * filepath,
            llama_token * tokens_out,
                 size_t   n_token_capacity,
-                size_t * n_token_count_out);
+                size_t * n_token_count_out,
+     const llama_token * expected_prefix = nullptr);
 
     size_t state_seq_save_file(
           llama_seq_id   seq_id,
@@ -212,6 +215,32 @@ struct llama_context {
     void perf_reset();
 
     llama_memory_breakdown memory_breakdown() const;
+    bool prefill_window_set(bool enabled);
+    bool prefill_window_get(llama_prefill_window_data & result) const;
+    // 0: ordinary loop owns the current remaining microbatch; 1: all consumed; -3: fatal.
+    int decode_prefill_window(llama_memory_context_ptr & mctx, int32_t n_outputs_all,
+            size_t prompt_tokens, int64_t & n_outputs_prev, int64_t & n_tokens_prev);
+    bool expert_profile_set(bool enabled);
+    bool expert_read_overlap_set(bool enabled);
+    bool expert_single_map_set(bool enabled);
+    bool expert_route_index_set(bool enabled);
+    bool expert_early_read_set(bool enabled);
+    bool expert_profile_get(llama_expert_profile_data & result) const;
+    bool expert_cache_policy_set(const char * policy);
+    bool expert_trace_set(llama_expert_trace_callback callback, void * user);
+    bool expert_preview_set(int mode);
+    bool expert_route_observer_set(llama_expert_route_callback callback, void * user);
+    bool expert_streaming_stats(llama_expert_streaming_data & result) const;
+    bool configure_memory_policy(const llama_memory_policy_config & config, bool system_source);
+    bool submit_memory_pressure(const llama_memory_pressure_sample & sample);
+    bool memory_policy_stats(llama_memory_policy_data & result) const;
+    uint64_t request_memory_budget(size_t target);
+    bool apply_memory_budget();
+    bool memory_budget_stats(llama_budget_data & result) const;
+    bool resize_discrete_budget(size_t host_target, size_t device_target, size_t scratch_headroom);
+    bool set_discrete_prefill_probe(bool (*mid_read)(void *) noexcept,
+            bool (*boundary)(llama_context *, void *) noexcept, void * user, bool worker,
+            llama_expert_read_probe submitted_read);
 
     //
     // training
@@ -335,6 +364,7 @@ private:
     //
 
     const llama_model & model;
+    std::unique_ptr<struct llama_context_budget> budget_control;
 
     llama_cparams cparams;
 
@@ -345,6 +375,7 @@ private:
 
     llama_memory_ptr memory;
     llama_moe_cache_ptr moe_cache;
+    std::unique_ptr<llama_expert_executor> expert_executor;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};

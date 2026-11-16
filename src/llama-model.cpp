@@ -1,4 +1,5 @@
 #include "llama-model.h"
+#include "llama-expert-source.h"
 
 #include "llama-arch.h"
 #include "llama-ext.h"
@@ -24,6 +25,7 @@
 
 #include "ggml.h"
 #include "ggml-cpp.h"
+#include "llama-memory-contract.h"
 
 #include <algorithm>
 #include <cassert>
@@ -34,6 +36,7 @@
 #include <functional>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -1239,11 +1242,12 @@ llm_ffn_op_type llm_ffn_op_type_from_string(const std::string & name, llm_ffn_op
 }
 
 // CPU: ACCEL -> GPU host -> CPU extra -> CPU
-static buft_list_t make_cpu_buft_list(const std::vector<llama_device> & devices, bool use_extra_bufts, bool no_host) {
+static buft_list_t make_cpu_buft_list(const std::vector<llama_device> & devices, bool use_extra_bufts, bool no_host,
+        bool include_accel) {
     buft_list_t buft_list;
 
     // add ACCEL buffer types
-    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+    for (size_t i = 0; include_accel && i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_ACCEL) {
             auto * buft = ggml_backend_dev_buffer_type(dev);
@@ -1687,6 +1691,29 @@ void llama_model_base::load_vocab(llama_model_loader & ml) {
 }
 
 bool llama_model_base::load_tensors(llama_model_loader & ml) {
+    const bool discrete_streaming = memory_contract && memory_contract->stream_experts;
+    if (params.expert_streaming_size > 0 || params.memory_budget_size > 0 || discrete_streaming) {
+        if ((arch != LLM_ARCH_QWEN3MOE && arch != LLM_ARCH_QWEN35MOE && arch != LLM_ARCH_LFM2MOE && arch != LLM_ARCH_QWEN4EXP) || params.no_alloc || params.load_mtp ||
+            params.split_mode == LLAMA_SPLIT_MODE_TENSOR || devices.size() > 1 || ml.file_paths.empty() ||
+            !hdmd.weight_blocks.empty() || !hdmd.inverse_blocks.empty()) {
+            throw std::runtime_error("expert streaming requires a file-backed Qwen3/3.5 MoE, Qwen4Exp or LFM2 MoE model, one device, no MTP or folded weights");
+        }
+        if (params.load_mode != LLAMA_LOAD_MODE_AUTO && params.load_mode != LLAMA_LOAD_MODE_NONE) {
+            throw std::runtime_error("expert streaming requires auto or none load mode; whole-file mapping/locking is disabled");
+        }
+        if (params.check_tensors) {
+            throw std::runtime_error("full tensor validation is not supported with expert streaming");
+        }
+        expert_streaming_size = params.expert_streaming_size;
+        expert_source = std::make_shared<llama_expert_source>(ml.file_paths);
+        ml.stream_experts = true;
+        ml.stream_tok_embd = arch == LLM_ARCH_QWEN4EXP && discrete_streaming;
+        ml.stream_ple = arch == LLM_ARCH_QWEN4EXP && devices.size() == 1 &&
+            ((params.memory_budget_size > 0 && std::strcmp(ggml_backend_dev_name(devices.front().dev), "MTL0") == 0) ||
+             discrete_streaming);
+        ml.use_mmap = false;
+        ml.lazy.mode = LLAMA_LAZY_MODE_OFF;
+    }
     const auto & split_mode   = params.split_mode;
     const bool use_mlock      = params.load_mode == LLAMA_LOAD_MODE_MLOCK || params.load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK;
     const auto & tensor_split = params.tensor_split;
@@ -1729,7 +1756,8 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         __func__, load_mode_name);
 
     // build a list of buffer types for the CPU and GPU devices
-    pimpl->cpu_buft_list = make_cpu_buft_list(devices, params.use_extra_bufts, params.no_host);
+    pimpl->cpu_buft_list = make_cpu_buft_list(devices, params.use_extra_bufts, params.no_host,
+            !memory_contract || !memory_contract->discrete.device);
     for (const auto & dev : devices) {
         buft_list_t buft_list = make_gpu_buft_list(dev.dev, split_mode, tensor_split);
         // add CPU buffer types as a fallback
@@ -2009,6 +2037,44 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // per-tensor activation precision policy
     prec_policy.load(ml, *this);
 
+    if (expert_source) {
+        for (const auto & item : tensors_by_name) {
+            if (ml.streamed_names.count(item.first)) {
+                const auto & info = expert_source->tensor(item.first);
+                auto * tensor = item.second;
+                if (ml.stream_tok_embd && tensor == tok_embd) {
+                    if (tensor == output || info.type != GGML_TYPE_IQ3_S || info.ne[2] != 1 || info.ne[3] != 1 ||
+                        info.ne[0] % ggml_blck_size(info.type) ||
+                        !std::equal(info.ne.begin(), info.ne.end(), tensor->ne)) {
+                        throw std::runtime_error("unsupported streamed token embedding layout");
+                    }
+                    streamed_tok_embd = tensor;
+                    continue;
+                }
+                if (ml.stream_ple && tensor == per_layer_tok_embd) {
+                    if (info.type != GGML_TYPE_IQ4_NL || info.ne[0] % ggml_blck_size(info.type) ||
+                        info.ne[2] != 1 || info.ne[3] != 1 ||
+                        !std::equal(info.ne.begin(), info.ne.end(), tensor->ne)) {
+                        throw std::runtime_error("unsupported streamed PLE layout");
+                    }
+                    streamed_ple = tensor;
+                    continue;
+                }
+                if (!info.can_read_experts() || info.type != tensor->type ||
+                    !std::equal(info.ne.begin(), info.ne.end(), tensor->ne) ||
+                    prec_policy.prec_src1.count(tensor) || prec_policy.prec_acc.count(tensor)) {
+                    throw std::runtime_error("unsupported expert storage or precision policy: " + item.first);
+                }
+                streamed_experts.insert(tensor);
+            }
+        }
+        if (streamed_experts.empty()) { throw std::runtime_error("no streamable expert weights found"); }
+        LLAMA_LOG_INFO("expert streaming: %zu tensors remain on disk; %s cap = %zu bytes\n",
+                       streamed_experts.size(), discrete_streaming ? "discrete VRAM" : params.memory_budget_size ? "engine" : "expert/workspace-only",
+                       discrete_streaming ? memory_contract->ledger->snapshot(llama_memory_domain::device).applied :
+                           params.memory_budget_size ? params.memory_budget_size : expert_streaming_size);
+    }
+
     ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
     pimpl->mappings.reserve(ml.mappings.size());
 
@@ -2024,6 +2090,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     for (auto & [ctx_key, ctx_ptr] : ml.ctx_map) {
         ggml_backend_buffer_type_t buft = ctx_key.buft;
         ggml_context * ctx = ctx_ptr.get();
+
+        if (ctx_key.streamed) {
+            // Retain shapes/names for graph construction, without allocating or
+            // loading the complete expert tensors. They must never enter a graph.
+            pimpl->ctxs_bufs.emplace_back(std::move(ctx_ptr), std::vector<ggml_backend_buffer_ptr>{});
+            continue;
+        }
 
         // skip contexts without tensors
         if (ggml_get_first_tensor(ctx) == nullptr) {
@@ -2153,9 +2226,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         });
     }
 
+    std::optional<llama_discrete_load_staging> discrete_staging;
+    if (memory_contract && memory_contract->discrete.device) {
+        discrete_staging.emplace(memory_contract->ledger, memory_contract->discrete);
+    }
     // load tensor data
     for (auto & [ctx, bufs] : ctx_bufs) {
-        if (!ml.load_all_data(ctx, bufs, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
+        if (!ml.load_all_data(ctx, bufs, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback,
+                params.progress_callback_user_data, discrete_staging ? &*discrete_staging : nullptr)) {
             return false;
         }
     }
@@ -3563,6 +3641,8 @@ llama_model_params llama_model_default_params() {
         /*.progress_callback           =*/ nullptr,
         /*.progress_callback_user_data =*/ nullptr,
         /*.kv_overrides                =*/ nullptr,
+        /*.expert_streaming_size       =*/ 0,
+        /*.memory_budget_size          =*/ 0,
         /*.vocab_only                  =*/ false,
         /*.check_tensors               =*/ false,
         /*.use_extra_bufts             =*/ true,

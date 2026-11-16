@@ -2737,6 +2737,61 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_N_CPU_MOE"));
     add_opt(common_arg(
+        {"--engine-budget-mib"}, "N",
+        "experimental total engine UMA budget in MiB; disk MoE streaming requires an explicit supported context and -fit off",
+        [](common_params & params, int value) {
+            if (value <= 0 || uint64_t(value) > SIZE_MAX / (1024 * 1024)) { throw std::invalid_argument("invalid engine budget"); }
+            params.engine_budget = size_t(value) * 1024 * 1024;
+        }
+    ).set_env("LLAMA_ARG_ENGINE_BUDGET_MIB"));
+    add_opt(common_arg(
+        {"--engine-ram-mib"}, "N",
+        "experimental CUDA streaming RAM cap in MiB; requires both caps, --device CUDA0, -fit off and one text slot",
+        [](common_params & params, int value) {
+            if (value <= 0 || uint64_t(value) > SIZE_MAX / (1024 * 1024)) { throw std::invalid_argument("invalid discrete engine budget"); }
+            params.engine_ram_budget = size_t(value) * 1024 * 1024;
+        }
+    ).set_env("LLAMA_ARG_ENGINE_RAM_MIB"));
+    add_opt(common_arg(
+        {"--engine-vram-mib"}, "N",
+        "experimental CUDA streaming VRAM cap in MiB; requires both caps, --device CUDA0, -fit off and one text slot",
+        [](common_params & params, int value) {
+            if (value <= 0 || uint64_t(value) > SIZE_MAX / (1024 * 1024)) { throw std::invalid_argument("invalid discrete engine budget"); }
+            params.engine_vram_budget = size_t(value) * 1024 * 1024;
+        }
+    ).set_env("LLAMA_ARG_ENGINE_VRAM_MIB"));
+    add_opt(common_arg(
+        {"--engine-prefix-checkpoints"}, "DIR",
+        "experimental Qwen4Exp CUDA prefix checkpoints under DIR (4 GiB RAM, 2 GiB VRAM, one text slot)",
+        [](common_params & params, const std::string & value) { params.engine_prefix_checkpoints = value; }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--engine-prefill-window"},
+        "experimental Qwen4Exp/Metal prefill windows; fixed 8 GiB, ctx 4096, ubatch 8, one text slot; unsupported requests fall back",
+        [](common_params & params) { params.engine_prefill_window = true; }
+    ));
+    add_opt(common_arg(
+        {"--engine-memory-auto"},
+        "react to macOS memory pressure within the engine budget; manual budget requests suspend automatic mode",
+        [](common_params & params) { params.engine_memory_auto = true; }
+    ).set_env("LLAMA_ARG_ENGINE_MEMORY_AUTO"));
+    add_opt(common_arg(
+        {"--engine-memory-min-mib"}, "N",
+        "automatic lower budget bound in MiB, combined with the live engine floor (default: 0)",
+        [](common_params & params, int value) {
+            if (value < 0 || uint64_t(value) > SIZE_MAX / (1024 * 1024)) { throw std::invalid_argument("invalid memory minimum"); }
+            params.engine_memory_min = size_t(value) * 1024 * 1024;
+        }
+    ).set_env("LLAMA_ARG_ENGINE_MEMORY_MIN_MIB"));
+    add_opt(common_arg(
+        {"--engine-memory-reserve-mib"}, "N",
+        "free-page headroom retained before automatic growth, in MiB (default: 1024)",
+        [](common_params & params, int value) {
+            if (value < 0 || uint64_t(value) > SIZE_MAX / (1024 * 1024)) { throw std::invalid_argument("invalid memory reserve"); }
+            params.engine_memory_reserve = size_t(value) * 1024 * 1024;
+        }
+    ).set_env("LLAMA_ARG_ENGINE_MEMORY_RESERVE_MIB"));
+    add_opt(common_arg(
         {"--moe-cache-mib"}, "N",
         "GPU cache size in MiB for the MoE experts kept in the CPU. with multiple GPUs, it is split among them like the layers (--tensor-split) (default: 0, disabled)",
         [](common_params & params, int value) {

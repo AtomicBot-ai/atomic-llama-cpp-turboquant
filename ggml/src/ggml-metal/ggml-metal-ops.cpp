@@ -1,3 +1,4 @@
+#include "ggml-metal-expert.h"
 #include "ggml-metal-ops.h"
 
 #include "ggml.h"
@@ -2999,7 +3000,11 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         ggml_metal_buffer_id bid_ids = bid_tpe;
         bid_ids.offs += ggml_metal_op_mul_mat_id_extra_tpe(op);
 
-        {
+        const bool prepared = op->op_params[0] == GGML_METAL_PREPARED_SINGLE_EXPERT;
+        if (prepared) {
+            GGML_ASSERT(ne02 == 1 && ne11 == 1 && ne12 == 32 && ne20 == 1 && ne21 == 32);
+        }
+        if (!prepared) {
             ggml_metal_kargs_mul_mm_id_map0 args = {
                 ne10,
                 ne11, // n_expert_used (bcast)
@@ -3030,7 +3035,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         }
 
         // zero the rows that no expert owns - disjoint from what kernel_mul_mm_id writes
-        {
+        if (!prepared) {
             ggml_metal_kargs_mul_mm_id_zero args = {
                 /*.ne0  =*/ ne0,
                 /*.nb1  =*/ nb1,
@@ -3049,7 +3054,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         }
 
         // this barrier is always needed because the next kernel has to wait for the id maps to be computed
-        ggml_metal_op_concurrency_reset(ctx);
+        if (!prepared) { ggml_metal_op_concurrency_reset(ctx); }
 
         {
             auto pipeline = ggml_metal_library_get_pipeline_mul_mm_id(lib, op);

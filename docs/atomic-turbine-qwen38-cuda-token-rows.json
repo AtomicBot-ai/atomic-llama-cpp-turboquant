@@ -1,0 +1,104 @@
+{
+  "scope": "Qwen4Exp IQ3_XXS checkpoint, short CUDA control; not general family or server qualification",
+  "date": "2026-11-15",
+  "hardware": "Ubuntu, RTX 4070 Laptop 8 GiB",
+  "model_shards": [
+    {
+      "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "bytes": 47039860096,
+      "sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15"
+    },
+    {
+      "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+      "bytes": 28800138432,
+      "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+    }
+  ],
+  "model_integrity": "Complete SHA-256 matched on Mac and Ubuntu; runs used complete local Ubuntu Strata files",
+  "profile": {
+    "gpu_layers": 22,
+    "context_requested": 128,
+    "context_effective": 256,
+    "batch": 128,
+    "microbatch": 8,
+    "threads": 4,
+    "sequences": 1,
+    "prompt": "The capital of France is",
+    "prompt_ids": [
+      760,
+      6511,
+      314,
+      9338,
+      369
+    ],
+    "greedy_output_ids": [
+      11751,
+      13,
+      561,
+      6511
+    ],
+    "decode_steps_after_prefill": 3,
+    "final_emitted_token_fed_back": false
+  },
+  "native_control": {
+    "loader": "ordinary llama_model_load_from_file",
+    "expert_buffers": "original packed CPU",
+    "host_expert_device_cache_bytes": 2147483648,
+    "moe_cache_cpu_share": 0,
+    "host_memory_capped": false
+  },
+  "token_rows": {
+    "type": "IQ3_S",
+    "shape": [
+      2560,
+      248320
+    ],
+    "removed_resident_bytes": 273152000,
+    "workspace_bytes": 1100,
+    "fixture_original_rows": [
+      0,
+      1,
+      124160,
+      248319
+    ],
+    "fixture_payload_sha256": "7fa503e8a1c6ce6cfb2a45f1b60bf721459fa1ab0067f675699b14a168e7ee3e",
+    "compared_float_values": 12800,
+    "bitwise_equal": true
+  },
+  "managed_budget": {
+    "host_cap": 4294967296,
+    "device_cap": 2147483648,
+    "runtime_envelope": 2147483648,
+    "additional_host_state_capture": 134217728,
+    "host_used": 4249542918,
+    "device_used": 2129199104,
+    "host_peak": 4291713190,
+    "device_peak": 2147483648,
+    "host_peak_headroom": 3254106,
+    "measurement": "shared managed ledger, not total RSS or total driver allocations"
+  },
+  "logits": {
+    "rows": 4,
+    "float_values": 993280,
+    "bytes": 3973120,
+    "all_finite": true,
+    "cmp_exit_code": 0,
+    "sha256_both": "21098cc696fca6a15bc6c1a0d9d972a7cd05d94ec1975ac92a72c349e1ec2f31"
+  },
+  "state": {
+    "bytes": 118286060,
+    "cmp_exit_code": 0,
+    "sha256_both": "eca0fd3737df17ee2972fee332e4662bc76e42e6801b98f26f9314505c609bf6"
+  },
+  "remaining": [
+    "long prefill/context",
+    "live resize",
+    "server integration",
+    "microbatches above eight",
+    "mixed embedding inputs",
+    "adapters",
+    "other checkpoints",
+    "ordinary-path performance measurement"
+  ],
+  "checks": "Selected token-row gather, allocation-only admission, one sequential stream/native request pair; no full suite or aggregate verification"
+}

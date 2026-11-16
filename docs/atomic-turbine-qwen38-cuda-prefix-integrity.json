@@ -1,0 +1,202 @@
+{
+  "status": "PASS",
+  "algorithm": "CRC32C",
+  "check_buffer_bytes": 16384,
+  "profile": "RTX 4070 Laptop CUDA, Qwen3.8 Flash Next GSQ-RCO IQ3_XXS, context 4096, batch 128, microbatch 8, 22 GPU layers, one slot",
+  "caps_bytes": {
+    "RAM": 4294967296,
+    "VRAM": 2147483648
+  },
+  "runtime_reserve_bytes": 2147483648,
+  "historical_repeat_ttft_seconds_without_checksum": 4.766098533989862,
+  "timing_scope": "One clean repeat, compared with the previous recorded observation. File cache uncontrolled and not a paired overhead benchmark.",
+  "capture_library_sha256": "247a984d45e8acfabb15527dbd87b7fb8d5309dfca4efb16d371175433cb392f",
+  "patch_sha256": "0349586d4f627ba6fabf80a3275772e8dfa8782abbeca3fc4ef4d678911d4da5",
+  "source_sha256": {
+    "tools/server/server-prefix-checkpoints.h": "2c45dbe05f9abfebf9357929734de77a6a4ec579af25f32425c823a9ff12519b",
+    "tools/server/server-prefix-checksum.h": "67651c3852516fed99c303675a392eb1c5ab407b20501d81ea581c3f4e8e7797"
+  },
+  "artifact_directory": "~/.cache/atomic-qwen38-cuda/disk-prefix-p11.MHBGXj/crc.nadjdX",
+  "runs": {
+    "flip": {
+      "fault": {
+        "size_before": 133795176,
+        "size_after": 133795176,
+        "offset": 133795112,
+        "old_byte": 4,
+        "new_byte": 5
+      },
+      "cases": {
+        "seed": {
+          "ttft_seconds": 98.23509852700226,
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 513,
+            "prompt_ms": 98233.741,
+            "prompt_per_token_ms": 191.4887738791423,
+            "prompt_per_second": 5.222238253147664,
+            "predicted_n": 4,
+            "predicted_ms": 975.446,
+            "predicted_per_token_ms": 325.14866666666666,
+            "predicted_per_second": 3.075516225398433
+          },
+          "tokens": [
+            279,
+            22591,
+            998,
+            42741
+          ],
+          "logits_sha256": "c5ad69db167c6bb277f8358ae8266a13c6cbe9fa74a803eb2ce930510f730ff6",
+          "slot": {
+            "bytes": 133918280,
+            "sha256": "da7f050b98d70fb74b4106c138974264f7071bb2b393c8713073e91e4b80c50d"
+          },
+          "memory_after_save": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4249544806,
+            "ram_released_bytes": 383093537472,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 19610271744
+          },
+          "ordinary_logits_and_slot_bitwise_equal": true
+        },
+        "flipped": {
+          "ttft_seconds": 97.91812886600383,
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 513,
+            "prompt_ms": 97908.064,
+            "prompt_per_token_ms": 190.85392592592592,
+            "prompt_per_second": 5.23960927263356,
+            "predicted_n": 4,
+            "predicted_ms": 872.016,
+            "predicted_per_token_ms": 290.67199999999997,
+            "predicted_per_second": 3.4403038476358234
+          },
+          "tokens": [
+            279,
+            22591,
+            998,
+            42741
+          ],
+          "logits_sha256": "c5ad69db167c6bb277f8358ae8266a13c6cbe9fa74a803eb2ce930510f730ff6",
+          "slot": {
+            "bytes": 133918280,
+            "sha256": "da7f050b98d70fb74b4106c138974264f7071bb2b393c8713073e91e4b80c50d"
+          },
+          "memory_after_save": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4249544806,
+            "ram_released_bytes": 764264355264,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 34245509120
+          },
+          "ordinary_logits_and_slot_bitwise_equal": true
+        }
+      },
+      "binaries": {
+        "llama-server": "a1dbe028b9930dcf30e473547c07cc3d70de438c87c2dbc3071e5808c0c1958b",
+        "libllama.so": "bf881ecb556339e26373585d48ba36f75cc44897269a085a201181fa32a43961",
+        "libllama-common.so": "cb9fce3ab92b05122555119b9023931103c2538b7ab51f82d8de2abbeff7dc5d",
+        "libllama-server-impl.so": "bf0cf4246becc6b74e627de4922a72348af100bd40aab73217dfa7f37db05085"
+      }
+    },
+    "repeat": {
+      "fault": null,
+      "cases": {
+        "seed": {
+          "ttft_seconds": 682.2794668760034,
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 3481,
+            "prompt_ms": 682276.55,
+            "prompt_per_token_ms": 196.00015800057457,
+            "prompt_per_second": 5.102036703445252,
+            "predicted_n": 4,
+            "predicted_ms": 939.51,
+            "predicted_per_token_ms": 313.17,
+            "predicted_per_second": 3.1931538780853854
+          },
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "logits_sha256": "ea4d042797b174d4da03bcf4ed18a324664753a5720c8244edc778d022aefea2",
+          "slot": {
+            "bytes": 225249576,
+            "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+          },
+          "memory_after_save": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2760826437104,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 104444657664
+          },
+          "ordinary_logits_and_slot_bitwise_equal": true
+        },
+        "repeat": {
+          "ttft_seconds": 4.793973485997412,
+          "timings": {
+            "cache_n": 3456,
+            "prompt_n": 25,
+            "prompt_ms": 4792.082,
+            "prompt_per_token_ms": 191.68328000000002,
+            "prompt_per_second": 5.216939109138783,
+            "predicted_n": 4,
+            "predicted_ms": 1025.264,
+            "predicted_per_token_ms": 341.75466666666665,
+            "predicted_per_second": 2.926075625399897
+          },
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "logits_sha256": "ea4d042797b174d4da03bcf4ed18a324664753a5720c8244edc778d022aefea2",
+          "slot": {
+            "bytes": 225249576,
+            "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+          },
+          "memory_after_save": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2780319464784,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 105213001728
+          },
+          "ordinary_logits_and_slot_bitwise_equal": true
+        }
+      },
+      "binaries": {
+        "llama-server": "a1dbe028b9930dcf30e473547c07cc3d70de438c87c2dbc3071e5808c0c1958b",
+        "libllama.so": "bf881ecb556339e26373585d48ba36f75cc44897269a085a201181fa32a43961",
+        "libllama-common.so": "cb9fce3ab92b05122555119b9023931103c2538b7ab51f82d8de2abbeff7dc5d",
+        "libllama-server-impl.so": "bf0cf4246becc6b74e627de4922a72348af100bd40aab73217dfa7f37db05085"
+      }
+    }
+  }
+}

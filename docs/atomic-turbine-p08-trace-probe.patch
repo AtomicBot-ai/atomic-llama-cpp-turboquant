@@ -1,0 +1,11 @@
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -934,7 +934,7 @@
+             throw std::invalid_argument("injected signals require --memory-policy replay");
+         }
+         if ((rollback_probe || mtp_probe) && (!budget_mib || tokens < 2 || warmup || repeat != 1 ||
+-                !trace_path.empty() || !preview_path.empty() || !policy_mode.empty() ||
++                (!trace_path.empty() && !mtp_compact_checkpoint) || !preview_path.empty() || !policy_mode.empty() ||
+                 prefill.target || prefill.pressure || !resizes.empty() || preview_mode)) {
+             throw std::invalid_argument("rollback probe requires one fixed-budget request with decode and no other probes");
+         }

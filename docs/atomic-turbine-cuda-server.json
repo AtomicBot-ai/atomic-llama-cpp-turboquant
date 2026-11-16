@@ -1,0 +1,130 @@
+{
+  "profile": "LFM2.5-24B-A2B-AD-Q4_K_M / Ubuntu / RTX 4070 Laptop / single-slot HTTP",
+  "checked_on": "2026-11-15",
+  "limits_bytes": {
+    "ram": 4294967296,
+    "vram": 2147483648
+  },
+  "context": 256,
+  "batch": 256,
+  "microbatch": 8,
+  "gpu_layers": 14,
+  "threads": 4,
+  "first_ids": [
+    4741,
+    20,
+    309,
+    278
+  ],
+  "ordinary_ids": [
+    4741,
+    20,
+    309,
+    278
+  ],
+  "stop_type": "word",
+  "chat_finish_reason": "stop",
+  "chat_completion_tokens": 40,
+  "after_cancel_ids": [
+    4741,
+    20,
+    309,
+    278
+  ],
+  "continuation_ids": [
+    4569,
+    3368,
+    355,
+    4770
+  ],
+  "restored_continuation_ids": [
+    4569,
+    3368,
+    355,
+    4770
+  ],
+  "restored_cache_tokens": 12,
+  "phase_metrics": {
+    "initial_metrics": {
+      "ram_requested_bytes": 4294967296,
+      "ram_applied_bytes": 4294967296,
+      "ram_used_bytes": 3035066816,
+      "ram_high_water_bytes": 3095573136,
+      "ram_released_bytes": 10346591008,
+      "vram_requested_bytes": 2147483648,
+      "vram_applied_bytes": 2147483648,
+      "vram_used_bytes": 1385037824,
+      "vram_high_water_bytes": 2147483648,
+      "vram_released_bytes": 1857486848
+    },
+    "stop_metrics": {
+      "ram_requested_bytes": 4294967296,
+      "ram_applied_bytes": 4294967296,
+      "ram_used_bytes": 3034971872,
+      "ram_high_water_bytes": 3095633488,
+      "ram_released_bytes": 24786093248,
+      "vram_requested_bytes": 2147483648,
+      "vram_applied_bytes": 2147483648,
+      "vram_used_bytes": 864157696,
+      "vram_high_water_bytes": 2147483648,
+      "vram_released_bytes": 5693767680
+    },
+    "chat_metrics": {
+      "ram_requested_bytes": 4294967296,
+      "ram_applied_bytes": 4294967296,
+      "ram_used_bytes": 3035028176,
+      "ram_high_water_bytes": 3097860944,
+      "ram_released_bytes": 50559361504,
+      "vram_requested_bytes": 2147483648,
+      "vram_applied_bytes": 2147483648,
+      "vram_used_bytes": 1176043520,
+      "vram_high_water_bytes": 2147483648,
+      "vram_released_bytes": 10779164672
+    },
+    "cancel_metrics": {
+      "ram_requested_bytes": 4294967296,
+      "ram_applied_bytes": 4294967296,
+      "ram_used_bytes": 3035146672,
+      "ram_high_water_bytes": 3097860944,
+      "ram_released_bytes": 66899896352,
+      "vram_requested_bytes": 2147483648,
+      "vram_applied_bytes": 2147483648,
+      "vram_used_bytes": 1862008832,
+      "vram_high_water_bytes": 2147483648,
+      "vram_released_bytes": 14323482624
+    },
+    "restore_metrics": {
+      "ram_requested_bytes": 4294967296,
+      "ram_applied_bytes": 4294967296,
+      "ram_used_bytes": 3035069760,
+      "ram_high_water_bytes": 3097860944,
+      "ram_released_bytes": 73933461376,
+      "vram_requested_bytes": 2147483648,
+      "vram_applied_bytes": 2147483648,
+      "vram_used_bytes": 1402994688,
+      "vram_high_water_bytes": 2147483648,
+      "vram_released_bytes": 16077225984
+    }
+  },
+  "logit_probe": {
+    "bytes": 2048000,
+    "reference_bytes": 2048000,
+    "equal": true,
+    "sha256": "ffd339bb13fdc241e536457a3dfea3f2a6fe28ff9df80fd798caa6bebaae263f"
+  },
+  "invalid_startup": {
+    "partial": {
+      "exit_code": 1,
+      "expected": "requires both"
+    },
+    "parallel": {
+      "exit_code": 1,
+      "expected": "requires --parallel 1"
+    },
+    "below-floor": {
+      "exit_code": 1,
+      "expected": "runtime"
+    }
+  },
+  "scope": "Selected HTTP scenarios, saved-state equality and a separate four-row logit probe; no full suite or performance qualification."
+}

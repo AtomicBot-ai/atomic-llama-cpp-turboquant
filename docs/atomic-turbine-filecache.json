@@ -1,0 +1,286 @@
+{
+  "model": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS",
+  "backend": "Metal / Apple M4 Max / 48 GiB",
+  "source": "saved grouped-residency server probe; production source unchanged",
+  "prompt_tokens": 33,
+  "output_tokens": 24,
+  "decode_steps": 23,
+  "context": 1024,
+  "batch": 512,
+  "microbatch": 8,
+  "slots": 1,
+  "threads": 8,
+  "prompt_cache": false,
+  "timing": "HTTP TTFT excludes server startup and cache preparation; server TPS excludes first output token",
+  "cold_setup": "After readiness, read-only mmap and MS_SYNC|MS_INVALIDATE on the two GGUF shards; mincore confirmed zero resident file pages; sizes and mtimes unchanged. Startup-populated expert entries remain.",
+  "order_mib": [
+    8192,
+    16384,
+    32768
+  ],
+  "warm_definition": "Two full identical repetitions in the same process; not a guarantee of zero disk reads or eventual steady state.",
+  "artifacts": "/tmp/qwen38-filecache.CK4OZk",
+  "runs": [
+    {
+      "budget_mib": 8192,
+      "request": "cold",
+      "ttft_seconds": 5.167536416993244,
+      "decode_tokens_per_second": 5.03051554473047,
+      "client_decode_tokens_per_second": 5.03055533830746,
+      "phases": {
+        "prefill": {
+          "hits": 185,
+          "misses": 23950,
+          "logical": 13976716800,
+          "disk": 9492451328
+        },
+        "decode": {
+          "hits": 11010,
+          "misses": 22110,
+          "logical": 12926208000,
+          "disk": 4342288384
+        }
+      },
+      "managed_used_bytes": 8588393066,
+      "managed_peak_bytes": 8589915610,
+      "model_file_cached_bytes": 10698932224,
+      "system_file_backed_bytes": 29122887680,
+      "system_wired_bytes": 10076831744,
+      "system_compressor_bytes": 1468088320,
+      "system_swapins_delta_pages": 16,
+      "system_swapouts_delta_pages": 0
+    },
+    {
+      "budget_mib": 8192,
+      "request": "warm1",
+      "ttft_seconds": 2.651197791012237,
+      "decode_tokens_per_second": 7.00459684281502,
+      "client_decode_tokens_per_second": 7.00455453252448,
+      "phases": {
+        "prefill": {
+          "hits": 260,
+          "misses": 23875,
+          "logical": 13935628800,
+          "disk": 2083553280
+        },
+        "decode": {
+          "hits": 11010,
+          "misses": 22110,
+          "logical": 12926208000,
+          "disk": 1172963328
+        }
+      },
+      "managed_used_bytes": 8588393066,
+      "managed_peak_bytes": 8589915610,
+      "model_file_cached_bytes": 11121999872,
+      "system_file_backed_bytes": 28743827456,
+      "system_wired_bytes": 10506665984,
+      "system_compressor_bytes": 1468006400,
+      "system_swapins_delta_pages": 0,
+      "system_swapouts_delta_pages": 0
+    },
+    {
+      "budget_mib": 8192,
+      "request": "warm2",
+      "ttft_seconds": 2.360773041989887,
+      "decode_tokens_per_second": 7.113836225881002,
+      "client_decode_tokens_per_second": 7.113803589142167,
+      "phases": {
+        "prefill": {
+          "hits": 260,
+          "misses": 23875,
+          "logical": 13935628800,
+          "disk": 1712078848
+        },
+        "decode": {
+          "hits": 11010,
+          "misses": 22110,
+          "logical": 12926208000,
+          "disk": 1126400000
+        }
+      },
+      "managed_used_bytes": 8588393066,
+      "managed_peak_bytes": 8589915610,
+      "model_file_cached_bytes": 11620679680,
+      "system_file_backed_bytes": 28544630784,
+      "system_wired_bytes": 10230005760,
+      "system_compressor_bytes": 1467695104,
+      "system_swapins_delta_pages": 0,
+      "system_swapouts_delta_pages": 0
+    },
+    {
+      "budget_mib": 16384,
+      "request": "cold",
+      "ttft_seconds": 4.662037750007585,
+      "decode_tokens_per_second": 4.776515162528198,
+      "client_decode_tokens_per_second": 4.776525660491449,
+      "phases": {
+        "prefill": {
+          "hits": 10251,
+          "misses": 13884,
+          "logical": 8099481600,
+          "disk": 8323235840
+        },
+        "decode": {
+          "hits": 21257,
+          "misses": 11863,
+          "logical": 6979814400,
+          "disk": 5079748608
+        }
+      },
+      "managed_used_bytes": 17178195482,
+      "managed_peak_bytes": 17179769226,
+      "model_file_cached_bytes": 7906951168,
+      "system_file_backed_bytes": 20484407296,
+      "system_wired_bytes": 18678235136,
+      "system_compressor_bytes": 1467170816,
+      "system_swapins_delta_pages": 0,
+      "system_swapouts_delta_pages": 0
+    },
+    {
+      "budget_mib": 16384,
+      "request": "warm1",
+      "ttft_seconds": 3.2991230830084532,
+      "decode_tokens_per_second": 5.013821798745628,
+      "client_decode_tokens_per_second": 5.013779492262993,
+      "phases": {
+        "prefill": {
+          "hits": 12420,
+          "misses": 11715,
+          "logical": 6877926400,
+          "disk": 3279290368
+        },
+        "decode": {
+          "hits": 21257,
+          "misses": 11863,
+          "logical": 6979814400,
+          "disk": 3088564224
+        }
+      },
+      "managed_used_bytes": 17178195482,
+      "managed_peak_bytes": 17179769226,
+      "model_file_cached_bytes": 8317435904,
+      "system_file_backed_bytes": 20599291904,
+      "system_wired_bytes": 18641600512,
+      "system_compressor_bytes": 1464369152,
+      "system_swapins_delta_pages": 0,
+      "system_swapouts_delta_pages": 0
+    },
+    {
+      "budget_mib": 16384,
+      "request": "warm2",
+      "ttft_seconds": 3.255592458008323,
+      "decode_tokens_per_second": 5.023330092193395,
+      "client_decode_tokens_per_second": 5.017459896561723,
+      "phases": {
+        "prefill": {
+          "hits": 12420,
+          "misses": 11715,
+          "logical": 6877926400,
+          "disk": 3083354112
+        },
+        "decode": {
+          "hits": 21257,
+          "misses": 11863,
+          "logical": 6979814400,
+          "disk": 3072999424
+        }
+      },
+      "managed_used_bytes": 17178195482,
+      "managed_peak_bytes": 17179769226,
+      "model_file_cached_bytes": 8389230592,
+      "system_file_backed_bytes": 20667613184,
+      "system_wired_bytes": 18671681536,
+      "system_compressor_bytes": 1464074240,
+      "system_swapins_delta_pages": 0,
+      "system_swapouts_delta_pages": 0
+    },
+    {
+      "budget_mib": 32768,
+      "request": "cold",
+      "ttft_seconds": 4.912911833991529,
+      "decode_tokens_per_second": 6.418873945316217,
+      "client_decode_tokens_per_second": 6.415405155505169,
+      "phases": {
+        "prefill": {
+          "hits": 11085,
+          "misses": 13050,
+          "logical": 7627673600,
+          "disk": 8196292608
+        },
+        "decode": {
+          "hits": 27570,
+          "misses": 5550,
+          "logical": 3301427200,
+          "disk": 3397013504
+        }
+      },
+      "managed_used_bytes": 28453294538,
+      "managed_peak_bytes": 28454216138,
+      "model_file_cached_bytes": 6093848576,
+      "system_file_backed_bytes": 9214083072,
+      "system_wired_bytes": 29977051136,
+      "system_compressor_bytes": 1897676800,
+      "system_swapins_delta_pages": 0,
+      "system_swapouts_delta_pages": 0
+    },
+    {
+      "budget_mib": 32768,
+      "request": "warm1",
+      "ttft_seconds": 0.7582707919937093,
+      "decode_tokens_per_second": 16.413588167372925,
+      "client_decode_tokens_per_second": 16.40792576893932,
+      "phases": {
+        "prefill": {
+          "hits": 24135,
+          "misses": 0,
+          "logical": 0,
+          "disk": 6832128
+        },
+        "decode": {
+          "hits": 33120,
+          "misses": 0,
+          "logical": 0,
+          "disk": 2621440
+        }
+      },
+      "managed_used_bytes": 28453294538,
+      "managed_peak_bytes": 28454216138,
+      "model_file_cached_bytes": 6103302144,
+      "system_file_backed_bytes": 9217523712,
+      "system_wired_bytes": 29971841024,
+      "system_compressor_bytes": 1942536192,
+      "system_swapins_delta_pages": 0,
+      "system_swapouts_delta_pages": 0
+    },
+    {
+      "budget_mib": 32768,
+      "request": "warm2",
+      "ttft_seconds": 0.7180490419850685,
+      "decode_tokens_per_second": 15.506478674209557,
+      "client_decode_tokens_per_second": 15.502317210110057,
+      "phases": {
+        "prefill": {
+          "hits": 24135,
+          "misses": 0,
+          "logical": 0,
+          "disk": 0
+        },
+        "decode": {
+          "hits": 33120,
+          "misses": 0,
+          "logical": 0,
+          "disk": 0
+        }
+      },
+      "managed_used_bytes": 28453294538,
+      "managed_peak_bytes": 28454216138,
+      "model_file_cached_bytes": 6093357056,
+      "system_file_backed_bytes": 9210609664,
+      "system_wired_bytes": 29938794496,
+      "system_compressor_bytes": 1942536192,
+      "system_swapins_delta_pages": 0,
+      "system_swapouts_delta_pages": 0
+    }
+  ]
+}

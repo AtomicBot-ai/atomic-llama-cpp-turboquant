@@ -1,4 +1,6 @@
 #include "llama-graph.h"
+#include "llama-expert-executor.h"
+#include "llama-memory-contract.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -1590,6 +1592,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     mctx             (params.mctx),
     cross            (params.cross),
     moe_cache        (params.moe_cache),
+    expert_executor  (params.expert_executor),
     prec_policy      (params.prec_policy),
     hdmd             (params.hdmd),
     layer_inp_dev    (params.layer_inp_dev),
@@ -1768,9 +1771,16 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
     // as in build_lora_mm: the folded weight reads the transformed input, the LoRA delta reads `cur`
     ggml_tensor * cur_mm = build_hadamard_input(w, cur);
     // the experts in the MoE cache are selected by their slots
-    ggml_tensor * res = slots == nullptr ?
+    ggml_tensor * res = nullptr;
+    if (expert_executor && model.streamed_experts.count(w)) {
+        if (slots || !loras->empty()) { throw std::runtime_error("expert streaming does not support MoE cache or LoRA"); }
+        res = expert_executor->build(ctx0, w, cur_mm, ids);
+        ggml_backend_sched_set_tensor_backend(sched, res, backend_cpu);
+    } else {
+        res = slots == nullptr ?
         ggml_mul_mat_id(ctx0, w, cur_mm, ids) :
         ggml_mul_mat_id(ctx0, cached ? moe_cache->get_experts(w) : w, cur_mm, slots);
+    }
 
     if (prec_policy) {
         prec_policy->apply(res);
@@ -2419,6 +2429,18 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(weights, "ffn_moe_weights_scaled", il);
     }
 
+    if (expert_executor && arch == LLM_ARCH_QWEN4EXP && model.memory_contract &&
+            model.memory_contract->discrete.device &&
+            model.dev_layer(il) == ggml_backend_buft_get_device(model.memory_contract->discrete.device)) {
+        // Pin a separate small copy: marking the reshape itself as an output
+        // also pins its DIV source and prevents the ordinary Top-K fusion.
+        // The reduction must not overwrite its routing weights, or CUDA falls
+        // back to separate MUL/ADD with different rounding.
+        ggml_build_forward_expand(gf, weights);
+        weights = ggml_dup(ctx0, weights);
+        ggml_set_output(weights);
+    }
+
     //call early so that topk-moe can be used
     ggml_build_forward_expand(gf, weights);
 
@@ -2665,6 +2687,13 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 }
 
 // input embeddings with optional lora
+ggml_tensor * llm_graph_context::build_ple_rows(ggml_tensor * table, ggml_tensor * rows) const {
+    if (expert_executor && table == model.streamed_ple) {
+        return expert_executor->build_rows(ctx0, rows);
+    }
+    return ggml_get_rows(ctx0, table, rows);
+}
+
 ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd, float tok_scale) const {
     const int64_t n_embd_inp = hparams.n_embd_inp();
     const int64_t n_embd     = hparams.n_embd;
@@ -2709,13 +2738,15 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd, float to
     // we use ggml_build_forward_order to make the GET_ROWS ops stick at the beginning of the compute graph
     // this way the embeddings remain in the host buffer, and the GET_ROWS run before any other computations
     {
-        embd0 = ggml_get_rows(ctx0, tok_embd, inp->tokens);
+        embd0 = expert_executor && tok_embd == model.streamed_tok_embd ?
+            expert_executor->build_token_rows(ctx0, inp->tokens) : ggml_get_rows(ctx0, tok_embd, inp->tokens);
         ggml_build_forward_order(gf, embd0);
 
         embd1 = inp->embd;
 
         if (has_mixed) {
-            embd2 = ggml_get_rows(ctx0, tok_embd, inp->mixed_tokens);
+            embd2 = expert_executor && tok_embd == model.streamed_tok_embd ?
+                expert_executor->build_token_rows(ctx0, inp->mixed_tokens) : ggml_get_rows(ctx0, tok_embd, inp->mixed_tokens);
             ggml_build_forward_order(gf, embd2);
         }
     }

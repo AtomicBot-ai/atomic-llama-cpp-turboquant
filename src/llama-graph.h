@@ -24,6 +24,7 @@ struct llama_prec_policy;
 struct llama_hadamard;
 
 class llama_moe_cache;
+class llama_expert_executor;
 
 struct llama_memory_context_i;
 
@@ -804,6 +805,7 @@ struct llm_graph_params {
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
     const llama_moe_cache        * moe_cache;
+    llama_expert_executor        * expert_executor;
 
     const llama_prec_policy * prec_policy = nullptr;
 
@@ -1077,6 +1079,7 @@ struct llm_graph_context {
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
     const llama_moe_cache        * moe_cache;
+    llama_expert_executor        * expert_executor;
 
     const llama_prec_policy * prec_policy;
 
@@ -1250,6 +1253,7 @@ struct llm_graph_context {
 
     // tok_scale: applied to token rows only
     ggml_tensor * build_inp_embd(ggml_tensor * tok_embd, float tok_scale = 1.0f) const;
+    ggml_tensor * build_ple_rows(ggml_tensor * table, ggml_tensor * rows) const;
 
     // the state input of an MTP graph: rows of the h_nextn device buffer of ctx_state_src (see llama_set_ctx_state_src()),
     // or uploaded from ubatch.embd_state

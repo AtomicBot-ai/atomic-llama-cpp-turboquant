@@ -348,6 +348,14 @@ extern "C" {
         // override key-value pairs of the model meta data
         const struct llama_model_kv_override * kv_overrides;
 
+        // [EXPERIMENTAL] managed expert-store/workspace bytes; 0 disables disk streaming.
+        // Not a total model/context/process limit. Qwen3/3.5 MoE and LFM2 MoE.
+        size_t expert_streaming_size;
+        // Experimental total engine allocation budget for one streamed model/session
+        // on CPU/Apple UMA, including a fixed runtime envelope. 0 disables it.
+        // Mutually exclusive with expert_streaming_size. Not an OS-wide RSS limit.
+        size_t memory_budget_size;
+
         // Keep the booleans together to avoid misalignment during copy-by-value.
         bool vocab_only;      // only load the vocabulary, no weights
         bool check_tensors;   // validate model tensor data

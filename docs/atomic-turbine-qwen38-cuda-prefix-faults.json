@@ -1,0 +1,182 @@
+{
+  "status": "PASS: direct comparisons and independent checks",
+  "initial_driver_exit": 1,
+  "driver_failure": "Final log-text assertion expected a platform-specific EOF string. Both inference requests and byte comparisons had finished. Independent cmp, observed restore error, and directory cleanup were checked without a model rerun.",
+  "profile": "Qwen3.8 Flash Next GSQ-RCO IQ3_XXS, RTX 4070 Laptop CUDA, context 4096, batch 128, microbatch 8, 22 GPU layers, one slot, engine caps 4 GiB RAM / 2 GiB VRAM",
+  "fixture": "First 513 token IDs of atomic-turbine-qwen38-context.txt",
+  "prompt_sha256": "ff564330c036acd2575b9c4174df6f1223b09d2e55fdc1f3a7d1ced3a0f7ea2e",
+  "runtime_reserve_bytes": 2147483648,
+  "binaries": {
+    "llama-server": "a1dbe028b9930dcf30e473547c07cc3d70de438c87c2dbc3071e5808c0c1958b",
+    "libllama.so": "bf881ecb556339e26373585d48ba36f75cc44897269a085a201181fa32a43961",
+    "libllama-common.so": "cb9fce3ab92b05122555119b9023931103c2538b7ab51f82d8de2abbeff7dc5d",
+    "libllama-server-impl.so": "bf0cf4246becc6b74e627de4922a72348af100bd40aab73217dfa7f37db05085"
+  },
+  "capture_server_sha256": "7dc7651bce870f95c48e71e7e88f4e014decec875ca4c4ae11ef33187c25c330",
+  "both_faults_reported_and_replayed_full_prefill": true,
+  "tail_recreated_after_each_fault": true,
+  "full_logits_and_full_slots_equal_to_ordinary_cuda": true,
+  "logits": {
+    "rows": 12,
+    "bytes": 11919360,
+    "sha256": "4a66d503c4b212c32798052e8ffa6bda8fcc8c9e08b53bbcf1314a51c01953f5"
+  },
+  "temporary_directory_empty_after_exit": true,
+  "artifact_directory": "~/.cache/atomic-qwen38-cuda/disk-prefix-p11.MHBGXj/faults.OcEOjY",
+  "cases": [
+    {
+      "case": "seed",
+      "fault": null,
+      "slot": {
+        "bytes": 133918280,
+        "sha256": "da7f050b98d70fb74b4106c138974264f7071bb2b393c8713073e91e4b80c50d"
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 513,
+        "prompt_ms": 99027.844,
+        "prompt_per_token_ms": 193.0367329434698,
+        "prompt_per_second": 5.180361192151169,
+        "predicted_n": 4,
+        "predicted_ms": 881.346,
+        "predicted_per_token_ms": 293.782,
+        "predicted_per_second": 3.4038845130062425
+      },
+      "tokens": [
+        279,
+        22591,
+        998,
+        42741
+      ],
+      "memory_after_completion": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174867606,
+        "ram_high_water_bytes": 4249544806,
+        "ram_released_bytes": 383089863360,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2147352576,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 19610271744
+      },
+      "memory_after_save": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174867606,
+        "ram_high_water_bytes": 4249544806,
+        "ram_released_bytes": 383093537472,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2147352576,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 19610271744
+      }
+    },
+    {
+      "case": "missing",
+      "fault": {
+        "original_bytes": 133795176,
+        "bytes_after": 0
+      },
+      "slot": {
+        "bytes": 133918280,
+        "sha256": "da7f050b98d70fb74b4106c138974264f7071bb2b393c8713073e91e4b80c50d"
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 513,
+        "prompt_ms": 98222.275,
+        "prompt_per_token_ms": 191.4664230019493,
+        "prompt_per_second": 5.22284787233853,
+        "predicted_n": 4,
+        "predicted_ms": 897.638,
+        "predicted_per_token_ms": 299.2126666666667,
+        "predicted_per_second": 3.3421045009235346
+      },
+      "tokens": [
+        279,
+        22591,
+        998,
+        42741
+      ],
+      "memory_after_completion": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174867606,
+        "ram_high_water_bytes": 4249544806,
+        "ram_released_bytes": 764260681152,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2147352576,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 34245509120
+      },
+      "memory_after_save": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174867606,
+        "ram_high_water_bytes": 4249544806,
+        "ram_released_bytes": 764264355264,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2147352576,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 34245509120
+      }
+    },
+    {
+      "case": "truncated",
+      "fault": {
+        "original_bytes": 133795176,
+        "bytes_after": 133795112
+      },
+      "slot": {
+        "bytes": 133918280,
+        "sha256": "da7f050b98d70fb74b4106c138974264f7071bb2b393c8713073e91e4b80c50d"
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 513,
+        "prompt_ms": 98325.098,
+        "prompt_per_token_ms": 191.66685769980506,
+        "prompt_per_second": 5.217386104207087,
+        "predicted_n": 4,
+        "predicted_ms": 856.218,
+        "predicted_per_token_ms": 285.406,
+        "predicted_per_second": 3.5037805792450056
+      },
+      "tokens": [
+        279,
+        22591,
+        998,
+        42741
+      ],
+      "memory_after_completion": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174867606,
+        "ram_high_water_bytes": 4249544806,
+        "ram_released_bytes": 1145435168960,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2147352576,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 48880746496
+      },
+      "memory_after_save": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174867606,
+        "ram_high_water_bytes": 4249544806,
+        "ram_released_bytes": 1145438843072,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2147352576,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 48880746496
+      }
+    }
+  ],
+  "executed_diagnostic_sha256": "3413e6ecbea62901b7230b54c60ab58586b537518e3c982bf14e5677e4d859b9"
+}

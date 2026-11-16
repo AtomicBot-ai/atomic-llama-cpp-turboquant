@@ -1,0 +1,829 @@
+{
+  "status": "PASS: isolated saved-pool restore probe; no production change",
+  "profile": {
+    "context": 4096,
+    "batch": 128,
+    "microbatch": 8,
+    "gpu_layers": 22,
+    "slots": 1,
+    "ram_cap": 4294967296,
+    "vram_cap": 2147483648,
+    "runtime_reserve": 2147483648
+  },
+  "edit": {
+    "position_zero_based": 1740,
+    "old_id": 561,
+    "new_id": 13
+  },
+  "continuous_reference": "atomic-turbine-qwen38-cuda-http-series.json",
+  "first_difference_in_rejected_repeat": {
+    "file_offset_zero_based": 7220572,
+    "attention_key_position": 3472,
+    "first_differing_old_qsa_pooled_position_in_first_index_layer": 39
+  },
+  "full_logits_repeat": {
+    "bytewise_equal": true,
+    "bytes": 3973120,
+    "rows": 4,
+    "vocab_size": 248320,
+    "reference": "cache4-long-native.f32, ordinary CUDA engine",
+    "sha256": "ea4d042797b174d4da03bcf4ed18a324664753a5720c8244edc778d022aefea2"
+  },
+  "limits": [
+    "Edited request compares output IDs and full slot bytes; raw logits were captured only for the exact repeat.",
+    "Explicit process-local experiment with trusted contiguous text prefix files.",
+    "No automatic checkpoint policy, general restore change, or cross-profile inference qualification."
+  ],
+  "runs": {
+    "ordinary_restore_path": {
+      "artifact_directory": "~/.cache/atomic-qwen38-cuda/http-prefix.p67IGl",
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "probe_library_sha256": null,
+      "states": {
+        "prefix-mid": {
+          "bytes": 169244536,
+          "sha256": "dc03e7c8bf227c0d1fc3e2c33edf355eb90931f3180d5d4596965d466922bb05"
+        },
+        "prefix-tail": {
+          "bytes": 224387960,
+          "sha256": "34b0a46d25bce11b4b4e7dcca74c42cb53234d152477509f853e0d00b40f6bdf"
+        },
+        "repeat": {
+          "bytes": 225249576,
+          "sha256": "90e83398ea5baca57b17738b73818ee24c2a2027b802cc68c09bd7b59679b807"
+        },
+        "edited": {
+          "bytes": 225249576,
+          "sha256": "d869a84e7439c491423288e0d86ee0bcbaaa04130ea355eb58fb73faafdb355e"
+        }
+      },
+      "restores": {
+        "prefix-tail": {
+          "id_slot": 0,
+          "filename": "prefix-tail.slot",
+          "n_restored": 3456,
+          "n_read": 224387960,
+          "timings": {
+            "restore_ms": 43.057
+          },
+          "metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2741384006576,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147287040,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 103679852544
+          }
+        },
+        "prefix-mid": {
+          "id_slot": 0,
+          "filename": "prefix-mid.slot",
+          "n_restored": 1664,
+          "n_read": 169244536,
+          "timings": {
+            "restore_ms": 27.501
+          },
+          "metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2760906581072,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 104450883584
+          }
+        }
+      },
+      "requests": {
+        "prefix-mid": {
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 1664,
+            "prompt_ms": 336070.805,
+            "prompt_per_token_ms": 201.96562800480768,
+            "prompt_per_second": 4.951337561142807,
+            "predicted_n": 1,
+            "predicted_ms": 0.001,
+            "predicted_per_token_ms": 0.0,
+            "predicted_per_second": 0.0
+          },
+          "tokens": [
+            264
+          ],
+          "ttft_seconds": 336.0720743720012,
+          "ordinary_slot_bitwise_equal": null,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 1290371596000,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147287040,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 52410777600
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 1290376445664,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147287040,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 52410777600
+          }
+        },
+        "prefix-tail": {
+          "timings": {
+            "cache_n": 1664,
+            "prompt_n": 1792,
+            "prompt_ms": 370986.743,
+            "prompt_per_token_ms": 207.02385212053574,
+            "prompt_per_second": 4.830361283287149,
+            "predicted_n": 1,
+            "predicted_ms": 0.001,
+            "predicted_per_token_ms": 0.0,
+            "predicted_per_second": 0.0
+          },
+          "tokens": [
+            3294
+          ],
+          "ttft_seconds": 370.9885423609958,
+          "ordinary_slot_bitwise_equal": null,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2741376928688,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147287040,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 103679852544
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2741380467632,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147287040,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 103679852544
+          }
+        },
+        "repeat": {
+          "timings": {
+            "cache_n": 3456,
+            "prompt_n": 25,
+            "prompt_ms": 4808.658,
+            "prompt_per_token_ms": 192.34632000000002,
+            "prompt_per_second": 5.198955716958868,
+            "predicted_n": 4,
+            "predicted_ms": 952.994,
+            "predicted_per_token_ms": 317.6646666666667,
+            "predicted_per_second": 3.1479736493619055
+          },
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "ttft_seconds": 4.8237801659997785,
+          "ordinary_slot_bitwise_equal": false,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2760898163792,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 104450883584
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2760901731408,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 104450883584
+          }
+        },
+        "edited": {
+          "timings": {
+            "cache_n": 1664,
+            "prompt_n": 1817,
+            "prompt_ms": 376253.644,
+            "prompt_per_token_ms": 207.07410236653823,
+            "prompt_per_second": 4.829189109461489,
+            "predicted_n": 4,
+            "predicted_ms": 952.34,
+            "predicted_per_token_ms": 317.44666666666666,
+            "predicted_per_second": 3.1501354558246004
+          },
+          "tokens": [
+            271,
+            248068,
+            198,
+            760
+          ],
+          "ttft_seconds": 376.2552897919959,
+          "ordinary_slot_bitwise_equal": false,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 4230341573952,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 156160098304
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 4230345141568,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 156160098304
+          }
+        }
+      }
+    },
+    "stale_bound_without_reset": {
+      "artifact_directory": "~/.cache/atomic-qwen38-cuda/http-prefix-probe.DqQfib",
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "probe_library_sha256": "4f4f73d850ffff35e4a7b537acbf36f2208a307867f74f36da7d025400f8ca6f",
+      "states": {
+        "tail-round-trip": {
+          "bytes": 224387960,
+          "sha256": "34b0a46d25bce11b4b4e7dcca74c42cb53234d152477509f853e0d00b40f6bdf"
+        },
+        "repeat": {
+          "bytes": 225249576,
+          "sha256": "90e83398ea5baca57b17738b73818ee24c2a2027b802cc68c09bd7b59679b807"
+        }
+      },
+      "restores": {
+        "prefix-tail": {
+          "id_slot": 0,
+          "filename": "prefix-tail.slot",
+          "n_restored": 3456,
+          "n_read": 224387960,
+          "timings": {
+            "restore_ms": 35.227
+          },
+          "metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174848470,
+            "ram_high_water_bytes": 4193465894,
+            "ram_released_bytes": 1920368320,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2094858240,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 710344704
+          }
+        }
+      },
+      "requests": {
+        "repeat": {
+          "timings": {
+            "cache_n": 3456,
+            "prompt_n": 25,
+            "prompt_ms": 4993.589,
+            "prompt_per_token_ms": 199.74356,
+            "prompt_per_second": 5.006419230737652,
+            "predicted_n": 4,
+            "predicted_ms": 930.135,
+            "predicted_per_token_ms": 310.045,
+            "predicted_per_second": 3.2253382573497396
+          },
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "ttft_seconds": 4.995250834006583,
+          "ordinary_slot_bitwise_equal": false,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21439076112,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3505520640
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21442643728,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3505520640
+          }
+        }
+      }
+    },
+    "adjacent_3472_cut": {
+      "artifact_directory": "~/.cache/atomic-qwen38-cuda/http-prefix-cut.LYMcyC",
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "probe_library_sha256": null,
+      "states": {
+        "prefix-3472": {
+          "bytes": 224880312,
+          "sha256": "1561812b502bcf98edee6aa5d6202ed4a680cb1f746780952a1fdcb5e04d3066"
+        },
+        "live": {
+          "bytes": 225249576,
+          "sha256": "90e83398ea5baca57b17738b73818ee24c2a2027b802cc68c09bd7b59679b807"
+        },
+        "restored": {
+          "bytes": 225249576,
+          "sha256": "f3943fa416522fc4a8aecf2b4cc61e5fd8532c159e8e49ead856d9203f4934f0"
+        }
+      },
+      "restores": {
+        "prefix-tail": {
+          "id_slot": 0,
+          "filename": "prefix-tail.slot",
+          "n_restored": 3456,
+          "n_read": 224387960,
+          "timings": {
+            "restore_ms": 35.329
+          },
+          "metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174848470,
+            "ram_high_water_bytes": 4193465894,
+            "ram_released_bytes": 1920368320,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2094858240,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 710344704
+          }
+        },
+        "prefix-3472": {
+          "id_slot": 0,
+          "filename": "prefix-3472.slot",
+          "n_restored": 3472,
+          "n_read": 224880312,
+          "timings": {
+            "restore_ms": 34.34
+          },
+          "metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21467976912,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3510370304
+          }
+        }
+      },
+      "requests": {
+        "prefix-3472": {
+          "timings": {
+            "cache_n": 3456,
+            "prompt_n": 16,
+            "prompt_ms": 3427.129,
+            "prompt_per_token_ms": 214.1955625,
+            "prompt_per_second": 4.668630798548873,
+            "predicted_n": 1,
+            "predicted_ms": 0.001,
+            "predicted_per_token_ms": 0.0,
+            "predicted_per_second": 0.0
+          },
+          "tokens": [
+            6511
+          ],
+          "ttft_seconds": 3.4289962879993254,
+          "ordinary_slot_bitwise_equal": null,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 12218824992,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147287040,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3119906816
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 12222380320,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147287040,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3119906816
+          }
+        },
+        "live": {
+          "timings": {
+            "cache_n": 3472,
+            "prompt_n": 9,
+            "prompt_ms": 1772.529,
+            "prompt_per_token_ms": 196.94766666666666,
+            "prompt_per_second": 5.077490974759792,
+            "predicted_n": 4,
+            "predicted_ms": 963.208,
+            "predicted_per_token_ms": 321.0693333333333,
+            "predicted_per_second": 3.114592071494423
+          },
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "ttft_seconds": 1.774382229996263,
+          "ordinary_slot_bitwise_equal": false,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21460853968,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3510370304
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21464421584,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3510370304
+          }
+        },
+        "restored": {
+          "timings": {
+            "cache_n": 3472,
+            "prompt_n": 9,
+            "prompt_ms": 1885.653,
+            "prompt_per_token_ms": 209.517,
+            "prompt_per_second": 4.772882391404993,
+            "predicted_n": 4,
+            "predicted_ms": 968.381,
+            "predicted_per_token_ms": 322.79366666666664,
+            "predicted_per_second": 3.097954214302016
+          },
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "ttft_seconds": 1.8874543550045928,
+          "ordinary_slot_bitwise_equal": false,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 30706450192,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3900178432
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 30710017808,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3900178432
+          }
+        }
+      }
+    },
+    "saved_pool_restore_probe": {
+      "artifact_directory": "~/.cache/atomic-qwen38-cuda/http-prefix-clean.gibFya",
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "probe_library_sha256": "a8545e285ae46b16c235ab71792a3404c41b7835a01d6e79932f5e23c4a8807b",
+      "states": {
+        "tail-round-trip": {
+          "bytes": 224387960,
+          "sha256": "34b0a46d25bce11b4b4e7dcca74c42cb53234d152477509f853e0d00b40f6bdf"
+        },
+        "repeat": {
+          "bytes": 225249576,
+          "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+        },
+        "edited": {
+          "bytes": 225249576,
+          "sha256": "0a220ca8c9b91a67edcd5519e208f095c65c681cc85718960c3ad6f6f4654d69"
+        }
+      },
+      "restores": {
+        "prefix-tail": {
+          "id_slot": 0,
+          "filename": "prefix-tail.slot",
+          "n_restored": 3456,
+          "n_read": 224387960,
+          "timings": {
+            "restore_ms": 34.876
+          },
+          "metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174848470,
+            "ram_high_water_bytes": 4193465894,
+            "ram_released_bytes": 1920368320,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2094858240,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 710344704
+          }
+        },
+        "prefix-mid": {
+          "id_slot": 0,
+          "filename": "prefix-mid.slot",
+          "n_restored": 1664,
+          "n_read": 169244536,
+          "timings": {
+            "restore_ms": 26.466
+          },
+          "metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21419257664,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3503489024
+          }
+        }
+      },
+      "requests": {
+        "repeat": {
+          "timings": {
+            "cache_n": 3456,
+            "prompt_n": 25,
+            "prompt_ms": 5099.661,
+            "prompt_per_token_ms": 203.98644000000002,
+            "prompt_per_second": 4.90228664219053,
+            "predicted_n": 4,
+            "predicted_ms": 987.591,
+            "predicted_per_token_ms": 329.197,
+            "predicted_per_second": 3.037694754204929
+          },
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "ttft_seconds": 5.101087702001678,
+          "ordinary_slot_bitwise_equal": true,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21410840384,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3503489024
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21414408000,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3503489024
+          }
+        },
+        "edited": {
+          "timings": {
+            "cache_n": 1664,
+            "prompt_n": 1817,
+            "prompt_ms": 370669.284,
+            "prompt_per_token_ms": 204.00070665932856,
+            "prompt_per_second": 4.901943803900406,
+            "predicted_n": 4,
+            "predicted_ms": 949.88,
+            "predicted_per_token_ms": 316.62666666666667,
+            "predicted_per_second": 3.1582936792015834
+          },
+          "tokens": [
+            271,
+            248068,
+            198,
+            760
+          ],
+          "ttft_seconds": 370.67102721300034,
+          "ordinary_slot_bitwise_equal": true,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 1491696460800,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 55217684480
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 1491700028416,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 55217684480
+          }
+        }
+      }
+    },
+    "fp32_capture_probe": {
+      "artifact_directory": "~/.cache/atomic-qwen38-cuda/http-prefix-logits.nRB1KF",
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "probe_library_sha256": "a8545e285ae46b16c235ab71792a3404c41b7835a01d6e79932f5e23c4a8807b",
+      "states": {
+        "tail-round-trip": {
+          "bytes": 224387960,
+          "sha256": "34b0a46d25bce11b4b4e7dcca74c42cb53234d152477509f853e0d00b40f6bdf"
+        },
+        "repeat": {
+          "bytes": 225249576,
+          "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+        }
+      },
+      "restores": {
+        "prefix-tail": {
+          "id_slot": 0,
+          "filename": "prefix-tail.slot",
+          "n_restored": 3456,
+          "n_read": 224387960,
+          "timings": {
+            "restore_ms": 33.595
+          },
+          "metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174848470,
+            "ram_high_water_bytes": 4193465894,
+            "ram_released_bytes": 1920368320,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2094858240,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 710344704
+          }
+        }
+      },
+      "requests": {
+        "repeat": {
+          "timings": {
+            "cache_n": 3456,
+            "prompt_n": 25,
+            "prompt_ms": 4884.754,
+            "prompt_per_token_ms": 195.39016,
+            "prompt_per_second": 5.117964998851528,
+            "predicted_n": 4,
+            "predicted_ms": 888.409,
+            "predicted_per_token_ms": 296.1363333333333,
+            "predicted_per_second": 3.3768230623507867
+          },
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "ttft_seconds": 4.886500969005283,
+          "ordinary_slot_bitwise_equal": true,
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21410840384,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3503489024
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4246575446,
+            "ram_released_bytes": 21414408000,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 3503489024
+          }
+        }
+      }
+    }
+  }
+}

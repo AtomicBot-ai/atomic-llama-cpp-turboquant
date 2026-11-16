@@ -1,0 +1,24 @@
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -4427,7 +4427,9 @@
+ 
+     if (node->op == GGML_OP_MUL) {
+         ggml_cuda_moe_weighted_reduction_match match;
+-        if (ggml_cuda_match_moe_weighted_reduction(cgraph, i, match)) {
++        if (!(ggml_cuda_env_flag("ATOMIC_P10B_SKIP_WEIGHTED_26") &&
++                strcmp(node->name, "ffn_moe_weighted-26") == 0) &&
++                ggml_cuda_match_moe_weighted_reduction(cgraph, i, match)) {
+             const int output_idx = i + match.node_count - 1;
+             if (ggml_cuda_check_fusion_memory_ranges(cgraph, i, match.node_count, &output_idx, 1)) {
+                 ggml_cuda_op_moe_weighted_reduction(
+@@ -4466,8 +4468,8 @@
+     }
+ 
+     //topk-moe
+-    if (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||
+-            cgraph->nodes[i]->op == GGML_OP_ARGSORT) {
++    if (!ggml_cuda_env_flag("ATOMIC_P10B_SKIP_TOPK") &&
++            (node->op == GGML_OP_UNARY || node->op == GGML_OP_SOFT_MAX || node->op == GGML_OP_ARGSORT)) {
+         ggml_cuda_topk_moe_args args;
+         const bool              can_fuse = ggml_cuda_topk_moe_fusion(cgraph, i, args);
+         std::vector<ggml_op>    ops;

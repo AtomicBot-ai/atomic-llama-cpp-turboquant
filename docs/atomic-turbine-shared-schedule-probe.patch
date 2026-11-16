@@ -1,0 +1,422 @@
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -407,6 +407,11 @@
+         size_t moe_cache_size;      // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
+         float  moe_cache_cpu_share; // share of the MoE cache misses computed on the CPU instead of uploaded, 0 = all uploaded [EXPERIMENTAL]
+ 
++        // Experimental Qwen3.5 Metal streaming schedule: 0 original, 1 shared-first
++        // with a completion wait, 2 shared-first with exact-demand read overlap.
++        // Immutable for the context lifetime; default off.
++        int32_t expert_shared_schedule;
++
+         // Abort callback
+         // if it returns true, execution of llama_decode() will be aborted
+         // currently works only with CPU execution
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -626,6 +626,11 @@
+             moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share);
+         }
+ 
++        if (params.expert_shared_schedule < 0 || params.expert_shared_schedule > 2 ||
++            (params.expert_shared_schedule && (!model.expert_source || !model.memory_contract ||
++             model.arch != LLM_ARCH_QWEN35MOE || model.n_gpu_layers() <= model.hparams.n_layer_all))) {
++            throw std::runtime_error("shared schedule requires budgeted fully offloaded Qwen3.5 MoE streaming");
++        }
+         if (model.expert_source) {
+             if (params.n_seq_max != 1 || params.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT) {
+                 throw std::runtime_error("expert streaming currently requires one sequence and a default context");
+@@ -633,8 +638,14 @@
+             std::vector<const ggml_tensor *> weights(model.streamed_experts.begin(), model.streamed_experts.end());
+             auto device = model.devices.empty() || model.n_gpu_layers() == 0 ?
+                 ggml_backend_get_device(backend_cpu) : model.devices.front().dev;
++            ggml_backend_t shared_backend = nullptr;
++            if (params.expert_shared_schedule) {
++                for (const auto & b : backends) {
++                    if (ggml_backend_get_device(b.get()) == device) { shared_backend = b.get(); break; }
++                }
++            }
+             expert_executor.reset(new llama_expert_executor(model.expert_source, weights, device, model.expert_streaming_size,
+-                model.memory_contract ? model.memory_contract->ledger : nullptr));
++                model.memory_contract ? model.memory_contract->ledger : nullptr, params.expert_shared_schedule, shared_backend));
+         }
+ 
+         sched_reserve();
+@@ -4730,6 +4741,7 @@
+         /*.type_v                      =*/ GGML_TYPE_F16,
+         /*.moe_cache_size              =*/ 0,
+         /*.moe_cache_cpu_share         =*/ 0.0f,
++        /*.expert_shared_schedule    =*/ 0,
+         /*.abort_callback              =*/ nullptr,
+         /*.abort_callback_data         =*/ nullptr,
+         /*.embeddings                  =*/ false,
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -1217,7 +1217,8 @@
+              ggml_tensor * down_exps_s = nullptr,
+              ggml_tensor * selected_experts_in = nullptr,
+              ggml_tensor * post_exp_norm = nullptr,
+-                   float   post_exp_norm_eps = 1e-5f) const;
++                   float   post_exp_norm_eps = 1e-5f,
++             ggml_tensor * independent_shared = nullptr) const;
+ 
+     ggml_tensor * build_moe_ffn(
+              ggml_tensor * cur,
+@@ -1245,7 +1246,8 @@
+              ggml_tensor * down_exps_s = nullptr,
+              ggml_tensor * selected_experts_in = nullptr,
+              ggml_tensor * post_exp_norm = nullptr,
+-                   float   post_exp_norm_eps = 1e-5f) const;
++                   float   post_exp_norm_eps = 1e-5f,
++             ggml_tensor * independent_shared = nullptr) const;
+ 
+     //
+     // inputs
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2231,7 +2231,8 @@
+          ggml_tensor * down_exps_s,
+          ggml_tensor * selected_experts_in,
+          ggml_tensor * post_exp_norm,
+-               float   post_exp_norm_eps) const {
++               float   post_exp_norm_eps,
++         ggml_tensor * independent_shared) const {
+     return build_moe_ffn(
+         cur,
+         gate_inp,  /* gate_inp_b  */ nullptr,
+@@ -2254,7 +2255,8 @@
+         down_exps_s,
+         selected_experts_in,
+         post_exp_norm,
+-        post_exp_norm_eps
++        post_exp_norm_eps,
++        independent_shared
+     );
+ }
+ 
+@@ -2284,7 +2286,8 @@
+          ggml_tensor * down_exps_s,
+          ggml_tensor * selected_experts_in,
+          ggml_tensor * post_exp_norm,
+-               float   post_exp_norm_eps) const {
++               float   post_exp_norm_eps,
++         ggml_tensor * independent_shared) const {
+     const llm_arch arch = model.arch;
+     const int64_t n_embd   = cur->ne[0];
+     const int64_t n_tokens = cur->ne[1];
+@@ -2433,6 +2436,16 @@
+ 
+     // compute the expert input before the slot lookup, so that the scheduler prefetches it for the CPU part (the router can read a different tensor)
+     ggml_build_forward_expand(gf, cur);
++
++    if (independent_shared && expert_executor && expert_executor->shared_schedule()) {
++        // Separate ready IDs from the independent shared GPU split. The existing
++        // scheduler prefetches the routed activation to CPU before that split;
++        // normal demand reads may then run without waiting for shared completion.
++        auto * ready = expert_executor->build_shared_fence(ctx0, selected_experts);
++        cb(ready, "ffn_moe_ids_ready", il);
++        ggml_build_forward_expand(gf, ready);
++        ggml_build_forward_expand(gf, independent_shared);
++    }
+ 
+     // the experts of host-resident layers may be read from the MoE cache (see llama_moe_cache::build_lookup)
+     const llama_moe_cache_lookup cache = moe_cache == nullptr ? llama_moe_cache_lookup{} :
+--- a/src/models/qwen35moe.cpp
++++ b/src/models/qwen35moe.cpp
+@@ -1,5 +1,6 @@
+ #include "models.h"
+ #include "llama-memory-recurrent.h"
++#include "llama-expert-executor.h"
+ 
+ void llama_model_qwen35moe::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all, false);
+@@ -468,6 +469,37 @@
+     // Check if this is an MoE layer
+     GGML_ASSERT(model.layers[il].ffn_gate_inp != nullptr);
+ 
++    auto build_shared = [&]() -> ggml_tensor * {
++        if (!model.layers[il].ffn_up_shexp) { return nullptr; }
++        ggml_tensor * ffn_shexp =
++            build_ffn(cur,
++                model.layers[il].ffn_up_shexp, NULL, model.layers[il].ffn_up_shexp_s,
++                model.layers[il].ffn_gate_shexp, NULL, model.layers[il].ffn_gate_shexp_s,
++                model.layers[il].ffn_down_shexp, NULL, model.layers[il].ffn_down_shexp_s,
++                NULL,
++                LLM_FFN_SILU, LLM_FFN_PAR, il);
++        cb(ffn_shexp, "ffn_shexp", il);
++
++        // Apply shared expert gating as in the reference implementation
++        // The shared expert has its own gate that is sigmoided
++        // Note: ffn_gate_inp_shexp is the shared expert gate (outputs 1 value per token)
++        ggml_tensor * shared_gate = build_lora_mm(model.layers[il].ffn_gate_inp_shexp, cur);
++        cb(shared_gate, "shared_expert_gate", il);
++
++        // Apply sigmoid to the gate
++        shared_gate = ggml_sigmoid(ctx0, shared_gate);
++        cb(shared_gate, "shared_expert_gate_sigmoid", il);
++
++
++        // Apply the gate to the shared expert output
++        ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
++        cb(ffn_shexp, "ffn_shexp_gated", il);
++
++        return ffn_shexp;
++    };
++    const bool early_shared = expert_executor && expert_executor->shared_schedule() && cur->ne[1] >= 32;
++    ggml_tensor * ffn_shexp = early_shared ? build_shared() : nullptr;
++
+     ggml_tensor * moe_out =
+         build_moe_ffn(cur,
+             model.layers[il].ffn_gate_inp,
+@@ -482,41 +514,16 @@
+             nullptr, model.layers[il].ffn_gate_up_exps,
+             model.layers[il].ffn_up_exps_s,
+             model.layers[il].ffn_gate_exps_s,
+-            model.layers[il].ffn_down_exps_s);
++            model.layers[il].ffn_down_exps_s, nullptr, nullptr, 1e-5f, ffn_shexp);
+     cb(moe_out, "ffn_moe_out", il);
+ 
+-    // Add shared experts if present - following Qwen3Next reference implementation
+-    if (model.layers[il].ffn_up_shexp != nullptr) {
+-        ggml_tensor * ffn_shexp =
+-            build_ffn(cur,
+-                model.layers[il].ffn_up_shexp, NULL, model.layers[il].ffn_up_shexp_s,
+-                model.layers[il].ffn_gate_shexp, NULL, model.layers[il].ffn_gate_shexp_s,
+-                model.layers[il].ffn_down_shexp, NULL, model.layers[il].ffn_down_shexp_s,
+-                NULL,
+-                LLM_FFN_SILU, LLM_FFN_PAR, il);
+-        cb(ffn_shexp, "ffn_shexp", il);
+-
+-        // Apply shared expert gating as in the reference implementation
+-        // The shared expert has its own gate that is sigmoided
+-        // Note: ffn_gate_inp_shexp is the shared expert gate (outputs 1 value per token)
+-        ggml_tensor * shared_gate = build_lora_mm(model.layers[il].ffn_gate_inp_shexp, cur);
+-        cb(shared_gate, "shared_expert_gate", il);
+-
+-        // Apply sigmoid to the gate
+-        shared_gate = ggml_sigmoid(ctx0, shared_gate);
+-        cb(shared_gate, "shared_expert_gate_sigmoid", il);
+-
+-
+-        // Apply the gate to the shared expert output
+-        ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
+-        cb(ffn_shexp, "ffn_shexp_gated", il);
+-
++    if (!early_shared) { ffn_shexp = build_shared(); }
++    if (ffn_shexp) {
+         cur = ggml_add(ctx0, moe_out, ffn_shexp);
+         cb(cur, "ffn_out", il);
+     } else {
+         cur = moe_out;
+     }
+-
+     return cur;
+ }
+ 
+--- a/src/llama-expert-executor.h
++++ b/src/llama-expert-executor.h
+@@ -33,9 +33,12 @@
+     llama_expert_executor(std::shared_ptr<llama_expert_source> source,
+                           const std::vector<const ggml_tensor *> & weights,
+                           ggml_backend_dev_t device, size_t budget_bytes,
+-                          std::shared_ptr<llama_memory_budget> shared_budget = {});
++                          std::shared_ptr<llama_memory_budget> shared_budget = {},
++                          int shared_schedule = 0, ggml_backend_t shared_backend = nullptr);
+     ~llama_expert_executor();
+     ggml_tensor * build(ggml_context * ctx, const ggml_tensor * weight, ggml_tensor * input, ggml_tensor * ids);
++    int shared_schedule() const;
++    ggml_tensor * build_shared_fence(ggml_context * ctx, ggml_tensor * ids);
+     const char * error() const;
+     llama_expert_execution_stats stats() const;
+     bool resize(size_t target); // only at a synchronized evaluation boundary
+--- a/src/llama-expert-executor.cpp
++++ b/src/llama-expert-executor.cpp
+@@ -72,6 +72,9 @@
+     size_t minimum = 0;
+     size_t fixed_workspace = 0;
+     size_t workspace_groups = 1, max_expert_payload = 0, max_expert_allocation = 0;
++    int shared_schedule = 0;
++    ggml_backend_t shared_backend = nullptr; // borrowed; main context outlives executor
++    bool shared_window = false;
+     bool metal = false;
+     bool read_overlap = false;
+     bool single_expert_map = false;
+@@ -111,7 +114,8 @@
+     char failure[512] {};
+ 
+     impl(std::shared_ptr<llama_expert_source> source, const std::vector<const ggml_tensor *> & weights,
+-         ggml_backend_dev_t device, size_t cap, std::shared_ptr<llama_memory_budget> shared_budget) :
++         ggml_backend_dev_t device, size_t cap, std::shared_ptr<llama_memory_budget> shared_budget,
++         int shared_mode, ggml_backend_t shared_compute) :
+         budget(shared_budget ? std::move(shared_budget) : std::make_shared<llama_memory_budget>(cap, 0, true)) {
+         llama_allocation_scope explicit_admission;
+         if (!source || !device || weights.empty()) { throw std::invalid_argument("invalid expert executor configuration"); }
+@@ -120,6 +124,10 @@
+             throw std::runtime_error("expert executor currently supports CPU and MTL0 only");
+         }
+         metal = device_name == "MTL0";
++        if (shared_mode < 0 || shared_mode > 2 || (shared_mode && (!metal || !shared_compute || source->architecture() != "qwen35moe"))) {
++            throw std::invalid_argument("unsupported shared expert schedule");
++        }
++        shared_schedule = shared_mode; shared_backend = shared_compute;
+         // Enabled by default for the measured LFM and Qwen3.5 MoE Metal profiles. Other
+         // architectures retain the sequential path unless explicitly selected.
+         read_overlap = metal && (source->architecture() == "lfm2moe" || source->architecture() == "qwen35moe");
+@@ -296,6 +304,11 @@
+     void compute(const projection & p, ggml_tensor * dst) {
+         llama_expert_timer projection_timer(profile ? &profile->projection_ns : nullptr);
+         llama_allocation_scope explicit_admission;
++        const bool shared_active = shared_window;
++        shared_window = false;
++        bool shared_first = shared_active;
++        if (shared_active && shared_schedule == 1) { ggml_backend_synchronize(shared_backend); }
++        if (shared_active && profile) { ++profile->shared_windows; }
+         const ggml_tensor * input = dst->src[0];
+         const ggml_tensor * ids = dst->src[1];
+         if (input->type != GGML_TYPE_F32 || ids->type != GGML_TYPE_I32 ||
+@@ -599,7 +612,19 @@
+                         current = std::move(ahead[size_t(ready - ahead_ids.begin())]);
+                         *ready = -1;
+                     } else {
++                        uint64_t gpu_ns = 0, buffers = 0;
++                        if (shared_first && profile && graph_timing && !graph_timing(shared_backend, &gpu_ns, &buffers)) {
++                            ++profile->shared_incomplete_before_acquire;
++                        }
++                        const auto before = shared_first && profile ? profile->direct_read_bytes : 0;
++                        llama_expert_timer first_timer(shared_first && profile ? &profile->shared_first_acquire_ns : nullptr);
+                         current = store->acquire(p.name, expert);
++                        first_timer.next(nullptr);
++                        if (shared_first && profile) {
++                            profile->shared_first_read_bytes += profile->direct_read_bytes - before;
++                            if (graph_timing && !graph_timing(shared_backend, &gpu_ns, &buffers)) { ++profile->shared_incomplete_after_acquire; }
++                        }
++                        shared_first = false;
+                     }
+                 }
+                 llama_expert_timer gather_timer(profile ? &profile->gather_ns : nullptr);
+@@ -639,6 +664,23 @@
+         }
+         flush(p.experts);
+         ++n_projections;
++        if (shared_active && profile && graph_timing) {
++            uint64_t gpu_ns = 0, buffers = 0;
++            if (graph_timing(shared_backend, &gpu_ns, &buffers)) {
++                profile->shared_gpu_ns += gpu_ns;
++                ++profile->shared_timed_windows;
++            }
++        }
++    }
++
++    static void shared_fence(ggml_tensor * dst, int ith, int, void * userdata) noexcept {
++        if (ith != 0) { return; }
++        auto & owner = *static_cast<impl *>(userdata);
++        // A scheduler boundary only; actual router values are neither recomputed
++        // nor modified. All weight reads still belong to the demand projection.
++        owner.shared_window = true;
++        if (owner.profile) { ++owner.profile->shared_fences; }
++        *static_cast<float *>(dst->data) = 0;
+     }
+ 
+     static void callback(ggml_tensor * dst, int ith, int, void * userdata) noexcept {
+@@ -659,8 +701,8 @@
+ 
+ llama_expert_executor::llama_expert_executor(std::shared_ptr<llama_expert_source> source,
+         const std::vector<const ggml_tensor *> & weights, ggml_backend_dev_t device, size_t budget_bytes,
+-        std::shared_ptr<llama_memory_budget> shared_budget) :
+-    pimpl(new impl(std::move(source), weights, device, budget_bytes, std::move(shared_budget))) {}
++        std::shared_ptr<llama_memory_budget> shared_budget, int shared_schedule, ggml_backend_t shared_backend) :
++    pimpl(new impl(std::move(source), weights, device, budget_bytes, std::move(shared_budget), shared_schedule, shared_backend)) {}
+ llama_expert_executor::~llama_expert_executor() = default;
+ 
+ ggml_tensor * llama_expert_executor::build(ggml_context * ctx, const ggml_tensor * weight, ggml_tensor * input, ggml_tensor * ids) {
+@@ -669,6 +711,12 @@
+     ggml_tensor * args[] = {input, ids};
+     return ggml_custom_4d(ctx, GGML_TYPE_F32, weight->ne[1], ids->ne[0], ids->ne[1], 1,
+                           args, 2, impl::callback, 1, &it->second);
++}
++
++int llama_expert_executor::shared_schedule() const { return pimpl->shared_schedule; }
++ggml_tensor * llama_expert_executor::build_shared_fence(ggml_context * ctx, ggml_tensor * ids) {
++    ggml_tensor * args[] = {ids};
++    return ggml_custom_4d(ctx, GGML_TYPE_F32, 1, 1, 1, 1, args, 1, impl::shared_fence, 1, pimpl.get());
+ }
+ 
+ const char * llama_expert_executor::error() const { return pimpl->failed.load() ? pimpl->failure : nullptr; }
+@@ -734,7 +782,7 @@
+     if (error()) { return false; }
+     if (!enabled) { pimpl->early.reset(); pimpl->early_charge.reset(); return true; }
+     if (pimpl->early) { return true; }
+-    if (!pimpl->metal || pimpl->preview || pimpl->tracing || pimpl->class_policy || pimpl->projections.size() > 768) { return false; }
++    if (!pimpl->metal || pimpl->shared_schedule || pimpl->preview || pimpl->tracing || pimpl->class_policy || pimpl->projections.size() > 768) { return false; }
+     const auto memory = pimpl->budget->snapshot(llama_memory_domain::host);
+     const auto floor = stats().minimum_bytes;
+     if (memory.requested < floor || sizeof(impl::early_state) > memory.requested - floor) { return false; }
+@@ -840,7 +888,7 @@
+     if (mode == 0) {
+         pimpl->preview.reset(); pimpl->preview_charge.reset(); return true;
+     }
+-    if (pimpl->early || pimpl->tracing || pimpl->class_policy || layers.empty() || layers.size() > 256) { return false; }
++    if (pimpl->shared_schedule || pimpl->early || pimpl->tracing || pimpl->class_policy || layers.empty() || layers.size() > 256) { return false; }
+     // Configure before evaluation, or after an explicit disable. A failed
+     // configuration never changes the active policy or its memory floor.
+     if (pimpl->preview) { return false; }
+--- a/src/llama-expert-profile.h
++++ b/src/llama-expert-profile.h
+@@ -35,6 +35,11 @@
+     uint64_t early_acquire_ns = 0, early_window_gpu_ns = 0;
+     uint64_t early_acquisitions = 0, early_read_bytes = 0, early_skip_hot = 0;
+     uint64_t early_skip_budget = 0, early_skip_short = 0;
++    // Shared-FFN scheduling probe. Incomplete means timing was not yet available,
++    // not a measurement of GPU/CPU interval intersection.
++    uint64_t shared_fences = 0, shared_windows = 0, shared_timed_windows = 0;
++    uint64_t shared_incomplete_before_acquire = 0, shared_incomplete_after_acquire = 0;
++    uint64_t shared_first_acquire_ns = 0, shared_first_read_bytes = 0, shared_gpu_ns = 0;
+     uint64_t upload_ns = 0;
+     uint64_t release_ns = 0;
+     uint64_t graph_setup_ns = 0;
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -68,6 +68,14 @@
+             result["expert_profile_ns"]["early_skip_hot"] = profile.early_skip_hot;
+             result["expert_profile_ns"]["early_skip_budget"] = profile.early_skip_budget;
+             result["expert_profile_ns"]["early_skip_short"] = profile.early_skip_short;
++            result["expert_profile_ns"]["shared_fences"] = profile.shared_fences;
++            result["expert_profile_ns"]["shared_windows"] = profile.shared_windows;
++            result["expert_profile_ns"]["shared_timed_windows"] = profile.shared_timed_windows;
++            result["expert_profile_ns"]["shared_incomplete_before_acquire"] = profile.shared_incomplete_before_acquire;
++            result["expert_profile_ns"]["shared_incomplete_after_acquire"] = profile.shared_incomplete_after_acquire;
++            result["expert_profile_ns"]["shared_first_acquire"] = profile.shared_first_acquire_ns;
++            result["expert_profile_ns"]["shared_first_read_bytes"] = profile.shared_first_read_bytes;
++            result["expert_profile_ns"]["shared_gpu"] = profile.shared_gpu_ns;
+             result["expert_profile_ns"]["source_setup"] = profile.source_setup_ns;
+             result["expert_profile_ns"]["source_validate"] = profile.source_validate_ns;
+             result["expert_profile_ns"]["source_seek"] = profile.source_seek_ns;
+@@ -215,6 +223,7 @@
+         int single_map = -1;
+         int route_index = -1;
+         int early_read = -1;
++        int shared_schedule = 0;
+         int preview_mode = 0;
+         prefill_resize prefill;
+         std::string policy_mode;
+@@ -263,6 +272,11 @@
+                 if (mode != "on" && mode != "off") { throw std::invalid_argument("expert single map must be on or off"); }
+                 single_map = mode == "on";
+             }
++            else if (arg == "--expert-shared-schedule") {
++                const auto mode = value();
++                if (mode != "off" && mode != "serial" && mode != "overlap") { throw std::invalid_argument("shared schedule must be off, serial or overlap"); }
++                shared_schedule = mode == "overlap" ? 2 : mode == "serial" ? 1 : 0;
++            }
+             else if (arg == "--expert-early-read") {
+                 const auto mode = value();
+                 if (mode != "on" && mode != "off") { throw std::invalid_argument("expert early read must be on or off"); }
+@@ -370,6 +384,8 @@
+         }
+         report["prompt_ids"] = input;
+         auto cp = llama_context_default_params();
++        cp.expert_shared_schedule = shared_schedule;
++        report["expert_shared_schedule"] = shared_schedule;
+         cp.n_ctx = context; cp.n_batch = context; cp.n_ubatch = ubatch; cp.n_seq_max = 1; cp.no_perf = false;
+         if (prefill.target || prefill.pressure) { cp.cb_eval = prefill_resize::callback; cp.cb_eval_user_data = &prefill; }
+         std::unique_ptr<llama_context, decltype(&llama_free)> ctx(llama_init_from_model(model.get(), cp), llama_free);

@@ -613,6 +613,7 @@ struct server_task_result_error : server_task_result {
 
 // used by /metrics API
 struct server_task_result_metrics : server_task_result {
+    json engine_memory; // null until an enabled controller supplies metrics
     // these are immediate stats, not accumulated (server_metrics is cumulative)
     int n_processing_slots = 0;
     int n_tasks_deferred = 0;

@@ -1,4 +1,5 @@
 #include "llama-model-loader.h"
+#include "llama-memory-contract.h"
 
 #include "ggml-alloc.h"
 #include "ggml.h"
@@ -546,7 +547,8 @@ llama_model_loader::llama_model_loader(
         bool no_alloc,
         bool load_mtp,
         const llama_model_kv_override * param_overrides_p,
-        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p)
+        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p,
+        bool collect_expert_paths)
         : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud) {
     int trace = 0;
     if (getenv("LLAMA_TRACE")) {
@@ -582,6 +584,7 @@ llama_model_loader::llama_model_loader(
         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
 
         files.emplace_back(new llama_file(fname.c_str(), "rb", use_direct_io));
+        if (collect_expert_paths) { file_paths.push_back(fname); }
         contexts.emplace_back(ctx);
 
         // Save tensors data offset of the main file.
@@ -712,6 +715,7 @@ llama_model_loader::llama_model_loader(
             }
 
             files.emplace_back(new llama_file(fname_split, "rb", use_direct_io));
+            if (collect_expert_paths) { file_paths.emplace_back(fname_split); }
             contexts.emplace_back(std::move(ctx_ptr));
             if (idx < n_backbone) {
                 n_backbone_files = files.size();
@@ -1213,9 +1217,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
     // set below, before buft_for_tensor() runs
     bool is_lazy = false;
+    const bool is_streamed = stream_experts && tn.suffix && std::strcmp(tn.suffix, "weight") == 0 &&
+        (tn.tensor == LLM_TENSOR_FFN_UP_EXPS || tn.tensor == LLM_TENSOR_FFN_GATE_EXPS ||
+         tn.tensor == LLM_TENSOR_FFN_DOWN_EXPS || tn.tensor == LLM_TENSOR_FFN_GATE_UP_EXPS ||
+         (stream_ple && tn.tensor == LLM_TENSOR_PER_LAYER_TOKEN_EMBD) ||
+         (stream_tok_embd && tn.tensor == LLM_TENSOR_TOKEN_EMBD));
 
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
-        const ctx_key key { buft, is_lazy };
+        const ctx_key key { buft, is_lazy, is_streamed };
 
         auto it = ctx_map.find(key);
         if (it == ctx_map.end()) {
@@ -1303,7 +1312,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             }
         }
 
-        if (is_lazy) {
+        if (is_lazy || is_streamed) {
             return lazy_read::buft();
         }
 
@@ -1475,6 +1484,8 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     struct ggml_tensor * tensor = ggml_dup_tensor(ctx, &t_meta);
     ggml_set_name(tensor, ggml_get_name(&t_meta));
 
+    if (is_streamed) { streamed_names.insert(tn.str()); }
+
     if (duplicated) {
         size_data += ggml_nbytes(&t_meta);
     } else {
@@ -1536,8 +1547,14 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
     }
 
     // compute the total size of all tensors for progress reporting
-    for (const auto & it : weights_map) {
-        size_data += ggml_nbytes(it.second.tensor);
+    if (stream_experts) {
+        for (const auto & it : weights_map) {
+            if (!streamed_names.count(it.first)) { size_data += ggml_nbytes(it.second.tensor); }
+        }
+    } else {
+        for (const auto & it : weights_map) {
+            size_data += ggml_nbytes(it.second.tensor);
+        }
     }
 }
 
@@ -1649,7 +1666,11 @@ bool llama_model_loader::load_all_data(
         std::vector<ggml_backend_buffer_t> & bufs,
         llama_mlocks * lmlocks,
         llama_progress_callback progress_callback,
-        void * progress_callback_user_data) {
+        void * progress_callback_user_data,
+        llama_discrete_load_staging * discrete_staging) {
+    if (discrete_staging && (files.empty() || use_mmap || use_direct_io || lazy.any() || check_tensors)) {
+        throw std::invalid_argument("discrete loader staging requires buffered file reads without tensor validation");
+    }
     if (files.empty()) {
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
             set_tensor_data(t, set_tensor_data_ud);
@@ -1677,7 +1698,7 @@ bool llama_model_loader::load_all_data(
     std::vector<void *> host_ptrs;
     size_t buffer_idx = 0; // buffer to use for async loads
     ggml_backend_t upload_backend = [&](const char * func) -> ggml_backend_t {
-        if (use_mmap || check_tensors) {
+        if (discrete_staging || use_mmap || check_tensors) {
             return nullptr;
         }
         // When not using mmaped io use async uploads from pinned memory to GPU memory.
@@ -1841,6 +1862,12 @@ bool llama_model_loader::load_all_data(
                         return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
                     }));
                 }
+            } else if (discrete_staging) {
+                if (file->has_direct_io() || weight->offs > file->size() || n_size > file->size() - weight->offs) {
+                    throw std::runtime_error("invalid buffered tensor range for discrete loader staging");
+                }
+                file->seek(weight->offs, SEEK_SET);
+                discrete_staging->upload(cur, [&](void * dst, size_t bytes) { file->read_raw(dst, bytes); });
             } else {
                 // If upload_backend is valid load the tensor in chunks to pinned memory and upload the buffers asynchronously to the GPU.
                 if (upload_backend) {

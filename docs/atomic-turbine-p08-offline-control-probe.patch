@@ -1,0 +1,253 @@
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -351,7 +351,8 @@
+ static json probe_mtp(const llama_model & model, llama_context * target, llama_batch_ext * target_batch,
+         llama_context * draft, const std::vector<llama_token> & prompt, llama_token seed, size_t vocab_size,
+         bool try_batch_commit, mtp_layer_probe * layers, int (*q8_probe)(bool), int (*router_probe)(bool),
+-        bool retain_draft_prefix = false, mtp_hidden_tail * tail = nullptr, bool force_rejection = false) {
++        bool retain_draft_prefix = false, mtp_hidden_tail * tail = nullptr, bool force_rejection = false,
++        bool offline_control = false) {
+     const size_t width = llama_model_n_embd_out(&model);
+     const llama_pos pos = prompt.size();
+     auto ledger = model.memory_contract->ledger;
+@@ -434,14 +435,17 @@
+         return llama_sampler_sample(greedy.get(), draft, -1);
+     };
+     const llama_token draft_proposal = propose();
+-    const auto draft_logits = float_digest(llama_get_logits_ith(draft, -1), vocab_size);
+-    restore(draft, draft_state, draft_hash);
+-    if (propose() != draft_proposal || float_digest(llama_get_logits_ith(draft, -1), vocab_size) != draft_logits) {
+-        throw std::runtime_error("draft rollback changed the repeated proposal");
++    std::string draft_logits;
++    if (!offline_control) {
++        draft_logits = float_digest(llama_get_logits_ith(draft, -1), vocab_size);
++        restore(draft, draft_state, draft_hash);
++        if (propose() != draft_proposal || float_digest(llama_get_logits_ith(draft, -1), vocab_size) != draft_logits) {
++            throw std::runtime_error("draft rollback changed the repeated proposal");
++        }
+     }
+     restore(draft, draft_state, draft_hash);
+     llama_set_embeddings_nextn(target, tail != nullptr, tail != nullptr);
+-    restore(target, target_state, target_hash);
++    if (replay || !offline_control) { restore(target, target_state, target_hash); }
+     llama_token proposal = draft_proposal;
+ 
+     if (try_batch_commit) {
+@@ -450,78 +454,97 @@
+             {"draft_restored_state", draft_hash}, {"batch_committed", false},
+             {"target_prefix_replayed", replay},
+             {"draft_prefix_reused", draft_prefix}, {"draft_prefix_rows_added", pos - draft_prefix}};
+-        if (llama_vocab_is_eog(vocab, proposal)) {
+-            result["decision"] = "proposal_is_eog";
+-            return result;
+-        }
+-        const size_t hidden_count = tail ? 2 * width : 0;
+-        auto logits_ticket = reserve_probe(model, target, (2 * vocab_size + hidden_count) * sizeof(float));
+-        std::vector<float> serial_logits(2 * vocab_size);
+-        std::vector<float> serial_hidden(hidden_count);
+-        logits_ticket.commit();
+-        auto serial_step = [&](llama_token token, llama_pos position, size_t row) {
+-            set_batch(target_batch, {token}, position);
+-            if (llama_process(target, LLAMA_PROCESS_TYPE_DECODE, target_batch) != 0 ||
+-                    llama_memory_seq_pos_max(llama_get_memory(target), 0) != position) {
+-                throw std::runtime_error("serial control decode failed");
+-            }
+-            const auto * logits = llama_get_logits_ith(target, -1);
+-            if (!logits) { throw std::runtime_error("serial control logits missing"); }
+-            std::memcpy(serial_logits.data() + row * vocab_size, logits, vocab_size * sizeof(float));
+-            if (tail) {
+-                const float * hidden = llama_get_embeddings_nextn_ith(target, -1);
+-                if (!hidden) { throw std::runtime_error("serial control hidden row missing"); }
+-                std::memcpy(serial_hidden.data() + row * width, hidden, width * sizeof(float));
+-            }
+-        };
+-        if (layers) { layers->active = true; }
+-        serial_step(seed, pos, 0);
+-        if (layers) {
+-            layers->active = false;
+-            result["serial_layers"] = std::move(layers->rows);
+-            layers->rows = json::array();
+-        }
+-        const auto serial_id = llama_sampler_sample(greedy.get(), target, -1);
+-        result["serial_id"] = serial_id;
+-        if (force_rejection) {
+-            // Run an actual verifier batch with an incorrect suffix. Keep the
+-            // normal serial mismatch handling for all real proposals.
+-            for (llama_token wrong : {0, 1, 2, 3}) {
+-                if (wrong != serial_id && wrong != draft_proposal && !llama_vocab_is_eog(vocab, wrong)) {
+-                    proposal = wrong;
+-                    break;
+-                }
++        if (offline_control && force_rejection) {
++            // The fixed fixture's control rejects token 0 at this round.
++            proposal = 0;
++            if (proposal == draft_proposal || llama_vocab_is_eog(vocab, proposal)) {
++                throw std::runtime_error("offline rejection fixture requires a wrong non-EOG suffix");
+             }
+-            if (proposal == draft_proposal) { throw std::runtime_error("no negative control token"); }
+             result["draft_proposal"] = draft_proposal;
+             result["proposal"] = proposal;
+             result["forced_rejection"] = true;
+-            result["serial_seed_hidden_hash"] = float_digest(serial_hidden.data(), width);
+         }
+-        if (!force_rejection && proposal != serial_id) {
+-            restore(target, target_state, target_hash);
+-            result["decision"] = "proposal_differs_from_serial";
++        if (llama_vocab_is_eog(vocab, proposal)) {
++            result["decision"] = "proposal_is_eog";
+             return result;
+         }
+-        serial_step(serial_id, pos + 1, 1);
+-        const size_t serial_size = llama_state_get_size(target);
+-        // Two host copies fit with single-token workspace. Keep the serial
+-        // reference on disk for the larger, uninstrumented verifier.
+-        const bool compare_in_ram = !layers && llama_n_ubatch(target) == 1;
+-        auto state_ticket = reserve_probe(model, target, (compare_in_ram ? 2 : 1) * serial_size);
+-        std::vector<uint8_t> comparison_state(serial_size);
+-        std::vector<uint8_t> serial_bytes(compare_in_ram ? serial_size : 0);
+-        state_ticket.commit();
+-        const auto serial_state = capture(target, compare_in_ram ? serial_bytes : comparison_state);
++        llama_memory_budget::ticket logits_ticket, state_ticket;
++        std::vector<float> serial_logits, serial_hidden;
++        std::vector<uint8_t> comparison_state, serial_bytes;
+         std::unique_ptr<std::FILE, decltype(&std::fclose)> serial_file(nullptr, std::fclose);
+-        if (!layers && !compare_in_ram) {
+-            serial_file.reset(std::tmpfile());
+-            if (!serial_file || std::fwrite(comparison_state.data(), 1, serial_size, serial_file.get()) != serial_size ||
+-                    std::fseek(serial_file.get(), 0, SEEK_SET) != 0) {
+-                throw std::runtime_error("cannot save serial state for byte comparison");
++        llama_token serial_id = LLAMA_TOKEN_NULL;
++        size_t serial_size = 0;
++        bool compare_in_ram = false;
++        std::string serial_state;
++        if (!offline_control) {
++            const size_t hidden_count = tail ? 2 * width : 0;
++            logits_ticket = reserve_probe(model, target, (2 * vocab_size + hidden_count) * sizeof(float));
++            serial_logits.resize(2 * vocab_size);
++            serial_hidden.resize(hidden_count);
++            logits_ticket.commit();
++            auto serial_step = [&](llama_token token, llama_pos position, size_t row) {
++                set_batch(target_batch, {token}, position);
++                if (llama_process(target, LLAMA_PROCESS_TYPE_DECODE, target_batch) != 0 ||
++                        llama_memory_seq_pos_max(llama_get_memory(target), 0) != position) {
++                    throw std::runtime_error("serial control decode failed");
++                }
++                const auto * logits = llama_get_logits_ith(target, -1);
++                if (!logits) { throw std::runtime_error("serial control logits missing"); }
++                std::memcpy(serial_logits.data() + row * vocab_size, logits, vocab_size * sizeof(float));
++                if (tail) {
++                    const float * hidden = llama_get_embeddings_nextn_ith(target, -1);
++                    if (!hidden) { throw std::runtime_error("serial control hidden row missing"); }
++                    std::memcpy(serial_hidden.data() + row * width, hidden, width * sizeof(float));
++                }
++            };
++            if (layers) { layers->active = true; }
++            serial_step(seed, pos, 0);
++            if (layers) {
++                layers->active = false;
++                result["serial_layers"] = std::move(layers->rows);
++                layers->rows = json::array();
++            }
++            serial_id = llama_sampler_sample(greedy.get(), target, -1);
++            result["serial_id"] = serial_id;
++            if (force_rejection) {
++                // Run an actual verifier batch with an incorrect suffix. Keep the
++                // normal serial mismatch handling for all real proposals.
++                for (llama_token wrong : {0, 1, 2, 3}) {
++                    if (wrong != serial_id && wrong != draft_proposal && !llama_vocab_is_eog(vocab, wrong)) {
++                        proposal = wrong;
++                        break;
++                    }
++                }
++                if (proposal == draft_proposal) { throw std::runtime_error("no negative control token"); }
++                result["draft_proposal"] = draft_proposal;
++                result["proposal"] = proposal;
++                result["forced_rejection"] = true;
++                result["serial_seed_hidden_hash"] = float_digest(serial_hidden.data(), width);
++            }
++            if (!force_rejection && proposal != serial_id) {
++                restore(target, target_state, target_hash);
++                result["decision"] = "proposal_differs_from_serial";
++                return result;
+             }
++            serial_step(serial_id, pos + 1, 1);
++            serial_size = llama_state_get_size(target);
++            // Two host copies fit with single-token workspace. Keep the serial
++            // reference on disk for the larger, uninstrumented verifier.
++            compare_in_ram = !layers && llama_n_ubatch(target) == 1;
++            state_ticket = reserve_probe(model, target, (compare_in_ram ? 2 : 1) * serial_size);
++            comparison_state.resize(serial_size);
++            serial_bytes.resize(compare_in_ram ? serial_size : 0);
++            state_ticket.commit();
++            serial_state = capture(target, compare_in_ram ? serial_bytes : comparison_state);
++            if (!layers && !compare_in_ram) {
++                serial_file.reset(std::tmpfile());
++                if (!serial_file || std::fwrite(comparison_state.data(), 1, serial_size, serial_file.get()) != serial_size ||
++                        std::fseek(serial_file.get(), 0, SEEK_SET) != 0) {
++                    throw std::runtime_error("cannot save serial state for byte comparison");
++                }
++            }
++            restore(target, target_state, target_hash);
+         }
+-        restore(target, target_state, target_hash);
+         set_batch(target_batch, {seed, proposal}, pos);
+         if (layers) { layers->active = true; }
+         if (!llama_batch_ext_set_output_logits(target_batch, 0, true)) {
+@@ -561,6 +584,22 @@
+             result["batch_layers"] = std::move(layers->rows);
+         }
+         const auto verified_id = llama_sampler_sample(greedy.get(), target, 0);
++        if (offline_control) {
++            const bool accept = verified_id == proposal;
++            if (force_rejection && accept) { throw std::runtime_error("offline control suffix was accepted"); }
++            result.update({{"verification_rows", 2}, {"verified_id", verified_id},
++                {"batch_committed", accept}, {"decision", accept ? "offline_control_commit" : "serial_fallback"}});
++            if (accept) {
++                tail->append(target, 0, pos);
++                tail->append(target, 1, pos + 1);
++            } else {
++                restore(target, target_state, target_hash);
++                result["target_restored_state"] = target_hash;
++                result["target_position_after_restore"] = llama_memory_seq_pos_max(llama_get_memory(target), 0);
++                result["draft_position_after_restore"] = llama_memory_seq_pos_max(llama_get_memory(draft), 0);
++            }
++            return result;
++        }
+         if (force_rejection && (verified_id != serial_id || verified_id == proposal)) {
+             throw std::runtime_error("incorrect suffix changed the verifier's prefix decision");
+         }
+@@ -686,6 +725,7 @@
+         bool mtp_retain_draft_prefix = false;
+         bool mtp_carry_hidden = false;
+         int mtp_reject_step = -1;
++        bool mtp_offline_control = false;
+         bool mtp_trace_layers = false;
+         bool mtp_q8_rows = false, mtp_router_rows = false;
+         int read_overlap = -1;
+@@ -780,6 +820,7 @@
+             else if (arg == "--mtp-multi-round-probe") { mtp_probe = mtp_batch_commit_probe = mtp_multi_round_probe = true; }
+             else if (arg == "--mtp-retain-draft-prefix") { mtp_retain_draft_prefix = true; }
+             else if (arg == "--mtp-carry-hidden") { mtp_carry_hidden = true; }
++            else if (arg == "--mtp-offline-control") { mtp_offline_control = true; }
+             else if (arg == "--mtp-reject-step") {
+                 mtp_reject_step = std::stoi(value());
+                 if (mtp_reject_step < 0) { throw std::invalid_argument("MTP rejection step must be nonnegative"); }
+@@ -847,6 +888,9 @@
+         if (mtp_reject_step >= 0 && (!mtp_carry_hidden || mtp_reject_step >= tokens - 3)) {
+             throw std::invalid_argument("MTP rejection control requires hidden carry and room for a later pair");
+         }
++        if (mtp_offline_control && (!mtp_carry_hidden || !capture_state || logits_path.empty())) {
++            throw std::invalid_argument("MTP offline control requires hidden carry, the state digest and a logits file");
++        }
+         if (mtp_multi_round_probe && (mtp_trace_layers || !mtp_router_rows || ubatch < 2 || tokens < 5)) {
+             throw std::invalid_argument("multi-round probe requires both matvec overrides and room for two pairs");
+         }
+@@ -1073,7 +1117,7 @@
+                     prefix.insert(prefix.end(), committed.begin(), committed.end());
+                     auto round = probe_mtp(*model, ctx.get(), batch.get(), draft.ctx.get(), prefix, token,
+                             llama_vocab_n_tokens(vocab), true, nullptr, q8_probe, router_probe, mtp_retain_draft_prefix,
+-                            mtp_carry_hidden ? &hidden_tail : nullptr, step == mtp_reject_step);
++                            mtp_carry_hidden ? &hidden_tail : nullptr, step == mtp_reject_step, mtp_offline_control);
+                     round["step"] = step;
+                     rejection_exercised |= round.contains("forced_rejection");
+                     if (round["batch_committed"].get<bool>()) { pair_second = step + 1; }

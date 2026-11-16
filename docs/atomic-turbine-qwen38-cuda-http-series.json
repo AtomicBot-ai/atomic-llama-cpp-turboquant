@@ -1,0 +1,473 @@
+{
+  "profile": {
+    "checkpoint": "Qwen3.8 Flash Next GSQ-RCO IQ3_XXS",
+    "backend": "CUDA RTX 4070 Laptop",
+    "context": 4096,
+    "batch": 128,
+    "microbatch": 8,
+    "gpu_layers": 22,
+    "slots": 1,
+    "ram_cap_bytes": 4294967296,
+    "vram_cap_bytes": 2147483648,
+    "runtime_reserve_bytes": 2147483648
+  },
+  "diagnostic_sha256": "58f62975bf95ff2f0775dd1dc2b57481ef7a2dd4c431c40713799439098add17",
+  "scope": "Initial long HTTP completion, exact repeat, then a one-token edit at the midpoint in the same process and slot.",
+  "limits": [
+    "Identical request history in both modes.",
+    "Full saved slot comparisons and output IDs, without raw HTTP logits.",
+    "No context checkpoints or RAM prompt cache.",
+    "File-cache state uncontrolled."
+  ],
+  "binaries": {
+    "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+    "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+    "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+    "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+  },
+  "prompt_sha256": "ff564330c036acd2575b9c4174df6f1223b09d2e55fdc1f3a7d1ced3a0f7ea2e",
+  "edit": {
+    "index": 1740,
+    "before": 561,
+    "after": 13
+  },
+  "artifacts": "~/.cache/atomic-qwen38-cuda/http-series.Iq4eFg",
+  "runs": {
+    "native": {
+      "passed": true,
+      "requests": [
+        {
+          "case": "initial",
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "content": "\n\n<think>\n\n</think>",
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 3481,
+            "prompt_ms": 207153.331,
+            "prompt_per_token_ms": 59.50971875897731,
+            "prompt_per_second": 16.803977919138553,
+            "predicted_n": 4,
+            "predicted_ms": 444.616,
+            "predicted_per_token_ms": 148.20533333333333,
+            "predicted_per_second": 6.747395505334941
+          },
+          "ttft_seconds": 207.1636636209878,
+          "processed_boundaries": [
+            0,
+            128,
+            256,
+            384,
+            512,
+            640,
+            768,
+            896,
+            1024,
+            1152,
+            1280,
+            1408,
+            1536,
+            1664,
+            1792,
+            1920,
+            2048,
+            2176,
+            2304,
+            2432,
+            2560,
+            2688,
+            2816,
+            2944,
+            3072,
+            3200,
+            3328,
+            3456,
+            3481
+          ],
+          "slot": {
+            "bytes": 225249576,
+            "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+          },
+          "completion_metrics": {},
+          "save_metrics": {},
+          "ordinary_tokens_and_state_bitwise_equal": null
+        },
+        {
+          "case": "repeat",
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "content": "\n\n<think>\n\n</think>",
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 3481,
+            "prompt_ms": 209476.355,
+            "prompt_per_token_ms": 60.177062625682275,
+            "prompt_per_second": 16.617627321231552,
+            "predicted_n": 4,
+            "predicted_ms": 388.68,
+            "predicted_per_token_ms": 129.56,
+            "predicted_per_second": 7.718431614695893
+          },
+          "ttft_seconds": 209.4780226419971,
+          "processed_boundaries": [
+            0,
+            128,
+            256,
+            384,
+            512,
+            640,
+            768,
+            896,
+            1024,
+            1152,
+            1280,
+            1408,
+            1536,
+            1664,
+            1792,
+            1920,
+            2048,
+            2176,
+            2304,
+            2432,
+            2560,
+            2688,
+            2816,
+            2944,
+            3072,
+            3200,
+            3328,
+            3456,
+            3481
+          ],
+          "slot": {
+            "bytes": 225249576,
+            "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+          },
+          "completion_metrics": {},
+          "save_metrics": {},
+          "ordinary_tokens_and_state_bitwise_equal": null
+        },
+        {
+          "case": "edited",
+          "tokens": [
+            271,
+            248068,
+            198,
+            760
+          ],
+          "content": "\n\n<think>\nThe",
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 3481,
+            "prompt_ms": 207312.804,
+            "prompt_per_token_ms": 59.55553116920425,
+            "prompt_per_second": 16.79105165159022,
+            "predicted_n": 4,
+            "predicted_ms": 389.992,
+            "predicted_per_token_ms": 129.99733333333333,
+            "predicted_per_second": 7.692465486471518
+          },
+          "ttft_seconds": 207.3145411059959,
+          "processed_boundaries": [
+            0,
+            128,
+            256,
+            384,
+            512,
+            640,
+            768,
+            896,
+            1024,
+            1152,
+            1280,
+            1408,
+            1536,
+            1664,
+            1792,
+            1920,
+            2048,
+            2176,
+            2304,
+            2432,
+            2560,
+            2688,
+            2816,
+            2944,
+            3072,
+            3200,
+            3328,
+            3456,
+            3481
+          ],
+          "slot": {
+            "bytes": 225249576,
+            "sha256": "0a220ca8c9b91a67edcd5519e208f095c65c681cc85718960c3ad6f6f4654d69"
+          },
+          "completion_metrics": {},
+          "save_metrics": {},
+          "ordinary_tokens_and_state_bitwise_equal": null
+        }
+      ]
+    },
+    "stream": {
+      "passed": true,
+      "requests": [
+        {
+          "case": "initial",
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "content": "\n\n<think>\n\n</think>",
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 3481,
+            "prompt_ms": 714538.119,
+            "prompt_per_token_ms": 205.26806061476586,
+            "prompt_per_second": 4.8716785115280885,
+            "predicted_n": 4,
+            "predicted_ms": 967.65,
+            "predicted_per_token_ms": 322.55,
+            "predicted_per_second": 3.100294527980158
+          },
+          "ttft_seconds": 714.5433854339935,
+          "processed_boundaries": [
+            0,
+            128,
+            256,
+            384,
+            512,
+            640,
+            768,
+            896,
+            1024,
+            1152,
+            1280,
+            1408,
+            1536,
+            1664,
+            1792,
+            1920,
+            2048,
+            2176,
+            2304,
+            2432,
+            2560,
+            2688,
+            2816,
+            2944,
+            3072,
+            3200,
+            3328,
+            3456,
+            3481
+          ],
+          "slot": {
+            "bytes": 225249576,
+            "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+          },
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2760814480880,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 104444657664
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 2760818048496,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 104444657664
+          },
+          "ordinary_tokens_and_state_bitwise_equal": true
+        },
+        {
+          "case": "repeat",
+          "tokens": [
+            271,
+            248068,
+            271,
+            248069
+          ],
+          "content": "\n\n<think>\n\n</think>",
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 3481,
+            "prompt_ms": 718519.826,
+            "prompt_per_token_ms": 206.41190060327492,
+            "prompt_per_second": 4.844681905826771,
+            "predicted_n": 4,
+            "predicted_ms": 964.254,
+            "predicted_per_token_ms": 321.418,
+            "predicted_per_second": 3.1112134354640997
+          },
+          "ttft_seconds": 718.5218640219973,
+          "processed_boundaries": [
+            0,
+            128,
+            256,
+            384,
+            512,
+            640,
+            768,
+            896,
+            1024,
+            1152,
+            1280,
+            1408,
+            1536,
+            1664,
+            1792,
+            1920,
+            2048,
+            2176,
+            2304,
+            2432,
+            2560,
+            2688,
+            2816,
+            2944,
+            3072,
+            3200,
+            3328,
+            3456,
+            3481
+          ],
+          "slot": {
+            "bytes": 225249576,
+            "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+          },
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 5519713586208,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 203914280960
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 5519717153824,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 203914280960
+          },
+          "ordinary_tokens_and_state_bitwise_equal": true
+        },
+        {
+          "case": "edited",
+          "tokens": [
+            271,
+            248068,
+            198,
+            760
+          ],
+          "content": "\n\n<think>\nThe",
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 3481,
+            "prompt_ms": 716450.318,
+            "prompt_per_token_ms": 205.81738523412812,
+            "prompt_per_second": 4.858676048490498,
+            "predicted_n": 4,
+            "predicted_ms": 985.281,
+            "predicted_per_token_ms": 328.42699999999996,
+            "predicted_per_second": 3.044816656365037
+          },
+          "ttft_seconds": 716.451703682993,
+          "processed_boundaries": [
+            0,
+            128,
+            256,
+            384,
+            512,
+            640,
+            768,
+            896,
+            1024,
+            1152,
+            1280,
+            1408,
+            1536,
+            1664,
+            1792,
+            1920,
+            2048,
+            2176,
+            2304,
+            2432,
+            2560,
+            2688,
+            2816,
+            2944,
+            3072,
+            3200,
+            3328,
+            3456,
+            3481
+          ],
+          "slot": {
+            "bytes": 225249576,
+            "sha256": "0a220ca8c9b91a67edcd5519e208f095c65c681cc85718960c3ad6f6f4654d69"
+          },
+          "completion_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 8278425250528,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 303063040000
+          },
+          "save_metrics": {
+            "ram_requested_bytes": 4294967296,
+            "ram_applied_bytes": 4294967296,
+            "ram_used_bytes": 4174867606,
+            "ram_high_water_bytes": 4252495030,
+            "ram_released_bytes": 8278428818144,
+            "vram_requested_bytes": 2147483648,
+            "vram_applied_bytes": 2147483648,
+            "vram_used_bytes": 2147352576,
+            "vram_high_water_bytes": 2147483648,
+            "vram_released_bytes": 303063040000
+          },
+          "ordinary_tokens_and_state_bitwise_equal": true
+        }
+      ]
+    }
+  }
+}

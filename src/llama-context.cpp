@@ -1,4 +1,8 @@
 #include "llama-context.h"
+#include "llama-context-budget.h"
+#include "llama-prefix-state.h"
+#include "llama-memory-pressure.h"
+#include "llama-memory-contract.h"
 
 #include "ggml.h"
 #include "llama-arch.h"
@@ -14,6 +18,7 @@
 #include "llama-sampler.h"
 #include "llama.h"
 
+#include <optional>
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
@@ -178,6 +183,32 @@ llama_context::llama_context(
     // TODO warning when creating llama_context with awkward ctx size that is not a power of 2,
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
+    if (model.memory_contract) {
+        if (model.memory_contract->discrete.device && (params.ctx_other || params.moe_cache_size)) {
+            throw std::runtime_error("discrete budget requires an independent context without a host MoE cache");
+        }
+        if (model.memory_contract->stream_experts && (params.n_ubatch == 0 || params.n_ubatch > 32)) {
+            throw std::runtime_error("discrete expert streaming requires an explicit microbatch of at most 32 tokens");
+        }
+        if (model.memory_contract->stream_cuda_boundary_reduction &&
+                (model.arch != LLM_ARCH_LFM2MOE || model.n_gpu_layers() < 2 ||
+                 model.n_gpu_layers() > model.hparams.n_layer_all || !params.op_offload)) {
+            throw std::runtime_error("CUDA boundary reduction requires partially offloaded LFM2 MoE with op offload");
+        }
+        if (params.n_ctx == 0 || params.n_ctx > 4096 || params.n_batch > 4096 || params.n_ubatch > 256 ||
+            params.n_seq_max != 1 || params.n_rs_seq || params.n_threads > 16 || params.n_threads_batch > 16 ||
+            params.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT || params.embeddings) {
+            throw std::runtime_error("engine budget profile requires explicit ctx <= 4096, batch <= 4096, ubatch <= 256, one sequence, <=16 threads, no embeddings/rollback");
+        }
+        budget_control = std::make_unique<llama_context_budget>();
+        budget_control->budget_session = model.memory_contract->claim_context();
+        budget_control->budget_requested = model.memory_contract->ledger->snapshot(llama_memory_domain::host).requested;
+        llama_memory_policy_config fixed_policy;
+        fixed_policy.preferred = budget_control->budget_requested;
+        budget_control->budget_policy.configure(fixed_policy, llama_memory_policy_now_ms(), 0);
+    }
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, nullptr, model.memory_contract->discrete); }
 
     t_start_us = model.t_start_us;
     t_load_us  = model.t_load_us;
@@ -460,11 +491,19 @@ llama_context::llama_context(
     if (!hparams.vocab_only) {
         // GPU backends
         for (const auto & dev : model.devices) {
-            ggml_backend_t backend = ggml_backend_dev_init(dev.dev, nullptr);
+            ggml_backend_ptr backend(ggml_backend_dev_init(dev.dev, nullptr));
             if (backend == nullptr) {
                 throw std::runtime_error(format("failed to initialize %s backend", ggml_backend_dev_name(dev.dev)));
             }
-            backends.emplace_back(backend);
+            if (model.memory_contract && model.memory_contract->discrete.device) {
+                using enable_pool = bool (*)(ggml_backend_t);
+                const auto enable = reinterpret_cast<enable_pool>(ggml_backend_reg_get_proc_address(
+                        ggml_backend_dev_backend_reg(dev.dev), "ggml_backend_cuda_enable_observed_pool"));
+                if (!enable || !enable(backend.get())) {
+                    throw std::runtime_error("cannot enable observed CUDA workspace");
+                }
+            }
+            backends.emplace_back(std::move(backend));
         }
 
         // tensors of ctx_other (e.g. a shared KV cache) can be on devices that this model does not use
@@ -487,6 +526,9 @@ llama_context::llama_context(
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
             if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_ACCEL) {
+                if (model.memory_contract && model.memory_contract->discrete.device) {
+                    continue;
+                }
                 ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
                 if (backend == nullptr) {
                     throw std::runtime_error(format("failed to initialize %s backend", ggml_backend_dev_name(dev)));
@@ -607,10 +649,40 @@ llama_context::llama_context(
         }
 
         if (cparams.moe_cache_size > 0) {
+            if (model.expert_source) { throw std::runtime_error("expert streaming cannot be combined with the host MoE cache"); }
             moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share);
         }
 
+        if (model.expert_source) {
+            if (params.n_seq_max != 1 || params.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT) {
+                throw std::runtime_error("expert streaming currently requires one sequence and a default context");
+            }
+            std::vector<const ggml_tensor *> weights(model.streamed_experts.begin(), model.streamed_experts.end());
+            auto device = model.devices.empty() || model.n_gpu_layers() == 0 ?
+                ggml_backend_get_device(backend_cpu) : model.devices.front().dev;
+            std::vector<const ggml_tensor *> cpu_weights;
+            if (model.memory_contract && model.memory_contract->stream_cpu_layers_on_cpu) {
+                for (size_t il = 0; il < model.layers.size(); ++il) {
+                    if (model.dev_layer(il) != ggml_backend_get_device(backend_cpu)) { continue; }
+                    const auto & layer = model.layers[il];
+                    for (auto * weight : {layer.ffn_gate_exps, layer.ffn_up_exps, layer.ffn_down_exps, layer.ffn_gate_up_exps}) {
+                        if (weight && model.streamed_experts.count(weight)) { cpu_weights.push_back(weight); }
+                    }
+                }
+            }
+            expert_executor.reset(new llama_expert_executor(model.expert_source, weights, device, model.expert_streaming_size,
+                model.memory_contract ? model.memory_contract->ledger : nullptr,
+                model.memory_contract && model.memory_contract->stream_experts ? model.memory_contract.get() : nullptr, cpu_weights));
+            if (model.streamed_ple) { expert_executor->configure_rows(model.expert_source, model.streamed_ple); }
+            if (model.streamed_tok_embd) { expert_executor->configure_token_rows(model.expert_source, model.streamed_tok_embd); }
+        }
+
         sched_reserve();
+
+        if (model.memory_contract && expert_executor && expert_executor->stats().minimum_bytes >
+                model.memory_contract->ledger->snapshot(llama_memory_domain::host).requested) {
+            throw std::runtime_error("engine budget cannot fit model, context, graph and minimum expert working set");
+        }
 
         if (!cparams.flash_attn) {
             if (ggml_is_quantized(params.type_v)) {
@@ -627,6 +699,13 @@ llama_context::llama_context(
         for (int i = 0; i < n_vocab; ++i) {
             sampling.token_ids_full_vocab[i] = i;
         }
+    }
+    // Optional optimization: admit only after all mandatory context/graph owners.
+    // An existing budget that fits only the scan path must still load successfully.
+    if (expert_executor && model.memory_contract && model.arch == LLM_ARCH_QWEN35MOE &&
+        model.n_gpu_layers() > 0 && !model.devices.empty() &&
+        std::strcmp(ggml_backend_dev_name(model.devices.front().dev), "MTL0") == 0) {
+        expert_executor->set_route_index(true);
     }
 }
 
@@ -786,6 +865,8 @@ void llama_context::sched_new(const sched_params & params) {
 }
 
 void llama_context::sched_reserve() {
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
     if (!sched_need_reserve) {
         return;
     }
@@ -1491,6 +1572,8 @@ ggml_backend_t llama_context::backend_from_dev(ggml_backend_dev_t dev) const {
 }
 
 void llama_context::layer_inp_dev_alloc() {
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
     synchronize();
 
     layer_inp_dev     = nullptr;
@@ -1547,6 +1630,8 @@ void llama_context::layer_inp_dev_alloc() {
 }
 
 bool llama_context::h_nextn_dev_alloc() {
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
     synchronize();
 
     auto reset = [&]() {
@@ -1807,6 +1892,7 @@ bool llama_context::set_adapter_cvec(
                 int32_t   il_end) {
     LLAMA_LOG_DEBUG("%s: il_start = %d, il_end = %d\n", __func__, il_start, il_end);
 
+    if (model.memory_contract) { return false; } // control-vector adapters are outside the qualified profile
     bool res = cvec->apply(model, data, len, n_embd, il_start, il_end);
 
     sched_need_reserve = true;
@@ -1890,6 +1976,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 }
 
 int llama_context::encode(const llama_batch_ext & batch_inp) {
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
     if (batch_inp.tokens.empty()) {
         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
         return -1;
@@ -2137,7 +2225,20 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
     return false; // all sequences use backend sampling
 }
 
-int llama_context::decode(const llama_batch_ext & batch_inp) {
+int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_prompt_tokens) {
+    if (budget_control && budget_control->prefill_window.failed) { return -3; }
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) {
+        allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete);
+        if (expert_executor && !batch_inp.tokens.empty() && batch_inp.tokens.size() <= cparams.n_batch) {
+            const size_t policy_tokens = std::max(uncached_prompt_tokens, batch_inp.tokens.size());
+            const bool class_lru = expert_executor->select_decode_policy(policy_tokens, cparams.n_ubatch);
+            if (uncached_prompt_tokens) {
+                LLAMA_LOG_DEBUG("%s: expert cache %s for %zu prompt tokens (decode slice %zu)\n",
+                        __func__, class_lru ? "class-lru" : "lru", policy_tokens, batch_inp.tokens.size());
+            }
+        }
+    }
     if (!memory) {
         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
         return encode(batch_inp);
@@ -2343,7 +2444,15 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         ggml_backend_event_wait(h_nextn_backend, ev_h_nextn_read.get());
     }
 
-    do {
+    int window_result = 0;
+    if (budget_control && budget_control->prefill_window.enabled && batch_inp.embd.empty() &&
+            batch_inp.state.empty() && !has_samplers &&
+            !has_embd_row && !has_state_row && !write_h_nextn && !layer_inp_dev && n_tokens_all > 1) {
+        window_result = decode_prefill_window(mctx, n_outputs_all,
+                std::max(uncached_prompt_tokens, size_t(n_tokens_all)), n_outputs_prev, n_tokens_prev);
+        if (window_result < 0) { return window_result; }
+    }
+    if (!window_result) do {
         const auto & ubatch = mctx->get_ubatch();
 
         // count the outputs in this ubatch
@@ -2615,6 +2724,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 //
 
 uint32_t llama_context::output_reserve(int32_t n_outputs) {
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
     const auto & hparams = model.hparams;
     const auto & vocab   = model.vocab;
 
@@ -3088,6 +3199,7 @@ llm_graph_params llama_context::graph_params(
         /*.mctx        =*/ mctx,
         /*.cross       =*/ &cross,
         /*.moe_cache   =*/ moe_cache.get(),
+        /*.expert_executor =*/ expert_executor.get(),
         /*.prec_policy =*/ &model.prec_policy,
         /*.hdmd        =*/ model.hdmd.rot.empty() ? nullptr : &model.hdmd,
         /*.layer_inp_dev =*/ layer_inp_dev,
@@ -3123,6 +3235,10 @@ void llama_context::sched_graph_realloc(ggml_backend_sched_t sched, ggml_cgraph 
 ggml_status llama_context::graph_compute(
             ggml_cgraph * gf,
                    bool   batched) {
+    if (expert_executor && expert_executor->error()) {
+        LLAMA_LOG_ERROR("expert streaming context is unusable after a prior execution failure: %s\n", expert_executor->error());
+        return GGML_STATUS_FAILED;
+    }
     int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
     ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
 
@@ -3141,7 +3257,22 @@ ggml_status llama_context::graph_compute(
 
     copy_experts.reset();
 
+    if (expert_executor) { expert_executor->bind_preview_graph(gf); expert_executor->bind_early_graph(gf); }
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
+    if (expert_executor) {
+        ggml_backend_sched_synchronize(sched.get());
+        if (expert_executor->error()) {
+            LLAMA_LOG_ERROR("expert streaming failed; discard this context: %s\n", expert_executor->error());
+            status = GGML_STATUS_FAILED;
+        }
+        if (status == GGML_STATUS_SUCCESS && model.memory_contract) {
+            apply_memory_budget();
+            if (budget_control->discrete_boundary_probe &&
+                    !budget_control->discrete_boundary_probe(this, budget_control->discrete_probe_user)) {
+                status = GGML_STATUS_FAILED;
+            }
+        }
+    }
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }
@@ -3247,9 +3378,24 @@ llm_graph_cb llama_context::graph_get_cb() const {
         // - force the last op of the layer on the specified backend to avoid running it on the backend of the next layer due to scheduling
         // FIXME: fix in ggml_backend_sched
         const bool full_offload = model.n_gpu_layers() > model.hparams.n_layer_all;
-        if (ubatch.n_tokens < 32 || full_offload) {
-            if (il != -1 && (strcmp(name, "norm") == 0 || strcmp(name, "l_last") == 0)) {
-                const auto & dev_layer = model.dev_layer(il);
+        // The streamed projection is a CPU bridge. Do not let its placement
+        // pull the surrounding activation/weighting/reduction onto the CPU:
+        // changing those kernels can amplify rounding differences through MoE
+        // routing and recurrent state. Views retain their producer's placement.
+        const bool streamed_moe = expert_executor && std::strncmp(name, "ffn_moe_", 8) == 0 &&
+            cur->op != GGML_OP_CUSTOM && cur->op != GGML_OP_VIEW && cur->op != GGML_OP_RESHAPE &&
+            cur->op != GGML_OP_PERMUTE && cur->op != GGML_OP_TRANSPOSE;
+        if (ubatch.n_tokens < 32 || full_offload || streamed_moe) {
+            if (il != -1 && (strcmp(name, "norm") == 0 || strcmp(name, "l_last") == 0 || streamed_moe)) {
+                auto dev_layer = model.dev_layer(il);
+                if (streamed_moe && model.memory_contract && model.memory_contract->stream_cuda_boundary_reduction &&
+                        (std::strcmp(name, "ffn_moe_weighted") == 0 || std::strcmp(name, "ffn_moe_out") == 0) &&
+                        il + 1 < int(model.hparams.n_layer_all) &&
+                        ggml_backend_dev_type(dev_layer) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                    // Match the resident scheduler's backward CUDA placement at the CPU-to-GPU split.
+                    // The streamed projection itself stays on the layer's CPU executor.
+                    dev_layer = model.dev_layer(il + 1);
+                }
                 for (const auto & backend : backends) {
                     if (ggml_backend_get_device(backend.get()) == dev_layer) {
                         if (ggml_backend_supports_op(backend.get(), cur)) {
@@ -3970,7 +4116,8 @@ bool llama_context::state_save_file(const char * filepath, const llama_token * t
     return true;
 }
 
-size_t llama_context::state_seq_load_file(llama_seq_id seq_id, const char * filepath, llama_token * tokens_out, size_t n_token_capacity, size_t * n_token_count_out) {
+size_t llama_context::state_seq_load_file(llama_seq_id seq_id, const char * filepath, llama_token * tokens_out,
+        size_t n_token_capacity, size_t * n_token_count_out, const llama_token * expected_prefix) {
     llama_file file(filepath, "rb");
 
     // version checks
@@ -4012,8 +4159,14 @@ size_t llama_context::state_seq_load_file(llama_seq_id seq_id, const char * file
     {
         const size_t state_size = file.size() - file.tell();
         llama_io_read_file io(&file);
-        const size_t nread = state_seq_read_data(io, seq_id, 0);
-        if (!nread) {
+        auto budget_io = llama_atomic_state_file_reader(model, &file);
+        if (expected_prefix && (!budget_io || *n_token_count_out != n_token_capacity ||
+                !std::equal(tokens_out, tokens_out + n_token_capacity, expected_prefix))) {
+            return 0;
+        }
+        const auto flags = expected_prefix ? LLAMA_STATE_SEQ_FLAGS_ATOMIC_PREFIX : LLAMA_STATE_SEQ_FLAGS_NONE;
+        const size_t nread = state_seq_read_data(budget_io ? *budget_io : io, seq_id, flags);
+        if (!nread || (expected_prefix && nread != state_size)) {
             LLAMA_LOG_ERROR("%s: failed to restore sequence state\n", __func__);
             return 0;
         }
@@ -4036,10 +4189,12 @@ size_t llama_context::state_seq_save_file(llama_seq_id seq_id, const char * file
 
     // save the context state using stream saving
     llama_io_write_file io(&file);
-    state_seq_write_data(io, seq_id, 0);
+    auto budget_io = llama_atomic_state_file_writer(model, &file);
+    llama_io_write_i & state_io = budget_io ? *budget_io : io;
+    state_seq_write_data(state_io, seq_id, 0);
 
     const size_t res = file.tell();
-    GGML_ASSERT(res == sizeof(uint32_t) * 3 + sizeof(llama_token) * n_token_count + io.n_bytes());
+    GGML_ASSERT(res == sizeof(uint32_t) * 3 + sizeof(llama_token) * n_token_count + state_io.n_bytes());
 
     return res;
 }
@@ -4065,6 +4220,8 @@ size_t llama_context::state_write_data(llama_io_write_i & io) {
 }
 
 size_t llama_context::state_read_data(llama_io_read_i & io) {
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
     LLAMA_LOG_DEBUG("%s: reading state\n", __func__);
 
     // read model info
@@ -4099,6 +4256,8 @@ size_t llama_context::state_seq_write_data(llama_io_write_i & io, llama_seq_id s
 }
 
 size_t llama_context::state_seq_read_data(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
     if (memory) {
         memory->state_read(io, seq_id, flags);
     }
@@ -4188,6 +4347,10 @@ static void llama_set_param(struct ggml_tensor * tensor, llama_opt_param_filter 
 }
 
 void llama_context::opt_init(struct llama_model * model, struct llama_opt_params lopt_params) {
+    if (model->memory_contract) {
+        LLAMA_LOG_ERROR("training is not supported with an engine inference budget\n");
+        return;
+    }
     GGML_ASSERT(!opt_ctx);
     model->hparams.n_ctx_train = lopt_params.n_ctx_train > 0 ? lopt_params.n_ctx_train : n_ctx();
     const uint32_t n_batch     = std::min(this->n_batch(),  model->hparams.n_ctx_train);
@@ -4848,6 +5011,10 @@ int32_t llama_set_adapters_lora(
             llama_adapter_lora ** adapters,
             size_t n_adapters,
             float * scales) {
+    if (ctx->get_model().expert_source && n_adapters > 0) {
+        LLAMA_LOG_ERROR("LoRA is not supported with expert streaming\n");
+        return -1;
+    }
     if (adapters == nullptr || scales == nullptr) {
         GGML_ASSERT(n_adapters == 0 && "invalid llama_set_adapters_lora call");
     }

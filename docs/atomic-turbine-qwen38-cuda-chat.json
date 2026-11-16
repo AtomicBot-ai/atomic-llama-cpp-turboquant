@@ -1,0 +1,780 @@
+{
+  "scope": "Selected Qwen4Exp CUDA non-thinking chat template and natural EOS; one user turn and raw-template control",
+  "status": "PASS",
+  "production_changes": false,
+  "profile": {
+    "context": 4096,
+    "batch": 128,
+    "microbatch": 8,
+    "gpu_layers": 22,
+    "threads": 4,
+    "sequences": 1,
+    "host_cap_bytes": 4294967296,
+    "device_cap_bytes": 2147483648,
+    "runtime_envelope_bytes": 2147483648,
+    "max_output_tokens": 16,
+    "enable_thinking": false
+  },
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Say only OK."
+      }
+    ],
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    },
+    "temperature": 0,
+    "seed": 42,
+    "max_tokens": 16,
+    "id_slot": 0,
+    "cache_prompt": false,
+    "return_tokens": true,
+    "verbose": true
+  },
+  "prompt_tokens": [
+    248045,
+    846,
+    198,
+    44240,
+    1132,
+    10092,
+    13,
+    248046,
+    198,
+    248045,
+    74455,
+    198,
+    248068,
+    271,
+    248069,
+    271
+  ],
+  "rendered_prompt": "<|im_start|>user\nSay only OK.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+  "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+  "generated_tokens": [
+    3793,
+    248046
+  ],
+  "observed_metric_peaks": {
+    "ram": 4247577990,
+    "vram": 2147483648
+  },
+  "binaries": {
+    "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+    "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+    "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+    "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+  },
+  "diagnostic_sha256": "d151171030bd30faf1ecad978f66c32d288fb418815d5590a122dea14910d88d",
+  "equalities": {
+    "template": true,
+    "input_tokens": true,
+    "raw_response_and_eos": true,
+    "chat_response_and_eos": true,
+    "raw_slot_bitwise": true,
+    "chat_slot_bitwise": true
+  },
+  "runs": {
+    "native": {
+      "mode": "native",
+      "chat_request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Say only OK."
+          }
+        ],
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "temperature": 0,
+        "seed": 42,
+        "max_tokens": 16,
+        "id_slot": 0,
+        "cache_prompt": false,
+        "return_tokens": true,
+        "verbose": true
+      },
+      "runtime_reserve_bytes": 2147483648,
+      "command": [
+        "$HOME/.cache/atomic-qwen38-cuda/build/bin/llama-server",
+        "-m",
+        "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "--device",
+        "CUDA0",
+        "-ngl",
+        "22",
+        "-c",
+        "4096",
+        "-b",
+        "128",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "4",
+        "-tb",
+        "4",
+        "-fit",
+        "off",
+        "--no-warmup",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--metrics",
+        "--slots",
+        "--slot-save-path",
+        "$HOME/.cache/atomic-qwen38-cuda/chat-eos-profile/native",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "19162",
+        "--cpu-moe",
+        "--moe-cache-mib",
+        "4096",
+        "--moe-cache-cpu-share",
+        "0"
+      ],
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+      "rendered_prompt": "<|im_start|>user\nSay only OK.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "prompt_tokens": [
+        248045,
+        846,
+        198,
+        44240,
+        1132,
+        10092,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ],
+      "raw": {
+        "index": 0,
+        "content": "OK",
+        "tokens": [
+          3793,
+          248046
+        ],
+        "id_slot": 0,
+        "stop": true,
+        "model": "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "tokens_predicted": 2,
+        "tokens_evaluated": 16,
+        "generation_settings": {
+          "seed": 42,
+          "temperature": 0.0,
+          "dynatemp_range": 0.0,
+          "dynatemp_exponent": 1.0,
+          "top_k": 20,
+          "top_p": 0.949999988079071,
+          "min_p": 0.05000000074505806,
+          "top_n_sigma": -1.0,
+          "xtc_probability": 0.0,
+          "xtc_threshold": 0.10000000149011612,
+          "typical_p": 1.0,
+          "repeat_last_n": 64,
+          "repeat_penalty": 1.0,
+          "presence_penalty": 0.0,
+          "frequency_penalty": 0.0,
+          "dry_multiplier": 0.0,
+          "dry_base": 1.75,
+          "dry_allowed_length": 2,
+          "dry_penalty_last_n": 64,
+          "dry_sequence_breakers": [
+            "\n",
+            ":",
+            "\"",
+            "*"
+          ],
+          "mirostat": 0,
+          "mirostat_tau": 5.0,
+          "mirostat_eta": 0.10000000149011612,
+          "adaptive_target": -1.0,
+          "adaptive_decay": 0.8999999761581421,
+          "stop": [],
+          "max_tokens": 16,
+          "n_predict": 16,
+          "n_keep": 0,
+          "n_discard": 0,
+          "ignore_eos": false,
+          "stream": false,
+          "logit_bias": [],
+          "n_probs": 0,
+          "min_keep": 0,
+          "grammar": "",
+          "grammar_lazy": false,
+          "grammar_triggers": [],
+          "preserved_tokens": [],
+          "chat_format": "Content-only",
+          "reasoning_format": "deepseek",
+          "reasoning_in_content": false,
+          "generation_prompt": "",
+          "samplers": [
+            "penalties",
+            "dry",
+            "top_n_sigma",
+            "top_k",
+            "typ_p",
+            "top_p",
+            "min_p",
+            "xtc",
+            "temperature"
+          ],
+          "speculative.types": "none",
+          "timings_per_token": false,
+          "post_sampling_probs": false,
+          "backend_sampling": false,
+          "lora": []
+        },
+        "prompt": "<|im_start|>user\nSay only OK.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "has_new_line": false,
+        "truncated": false,
+        "stop_type": "eos",
+        "stopping_word": "",
+        "tokens_cached": 17,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 16,
+          "prompt_ms": 962.541,
+          "prompt_per_token_ms": 60.1588125,
+          "prompt_per_second": 16.622668540872542,
+          "predicted_n": 2,
+          "predicted_ms": 121.779,
+          "predicted_per_token_ms": 121.779,
+          "predicted_per_second": 8.211596416459324
+        }
+      },
+      "states": {
+        "raw": {
+          "bytes": 118563052,
+          "sha256": "5da197913308f502dabfeadb26b6e1286e0eaffa3b8d27ff37d41993152ca477"
+        },
+        "chat": {
+          "bytes": 118563052,
+          "sha256": "5da197913308f502dabfeadb26b6e1286e0eaffa3b8d27ff37d41993152ca477"
+        }
+      },
+      "raw_metrics": {},
+      "chat": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "OK"
+            }
+          }
+        ],
+        "created": 1794748926,
+        "model": "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "system_fingerprint": "b0-unknown",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 2,
+          "prompt_tokens": 16,
+          "total_tokens": 18,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-g0jCUgWKG2wC1Rq4L7AHmorsP4EIkkFT",
+        "__verbose": {
+          "index": 0,
+          "content": "OK",
+          "tokens": [
+            3793,
+            248046
+          ],
+          "id_slot": 0,
+          "stop": true,
+          "model": "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+          "tokens_predicted": 2,
+          "tokens_evaluated": 16,
+          "generation_settings": {
+            "seed": 42,
+            "temperature": 0.0,
+            "dynatemp_range": 0.0,
+            "dynatemp_exponent": 1.0,
+            "top_k": 20,
+            "top_p": 0.949999988079071,
+            "min_p": 0.05000000074505806,
+            "top_n_sigma": -1.0,
+            "xtc_probability": 0.0,
+            "xtc_threshold": 0.10000000149011612,
+            "typical_p": 1.0,
+            "repeat_last_n": 64,
+            "repeat_penalty": 1.0,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0,
+            "dry_multiplier": 0.0,
+            "dry_base": 1.75,
+            "dry_allowed_length": 2,
+            "dry_penalty_last_n": 64,
+            "dry_sequence_breakers": [
+              "\n",
+              ":",
+              "\"",
+              "*"
+            ],
+            "mirostat": 0,
+            "mirostat_tau": 5.0,
+            "mirostat_eta": 0.10000000149011612,
+            "adaptive_target": -1.0,
+            "adaptive_decay": 0.8999999761581421,
+            "stop": [],
+            "max_tokens": 16,
+            "n_predict": 16,
+            "n_keep": 0,
+            "n_discard": 0,
+            "ignore_eos": false,
+            "stream": false,
+            "logit_bias": [],
+            "n_probs": 0,
+            "min_keep": 0,
+            "grammar": "",
+            "grammar_lazy": false,
+            "grammar_triggers": [],
+            "preserved_tokens": [
+              248058,
+              248059,
+              248068,
+              248069
+            ],
+            "chat_format": "peg-native",
+            "reasoning_format": "deepseek",
+            "reasoning_in_content": false,
+            "generation_prompt": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            "samplers": [
+              "penalties",
+              "dry",
+              "top_n_sigma",
+              "top_k",
+              "typ_p",
+              "top_p",
+              "min_p",
+              "xtc",
+              "temperature"
+            ],
+            "speculative.types": "none",
+            "timings_per_token": false,
+            "post_sampling_probs": false,
+            "backend_sampling": false,
+            "lora": []
+          },
+          "prompt": "<|im_start|>user\nSay only OK.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+          "has_new_line": false,
+          "truncated": false,
+          "stop_type": "eos",
+          "stopping_word": "",
+          "tokens_cached": 17,
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 16,
+            "prompt_ms": 747.461,
+            "prompt_per_token_ms": 46.7163125,
+            "prompt_per_second": 21.405799098548286,
+            "predicted_n": 2,
+            "predicted_ms": 108.589,
+            "predicted_per_token_ms": 108.589,
+            "predicted_per_second": 9.209035906030998
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 16,
+          "prompt_ms": 747.461,
+          "prompt_per_token_ms": 46.7163125,
+          "prompt_per_second": 21.405799098548286,
+          "predicted_n": 2,
+          "predicted_ms": 108.589,
+          "predicted_per_token_ms": 108.589,
+          "predicted_per_second": 9.209035906030998
+        }
+      },
+      "chat_metrics": {},
+      "passed": true
+    },
+    "stream": {
+      "mode": "stream",
+      "chat_request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Say only OK."
+          }
+        ],
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "temperature": 0,
+        "seed": 42,
+        "max_tokens": 16,
+        "id_slot": 0,
+        "cache_prompt": false,
+        "return_tokens": true,
+        "verbose": true
+      },
+      "runtime_reserve_bytes": 2147483648,
+      "command": [
+        "$HOME/.cache/atomic-qwen38-cuda/build/bin/llama-server",
+        "-m",
+        "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "--device",
+        "CUDA0",
+        "-ngl",
+        "22",
+        "-c",
+        "4096",
+        "-b",
+        "128",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "4",
+        "-tb",
+        "4",
+        "-fit",
+        "off",
+        "--no-warmup",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--metrics",
+        "--slots",
+        "--slot-save-path",
+        "$HOME/.cache/atomic-qwen38-cuda/chat-eos-profile/stream",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "19162",
+        "--engine-ram-mib",
+        "4096",
+        "--engine-vram-mib",
+        "2048"
+      ],
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+      "rendered_prompt": "<|im_start|>user\nSay only OK.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "prompt_tokens": [
+        248045,
+        846,
+        198,
+        44240,
+        1132,
+        10092,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ],
+      "raw": {
+        "index": 0,
+        "content": "OK",
+        "tokens": [
+          3793,
+          248046
+        ],
+        "id_slot": 0,
+        "stop": true,
+        "model": "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "tokens_predicted": 2,
+        "tokens_evaluated": 16,
+        "generation_settings": {
+          "seed": 42,
+          "temperature": 0.0,
+          "dynatemp_range": 0.0,
+          "dynatemp_exponent": 1.0,
+          "top_k": 20,
+          "top_p": 0.949999988079071,
+          "min_p": 0.05000000074505806,
+          "top_n_sigma": -1.0,
+          "xtc_probability": 0.0,
+          "xtc_threshold": 0.10000000149011612,
+          "typical_p": 1.0,
+          "repeat_last_n": 64,
+          "repeat_penalty": 1.0,
+          "presence_penalty": 0.0,
+          "frequency_penalty": 0.0,
+          "dry_multiplier": 0.0,
+          "dry_base": 1.75,
+          "dry_allowed_length": 2,
+          "dry_penalty_last_n": 64,
+          "dry_sequence_breakers": [
+            "\n",
+            ":",
+            "\"",
+            "*"
+          ],
+          "mirostat": 0,
+          "mirostat_tau": 5.0,
+          "mirostat_eta": 0.10000000149011612,
+          "adaptive_target": -1.0,
+          "adaptive_decay": 0.8999999761581421,
+          "stop": [],
+          "max_tokens": 16,
+          "n_predict": 16,
+          "n_keep": 0,
+          "n_discard": 0,
+          "ignore_eos": false,
+          "stream": false,
+          "logit_bias": [],
+          "n_probs": 0,
+          "min_keep": 0,
+          "grammar": "",
+          "grammar_lazy": false,
+          "grammar_triggers": [],
+          "preserved_tokens": [],
+          "chat_format": "Content-only",
+          "reasoning_format": "deepseek",
+          "reasoning_in_content": false,
+          "generation_prompt": "",
+          "samplers": [
+            "penalties",
+            "dry",
+            "top_n_sigma",
+            "top_k",
+            "typ_p",
+            "top_p",
+            "min_p",
+            "xtc",
+            "temperature"
+          ],
+          "speculative.types": "none",
+          "timings_per_token": false,
+          "post_sampling_probs": false,
+          "backend_sampling": false,
+          "lora": []
+        },
+        "prompt": "<|im_start|>user\nSay only OK.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "has_new_line": false,
+        "truncated": false,
+        "stop_type": "eos",
+        "stopping_word": "",
+        "tokens_cached": 17,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 16,
+          "prompt_ms": 2964.822,
+          "prompt_per_token_ms": 185.301375,
+          "prompt_per_second": 5.396614029442577,
+          "predicted_n": 2,
+          "predicted_ms": 347.835,
+          "predicted_per_token_ms": 347.835,
+          "predicted_per_second": 2.8749263300127934
+        }
+      },
+      "states": {
+        "raw": {
+          "bytes": 118563052,
+          "sha256": "5da197913308f502dabfeadb26b6e1286e0eaffa3b8d27ff37d41993152ca477"
+        },
+        "chat": {
+          "bytes": 118563052,
+          "sha256": "5da197913308f502dabfeadb26b6e1286e0eaffa3b8d27ff37d41993152ca477"
+        }
+      },
+      "raw_metrics": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174867606,
+        "ram_high_water_bytes": 4247558854,
+        "ram_released_bytes": 12226140864,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2147287040,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 1770061824
+      },
+      "chat": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "OK"
+            }
+          }
+        ],
+        "created": 1794748935,
+        "model": "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "system_fingerprint": "b0-unknown",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 2,
+          "prompt_tokens": 16,
+          "total_tokens": 18,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "id": "chatcmpl-l9BEbPQ5ZClymLVyJCcCX56NQePtHCC8",
+        "__verbose": {
+          "index": 0,
+          "content": "OK",
+          "tokens": [
+            3793,
+            248046
+          ],
+          "id_slot": 0,
+          "stop": true,
+          "model": "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+          "tokens_predicted": 2,
+          "tokens_evaluated": 16,
+          "generation_settings": {
+            "seed": 42,
+            "temperature": 0.0,
+            "dynatemp_range": 0.0,
+            "dynatemp_exponent": 1.0,
+            "top_k": 20,
+            "top_p": 0.949999988079071,
+            "min_p": 0.05000000074505806,
+            "top_n_sigma": -1.0,
+            "xtc_probability": 0.0,
+            "xtc_threshold": 0.10000000149011612,
+            "typical_p": 1.0,
+            "repeat_last_n": 64,
+            "repeat_penalty": 1.0,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0,
+            "dry_multiplier": 0.0,
+            "dry_base": 1.75,
+            "dry_allowed_length": 2,
+            "dry_penalty_last_n": 64,
+            "dry_sequence_breakers": [
+              "\n",
+              ":",
+              "\"",
+              "*"
+            ],
+            "mirostat": 0,
+            "mirostat_tau": 5.0,
+            "mirostat_eta": 0.10000000149011612,
+            "adaptive_target": -1.0,
+            "adaptive_decay": 0.8999999761581421,
+            "stop": [],
+            "max_tokens": 16,
+            "n_predict": 16,
+            "n_keep": 0,
+            "n_discard": 0,
+            "ignore_eos": false,
+            "stream": false,
+            "logit_bias": [],
+            "n_probs": 0,
+            "min_keep": 0,
+            "grammar": "",
+            "grammar_lazy": false,
+            "grammar_triggers": [],
+            "preserved_tokens": [
+              248058,
+              248059,
+              248068,
+              248069
+            ],
+            "chat_format": "peg-native",
+            "reasoning_format": "deepseek",
+            "reasoning_in_content": false,
+            "generation_prompt": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            "samplers": [
+              "penalties",
+              "dry",
+              "top_n_sigma",
+              "top_k",
+              "typ_p",
+              "top_p",
+              "min_p",
+              "xtc",
+              "temperature"
+            ],
+            "speculative.types": "none",
+            "timings_per_token": false,
+            "post_sampling_probs": false,
+            "backend_sampling": false,
+            "lora": []
+          },
+          "prompt": "<|im_start|>user\nSay only OK.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+          "has_new_line": false,
+          "truncated": false,
+          "stop_type": "eos",
+          "stopping_word": "",
+          "tokens_cached": 17,
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 16,
+            "prompt_ms": 2851.355,
+            "prompt_per_token_ms": 178.2096875,
+            "prompt_per_second": 5.61136722716042,
+            "predicted_n": 2,
+            "predicted_ms": 319.325,
+            "predicted_per_token_ms": 319.325,
+            "predicted_per_second": 3.1316057308384875
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 16,
+          "prompt_ms": 2851.355,
+          "prompt_per_token_ms": 178.2096875,
+          "prompt_per_second": 5.61136722716042,
+          "predicted_n": 2,
+          "predicted_ms": 319.325,
+          "predicted_per_token_ms": 319.325,
+          "predicted_per_second": 3.1316057308384875
+        }
+      },
+      "chat_metrics": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174867606,
+        "ram_high_water_bytes": 4247577990,
+        "ram_released_bytes": 22535127776,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2147287040,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 2172715008
+      },
+      "ordinary_template_tokens_responses_and_states_equal": true,
+      "passed": true
+    }
+  },
+  "limitations": [
+    "One selected non-thinking user turn on one checkpoint; no tools, thinking mode, multi-turn or multimodal qualification",
+    "HTTP tokens and complete slot bytes, not fresh full-vocabulary logits capture",
+    "Managed ledger rather than process RSS or all driver allocations",
+    "No long HTTP prefill, concurrent slots, automatic pressure or HTTP resize qualification",
+    "No aggregate suite or throughput claim"
+  ]
+}

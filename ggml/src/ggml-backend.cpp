@@ -1,3 +1,4 @@
+#include "ggml-alloc-observer.h"
 // Note: porting this file to C++ is a work in progress
 
 #ifdef _WIN32
@@ -20,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 
@@ -31,9 +33,48 @@
 
 // backend buffer type
 
+static thread_local ggml_backend_alloc_observer allocation_observer {};
+static std::atomic<size_t> active_allocation_observers {0};
+
+bool ggml_backend_has_alloc_observer(void) {
+    return allocation_observer.reserve != nullptr;
+}
+
+ggml_backend_alloc_observer ggml_backend_set_alloc_observer(ggml_backend_alloc_observer observer) {
+    const auto previous = allocation_observer;
+    allocation_observer = observer;
+    if (!previous.reserve && observer.reserve) { active_allocation_observers.fetch_add(1, std::memory_order_relaxed); }
+    if (previous.reserve && !observer.reserve) { active_allocation_observers.fetch_sub(1, std::memory_order_relaxed); }
+    return previous;
+}
+
 const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
     GGML_ASSERT(buft);
     return buft->iface.get_name(buft);
+}
+
+// Keep TLS access and admission exception handling off the ordinary path.
+static ggml_backend_buffer_t ggml_backend_buft_alloc_buffer_observed(ggml_backend_buffer_type_t buft, size_t size) {
+    const auto observer = allocation_observer;
+    if (!observer.reserve) { return buft->iface.alloc_buffer(buft, size); }
+    void * reservation = observer.reserve(buft, size, observer.user_data);
+    if (!reservation) { return nullptr; }
+    ggml_backend_buffer_t buffer = nullptr;
+    try { buffer = buft->iface.alloc_buffer(buft, size); }
+    catch (...) {
+        if (reservation) { observer.release(reservation); }
+        throw;
+    }
+    if (reservation) {
+        if (!buffer || !observer.commit(reservation, ggml_backend_buffer_get_size(buffer))) {
+            ggml_backend_buffer_free(buffer);
+            observer.release(reservation);
+            return nullptr;
+        }
+        buffer->allocation_reservation = reservation;
+        buffer->allocation_release = observer.release;
+    }
+    return buffer;
 }
 
 ggml_backend_buffer_t ggml_backend_buft_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
@@ -41,6 +82,9 @@ ggml_backend_buffer_t ggml_backend_buft_alloc_buffer(ggml_backend_buffer_type_t 
     if (size == 0) {
         // return a dummy buffer for zero-sized allocations
         return ggml_backend_buffer_init(buft, {}, NULL, 0);
+    }
+    if (active_allocation_observers.load(std::memory_order_relaxed) != 0) {
+        return ggml_backend_buft_alloc_buffer_observed(buft, size);
     }
     return buft->iface.alloc_buffer(buft, size);
 }
@@ -171,7 +215,8 @@ static size_t ggml_backend_buft_get_alloc_size_n_default(ggml_backend_buffer_typ
 
 ggml_backend_buffer_t ggml_backend_buft_alloc_buffer_n(ggml_backend_buffer_type_t buft, struct ggml_tensor ** tensors, int n_tensors) {
     GGML_ASSERT(buft);
-    if (buft->iface.alloc_buffer_n) {
+    if (buft->iface.alloc_buffer_n &&
+        (active_allocation_observers.load(std::memory_order_relaxed) == 0 || !allocation_observer.reserve)) {
         return buft->iface.alloc_buffer_n(buft, tensors, n_tensors);
     }
     return ggml_backend_buft_alloc_buffer_n_default(buft, tensors, n_tensors);
@@ -243,7 +288,9 @@ ggml_backend_buffer_t ggml_backend_buffer_init(
         /* .buft      = */ buft,
         /* .context   = */ context,
         /* .size      = */ size,
-        /* .usage     = */ GGML_BACKEND_BUFFER_USAGE_ANY
+        /* .usage     = */ GGML_BACKEND_BUFFER_USAGE_ANY,
+        /* .allocation_reservation = */ nullptr,
+        /* .allocation_release = */ nullptr,
     };
 
     return buffer;
@@ -260,6 +307,9 @@ void ggml_backend_buffer_free(ggml_backend_buffer_t buffer) {
 
     if (buffer->iface.free_buffer != NULL) {
         buffer->iface.free_buffer(buffer);
+    }
+    if (buffer->allocation_reservation) {
+        buffer->allocation_release(buffer->allocation_reservation);
     }
     delete buffer;
 }
@@ -1184,6 +1234,7 @@ struct ggml_backend_sched_split {
 };
 
 struct ggml_backend_sched {
+    size_t window_node_capacity; // zero for ordinary schedulers; fork-private allocation guard
     bool is_reset; // true if the scheduler has been reset since the last graph split
     bool is_alloc;
 
@@ -1256,6 +1307,8 @@ struct ggml_backend_sched {
     int prefetch_split;     // the split that reads the prefetched inputs
     int prefetch_backend_id; // the backend that copies them
 };
+
+#include "ggml-backend-window.cpp.inc"
 
 #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
 #define tensor_backend_id(tensor) sched->hv_tensor_backend_ids[hash_id(tensor)]
@@ -1911,6 +1964,8 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         total_inputs += sched->splits[i].n_inputs;
     }
     int graph_size = std::max(graph->n_nodes, graph->n_leafs) + total_inputs * 2 * sched->n_copies + n_dep_nodes;
+
+    window_check_graph_capacity(sched, size_t(graph_size), size_t(total_inputs) + n_dep_nodes);
 
     // remember the actual graph_size for performing reallocation checks later
     sched->prev_graph_size = sched->graph_size;

@@ -2781,3 +2781,5 @@ struct ggml_metal_buffer_id ggml_metal_buffer_get_id(ggml_metal_buffer_t buf, co
 
     return res;
 }
+
+#include "ggml-metal-expert-buffer.m.inc"

@@ -1,3 +1,4 @@
+#include "atomic-budget.h"
 #include "server-context.h"
 #include <atomic>
 #include <thread>
@@ -8,6 +9,7 @@
 #include "server-http.h"
 #include "server-task.h"
 #include "server-queue.h"
+#include "server-prefix-checkpoints.h"
 #include "server-realtime.h"
 #include "server-schema.h"
 #include "server-stream.h"
@@ -16,6 +18,7 @@
 #include "common.h"
 #include "fit.h"
 #include "llama.h"
+#include "../../src/llama-atomic.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -1132,10 +1135,12 @@ private:
     std::set<std::string> model_tags;    // informational tags
 
     bool sleeping = false;
+    std::unique_ptr<server_prefix_checkpoints> prefix_checkpoints;
 
     int64_t t_last_load_progress_ms = 0;
 
     void destroy() {
+        prefix_checkpoints.reset();
         spec.reset();
         spec_init.reset();
 
@@ -1204,6 +1209,25 @@ private:
     // load the model and initialize llama_context
     // this may also be called to resume from sleeping state
     bool load_model(common_params & params) {
+        if (common_atomic_budget_enabled(params) && params.n_parallel != 1) {
+            SRV_ERR("%s", "engine budget requires --parallel 1 (one sequence)\n");
+            return false;
+        }
+        if (common_atomic_budget_enabled(params) && (params.cache_ram_mib != 0 || params.n_ctx_checkpoints != 0)) {
+            SRV_ERR("%s", "engine budget requires --cache-ram 0 --ctx-checkpoints 0; external state copies are not admitted\n");
+            return false;
+        }
+        if (!params.engine_prefix_checkpoints.empty() &&
+                (params.engine_ram_budget != (size_t(4) << 30) || params.engine_vram_budget != (size_t(2) << 30) ||
+                 params.n_ctx != 4096 || params.n_batch != 128 || params.n_ubatch != 8 ||
+                 params.n_gpu_layers != 22 || params.n_parallel != 1)) {
+            SRV_ERR("%s", "prefix checkpoints require Qwen4Exp CUDA, 4/2 GiB, ctx 4096, batch 128, ubatch 8, 22 GPU layers and one slot\n");
+            return false;
+        }
+        if (params.engine_ram_budget || params.engine_vram_budget) {
+            try { common_atomic_discrete_validate(params); }
+            catch (const std::exception & e) { SRV_ERR("%s\n", e.what()); return false; }
+        }
         load_progress_data load_progress_text  (this, "text_model");
         load_progress_data load_progress_mmproj(this, "mmproj_model");
         load_progress_data load_progress_spec  (this, "spec_model");
@@ -1318,6 +1342,18 @@ private:
         if (ctx_tgt == nullptr) {
             SRV_ERR("failed to create_context with model '%s'\n", params_base.model.path.c_str());
             return false;
+        }
+
+        if (!params.engine_prefix_checkpoints.empty()) {
+            try {
+                if (!llama_atomic_prefix_supported(ctx_tgt)) {
+                    throw std::runtime_error("prefix checkpoints require managed Qwen4Exp CUDA");
+                }
+                prefix_checkpoints = std::make_unique<server_prefix_checkpoints>(params.engine_prefix_checkpoints);
+            } catch (const std::exception & e) {
+                SRV_ERR("cannot enable disk prefix checkpoints: %s\n", e.what());
+                return false;
+            }
         }
 
         vocab = llama_model_get_vocab(model_tgt);
@@ -1654,6 +1690,13 @@ private:
         queue_tasks.on_new_task([this](server_task && task, bool is_yielding) {
             return process_single_task(std::move(task), is_yielding);
         });
+        if (params_base.engine_memory_auto) {
+            queue_tasks.on_idle_poll([this]() {
+                if (ctx_tgt) { llama_memory_budget_apply(ctx_tgt); }
+            });
+        } else {
+            queue_tasks.on_idle_poll({});
+        }
         queue_tasks.on_update_slots([this]() {
             update_slots();
         });
@@ -3195,6 +3238,46 @@ private:
                     res->n_processing_slots  = n_processing_slots;
                     res->n_tasks_deferred    = queue_tasks.queue_tasks_deferred_size();
                     res->metrics             = metrics;
+                    if (params_base.engine_budget && !is_yielding) {
+                        // Yielded tasks run concurrently with model work; query the
+                        // engine only on the ordinary inference-thread task path.
+                        llama_budget_data budget {};
+                        llama_memory_policy_data policy {};
+                        if (llama_memory_budget_get(ctx_tgt, &budget) && llama_memory_policy_get(ctx_tgt, &policy)) {
+                            res->engine_memory = {{"budget_requested_bytes", budget.requested}, {"budget_applied_bytes", budget.applied},
+                                {"budget_minimum_bytes", budget.minimum}, {"budget_used_bytes", budget.used},
+                                {"budget_high_water_bytes", budget.high_water},
+                                {"budget_released_bytes", budget.released}, {"policy_mode", int(policy.config.mode)},
+                                {"pressure_level", int(policy.level)}, {"policy_reason", int(policy.reason)},
+                                {"policy_decisions", policy.decisions}, {"headroom_bytes", policy.headroom},
+                                {"headroom_valid", int(policy.headroom_valid)}};
+                        }
+                    }
+
+                    if (params_base.engine_prefill_window && !is_yielding) {
+                        llama_prefill_window_data window;
+                        if (llama_prefill_window_get(ctx_tgt, &window)) {
+                            res->engine_memory["prefill_windows"] = window.windows;
+                            res->engine_memory["prefill_window_tokens"] = window.tokens;
+                            res->engine_memory["prefill_window_tails"] = window.tails;
+                            res->engine_memory["prefill_window_fallbacks"] = window.fallbacks;
+                            res->engine_memory["prefill_window_failed"] = int(window.failed);
+                        }
+                    }
+
+                    if (params_base.engine_ram_budget && !is_yielding) {
+                        llama_discrete_budget_data budget {};
+                        if (llama_discrete_budget_get(ctx_tgt, &budget)) {
+                            for (size_t i = 0; i < 2; ++i) {
+                                const std::string domain = i == 0 ? "ram_" : "vram_";
+                                res->engine_memory[domain + "requested_bytes"] = budget.requested[i];
+                                res->engine_memory[domain + "applied_bytes"] = budget.applied[i];
+                                res->engine_memory[domain + "used_bytes"] = budget.used[i];
+                                res->engine_memory[domain + "high_water_bytes"] = budget.high_water[i];
+                                res->engine_memory[domain + "released_bytes"] = budget.released[i];
+                            }
+                        }
+                    }
 
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
@@ -3337,6 +3420,7 @@ private:
                         break;
                     }
 
+                    if (prefix_checkpoints) { prefix_checkpoints->clear(); }
                     // nread is the end offset of the llama state payload within the file
                     const size_t nread_ckpt = load_slot_checkpoints(filepath, nread, *slot);
                     const size_t nread_dft  = load_slot_draft(filepath, nread + nread_ckpt, *slot);
@@ -3370,6 +3454,7 @@ private:
                     }
 
                     // Erase token cache
+                    if (prefix_checkpoints) { prefix_checkpoints->clear(); }
                     const size_t n_erased = slot->prompt.tokens.size();
 
                     slot->prompt_clear();
@@ -3408,6 +3493,7 @@ private:
                 } break;
             case SERVER_TASK_TYPE_SET_LORA:
                 {
+                    if (prefix_checkpoints) { prefix_checkpoints->clear(); }
                     auto new_loras = construct_lora_list(task.set_lora);
                     // logging
                     for (size_t i = 0; i < new_loras.size(); ++i) {
@@ -4122,6 +4208,18 @@ private:
                             if (slot.task->params.cache_prompt && !slot.task->is_stateless()) {
                                 // reuse any previously computed tokens that are common with the new prompt
                                 n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
+                                if (prefix_checkpoints && slot.lora.empty() && server_prefix_checkpoints::eligible(*slot.task) &&
+                                        (n_past == 0 || size_t(n_past) != slot.prompt.tokens.size() || size_t(n_past) == input_tokens.size())) {
+                                    const int restored = prefix_checkpoints->restore(ctx_tgt, input_tokens.get_tokens(), slot.prompt.tokens);
+                                    if (restored > 0) {
+                                        n_past = restored;
+                                        SLT_INF(slot, "restored disk prefix, n_tokens = %d\n", restored);
+                                    } else if (restored < 0) {
+                                        slot.prompt_clear();
+                                        n_past = 0;
+                                        SLT_WRN(slot, "%s", "disk prefix restore failed, reprocessing prompt\n");
+                                    }
+                                }
 
                                 // the children start from the shared prefix, do not go past it
                                 if (slot.task->n_tokens_shared > 0) {
@@ -4714,7 +4812,16 @@ private:
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
         queue_tasks.yield_to_queue([&]() {
-            ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());
+            if (params_base.engine_budget && batch.tokens[off].is_prompt) {
+                // Managed mode has one slot. Use the same uncached prefill size
+                // for all of its slices, including a small final slice.
+                const auto & slot = *batch.slot_batched;
+                const size_t total = slot.task->n_tokens();
+                const size_t uncached = total - std::min(total, size_t(slot.stats.n_prompt_cached));
+                ret = llama_expert_prefill_decode(ctx_tgt, batch.view.get(), uncached);
+            } else {
+                ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());
+            }
             if (ret == 0 && has_output) {
                 llama_synchronize(ctx_tgt);
             }
@@ -4771,6 +4878,20 @@ private:
         } else {
             // success, apply batch metrics
             metrics_post_decode(off, batch.view.size(), has_output);
+            if (prefix_checkpoints && !has_output && batch.slot_batched && batch.slot_batched->task &&
+                    batch.slot_batched->lora.empty() && batch.tokens[off].is_prompt &&
+                    server_prefix_checkpoints::eligible(*batch.slot_batched->task)) {
+                auto & slot = *batch.slot_batched;
+                const auto & last = batch.tokens[off + batch.view.size() - 1];
+                const size_t count = size_t(last.pos[0]) + 1;
+                try {
+                    if (last.is_prompt && prefix_checkpoints->capture(ctx_tgt, slot.task->tokens.get_tokens(), count)) {
+                        SLT_INF(slot, "saved disk prefix, n_tokens = %zu\n", count);
+                    }
+                } catch (const std::exception & e) {
+                    SLT_WRN(slot, "disk prefix capture skipped: %s\n", e.what());
+                }
+            }
         }
 
         // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]

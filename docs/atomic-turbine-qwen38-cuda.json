@@ -1,0 +1,425 @@
+{
+  "checked_on": "2026-11-15",
+  "architecture": "qwen4exp",
+  "device": "RTX 4070 Laptop / Ubuntu",
+  "operation_fixture": "Original packed bytes; 12 of 512 experts per format; 10 selected per token; full input/output dimensions.",
+  "fixture_bytes": 49613856,
+  "fixture_sha256": "f8342bcdc05d84014ee93e433a6af5b9ff5fc0be18fa7ef9e649943b98c1d32a",
+  "source_manifest": [
+    {
+      "name": "blk.0.ffn_down_exps.weight",
+      "type": "IQ4_NL",
+      "original_shape": [
+        640,
+        2560,
+        512
+      ],
+      "original_indices": [
+        0,
+        1,
+        2,
+        3,
+        7,
+        15,
+        31,
+        63,
+        127,
+        255,
+        383,
+        511
+      ],
+      "bytes": 11059200,
+      "sha256": "7ae840b83534bae454463dd7c253b5bf976d46ddab2a2959cb70ede76acfbdf9"
+    },
+    {
+      "name": "blk.0.ffn_gate_exps.weight",
+      "type": "IQ2_XS",
+      "original_shape": [
+        2560,
+        640,
+        512
+      ],
+      "original_indices": [
+        0,
+        1,
+        2,
+        3,
+        7,
+        15,
+        31,
+        63,
+        127,
+        255,
+        383,
+        511
+      ],
+      "bytes": 5683200,
+      "sha256": "d31d28027a917bda815dbba4ff22b567f6fbf11c3b65309c2fa4fa83b785118f"
+    },
+    {
+      "name": "blk.1.ffn_down_exps.weight",
+      "type": "Q2_0",
+      "original_shape": [
+        640,
+        2560,
+        512
+      ],
+      "original_indices": [
+        0,
+        1,
+        2,
+        3,
+        7,
+        15,
+        31,
+        63,
+        127,
+        255,
+        383,
+        511
+      ],
+      "bytes": 5529600,
+      "sha256": "d32940a384386ddfb8f64a60b5086b3d83459b3c4bfd98868ac7a86e4f90dd51"
+    },
+    {
+      "name": "blk.1.ffn_gate_exps.weight",
+      "type": "IQ2_XXS",
+      "original_shape": [
+        2560,
+        640,
+        512
+      ],
+      "original_indices": [
+        0,
+        1,
+        2,
+        3,
+        7,
+        15,
+        31,
+        63,
+        127,
+        255,
+        383,
+        511
+      ],
+      "bytes": 5068800,
+      "sha256": "b2be291a1c896f887683e1be7132229e79a9fcdbfec77ef1363937ea44ba98bd"
+    },
+    {
+      "name": "blk.8.ffn_gate_exps.weight",
+      "type": "IQ3_S",
+      "original_shape": [
+        2560,
+        640,
+        512
+      ],
+      "original_indices": [
+        0,
+        1,
+        2,
+        3,
+        7,
+        15,
+        31,
+        63,
+        127,
+        255,
+        383,
+        511
+      ],
+      "bytes": 8448000,
+      "sha256": "c01c06c5b956ce27c06d9156b3b75ed07e131728501c65a51ecb97657e9a47c7"
+    },
+    {
+      "name": "blk.12.ffn_gate_exps.weight",
+      "type": "IQ2_S",
+      "original_shape": [
+        2560,
+        640,
+        512
+      ],
+      "original_indices": [
+        0,
+        1,
+        2,
+        3,
+        7,
+        15,
+        31,
+        63,
+        127,
+        255,
+        383,
+        511
+      ],
+      "bytes": 6297600,
+      "sha256": "7589cfaad632926a404c4904331e72a7784223257376991f61294cf7cf2c1867"
+    },
+    {
+      "name": "blk.35.ffn_gate_exps.weight",
+      "type": "IQ3_XXS",
+      "original_shape": [
+        2560,
+        640,
+        512
+      ],
+      "original_indices": [
+        0,
+        1,
+        2,
+        3,
+        7,
+        15,
+        31,
+        63,
+        127,
+        255,
+        383,
+        511
+      ],
+      "bytes": 7526400,
+      "sha256": "04b3ff6734272e4a2aaf240270311f0f0a2364d02a275d2f68a4a7b234036f50"
+    },
+    {
+      "name": "per_layer_token_embd.weight",
+      "type": "IQ4_NL",
+      "original_shape": [
+        160,
+        320001536
+      ],
+      "original_indices": [
+        0,
+        1,
+        160000768,
+        320001535
+      ],
+      "bytes": 360,
+      "sha256": "141cfaa59af79eb708290df0e63fb1374358c3108aff958a935fe6def97d5dad"
+    }
+  ],
+  "exact_projection_cases": [
+    {
+      "backend": "CUDA",
+      "type": "iq4_nl",
+      "tokens": 1,
+      "float_count": 25600
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq2_xs",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CUDA",
+      "type": "q2_0",
+      "tokens": 1,
+      "float_count": 25600
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq2_xxs",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq3_s",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq2_s",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq3_xxs",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CPU",
+      "type": "iq4_nl",
+      "tokens": 1,
+      "float_count": 25600
+    },
+    {
+      "backend": "CPU",
+      "type": "iq2_xs",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CPU",
+      "type": "q2_0",
+      "tokens": 1,
+      "float_count": 25600
+    },
+    {
+      "backend": "CPU",
+      "type": "iq2_xxs",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CPU",
+      "type": "iq3_s",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CPU",
+      "type": "iq2_s",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CPU",
+      "type": "iq3_xxs",
+      "tokens": 1,
+      "float_count": 6400
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq4_nl",
+      "tokens": 8,
+      "float_count": 204800
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq2_xs",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CUDA",
+      "type": "q2_0",
+      "tokens": 8,
+      "float_count": 204800
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq2_xxs",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq3_s",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq2_s",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CUDA",
+      "type": "iq3_xxs",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CPU",
+      "type": "iq4_nl",
+      "tokens": 8,
+      "float_count": 204800
+    },
+    {
+      "backend": "CPU",
+      "type": "iq2_xs",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CPU",
+      "type": "q2_0",
+      "tokens": 8,
+      "float_count": 204800
+    },
+    {
+      "backend": "CPU",
+      "type": "iq2_xxs",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CPU",
+      "type": "iq3_s",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CPU",
+      "type": "iq2_s",
+      "tokens": 8,
+      "float_count": 51200
+    },
+    {
+      "backend": "CPU",
+      "type": "iq3_xxs",
+      "tokens": 8,
+      "float_count": 51200
+    }
+  ],
+  "ple": {
+    "row_bytes": 90,
+    "output_float_count": 800,
+    "bitwise_equal": true,
+    "reference": "CPU GET_ROWS, matching input-layer placement in ordinary partial CUDA offload"
+  },
+  "profile_guard": {
+    "maximum_microbatch": 8,
+    "nine_rows_rejected_before_compute": true,
+    "teardown_reservations_released": true
+  },
+  "unqualified_32_row_case": {
+    "type": "IQ4_NL",
+    "selected_experts_per_token": 2,
+    "first_difference_index": 129,
+    "native": -0.0459616408,
+    "streamed": -0.0459616445,
+    "bitwise_equal": false
+  },
+  "admission": {
+    "ram_cap_bytes": 4294967296,
+    "vram_cap_bytes": 2147483648,
+    "requested_context": 128,
+    "effective_context": 256,
+    "batch": 128,
+    "microbatch": 8,
+    "cpu_threads": 4,
+    "fixture": "Original GGUF headers and sparse zero payload; real model/context allocation, no decode. Not a valid model or numerical reference.",
+    "cases": [
+      {
+        "gpu_layers": 23,
+        "rejected_domain": "RAM",
+        "category": "recurrent state",
+        "used_bytes": 4245159936,
+        "requested_allocation_bytes": 65798144,
+        "cap_bytes": 4294967296,
+        "deficit_bytes": 15990784
+      },
+      {
+        "gpu_layers": 24,
+        "rejected_domain": "VRAM",
+        "category": "recurrent state",
+        "used_bytes": 2105344000,
+        "requested_allocation_bytes": 55574528,
+        "cap_bytes": 2147483648,
+        "deficit_bytes": 13434880
+      }
+    ],
+    "fits": false,
+    "graph_workspace_admission_reached": false
+  },
+  "full_real_model_inference": false,
+  "full_model_bitwise_comparison": false,
+  "production_changes": "Only streaming PLE/type admission and a Qwen CUDA microbatch guard; no ordinary CUDA algorithm or kernel changes."
+}

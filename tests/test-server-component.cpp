@@ -1,6 +1,9 @@
 #include "testing.h"
 
 #include "../tools/server/server-chat.h"
+#include "../tools/server/server-queue.h"
+#include "arg.h"
+#include "atomic-budget.h"
 #include "../tools/server/server-common.h"
 #include "../tools/server/server-decision.h"
 #include "../tools/server/server-schema.h"
@@ -12,6 +15,7 @@
 #include <regex>
 #include <string>
 #include <thread>
+#include <future>
 #include <utility>
 #include <vector>
 
@@ -751,6 +755,91 @@ int main(int argc, char ** argv) {
     if (argc > 1) {
         t.set_filter(argv[1]);
     }
+
+    t.test("memory pressure idle poll", [&](testing & t) {
+        server_queue queue;
+        const auto owner = std::this_thread::get_id();
+        int polls = 0;
+        bool correct_thread = false;
+        queue.on_new_task([](server_task &&, bool) { return true; });
+        queue.on_update_slots([] {});
+        queue.on_idle_poll([&] {
+            ++polls;
+            correct_thread = std::this_thread::get_id() == owner;
+            queue.terminate(); // acquires the queue mutex: callback must not hold it
+        });
+        queue.start_loop();
+        t.assert_equal("one idle callback", polls, 1);
+        t.assert_true("runs on inference thread", correct_thread);
+    });
+    t.test("disabled memory pressure idle poll", [&](testing & t) {
+        server_queue queue;
+        int polls = 0;
+        std::promise<void> entered;
+        queue.on_new_task([](server_task &&, bool) { return true; });
+        queue.on_update_slots([&] { entered.set_value(); });
+        queue.on_idle_poll([&] { ++polls; });
+        queue.on_idle_poll({});
+        auto ready = entered.get_future();
+        std::thread stop([&] {
+            ready.wait();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+            queue.terminate();
+        });
+        queue.start_loop();
+        stop.join();
+        t.assert_equal("cleared controller is not called while idle", polls, 0);
+        server_task_result_metrics result;
+        t.assert_true("ordinary metrics do not allocate a controller object", result.engine_memory.is_null());
+        t.assert_true("ordinary metrics contain no controller series", result.to_metrics().find("llamacpp:engine_memory_") == std::string::npos);
+    });
+    t.test("CUDA engine server arguments", [&](testing & t) {
+        common_params p;
+        common_atomic_discrete_validate(p);
+        t.assert_true("ordinary defaults do not enable budgets", !common_atomic_budget_enabled(p));
+        const char * args[] = {"test", "--engine-ram-mib", "4096", "--engine-vram-mib", "2048",
+            "-fit", "off", "-c", "256", "-ub", "8", "-ngl", "14", "-np", "1"};
+        t.assert_true("separate caps parse", common_params_parse(15, const_cast<char **>(args), p, LLAMA_EXAMPLE_SERVER));
+        t.assert_equal("RAM bytes", p.engine_ram_budget, size_t(4096) * 1024 * 1024);
+        t.assert_equal("VRAM bytes", p.engine_vram_budget, size_t(2048) * 1024 * 1024);
+        t.assert_true("server guards see discrete budget", common_atomic_budget_enabled(p));
+        t.assert_equal("discrete caps do not become UMA cap", common_model_params_to_llama(p).memory_budget_size, size_t(0));
+        auto rejects = [&](const char * label, common_params candidate) {
+            bool rejected = false;
+            try { common_atomic_discrete_validate(candidate); } catch (const std::invalid_argument &) { rejected = true; }
+            t.assert_true(label, rejected);
+        };
+        bool reached_device_gate = false;
+        try { common_atomic_discrete_validate(p); }
+        catch (const std::invalid_argument & e) {
+            reached_device_gate = std::string(e.what()).find("one explicit --device") != std::string::npos;
+        }
+        t.assert_true("empty parser override terminator reaches device gate", reached_device_gate);
+        rejects("explicit CUDA device required", p);
+        auto invalid = p; invalid.engine_vram_budget = 0; rejects("incomplete caps rejected", invalid);
+        invalid = p; invalid.engine_budget = 1; rejects("mixed UMA and discrete caps rejected", invalid);
+        invalid = p; invalid.engine_memory_auto = true; rejects("automatic UMA policy rejected", invalid);
+        invalid = p; invalid.n_parallel = 2; rejects("multiple sequences rejected", invalid);
+        server_task_result_metrics result;
+        result.engine_memory["ram_applied_bytes"] = p.engine_ram_budget;
+        result.engine_memory["vram_applied_bytes"] = p.engine_vram_budget;
+        const auto metrics = result.to_metrics();
+        t.assert_true("independent RAM gauge", metrics.find("llamacpp:engine_memory_ram_applied_bytes 4294967296\n") != std::string::npos);
+        t.assert_true("independent VRAM gauge", metrics.find("llamacpp:engine_memory_vram_applied_bytes 2147483648\n") != std::string::npos);
+    });
+
+    t.test("engine memory common arguments", [&](testing & t) {
+        common_params params;
+        const char * args[] = {"test", "--engine-budget-mib", "5120", "--engine-memory-auto",
+            "--engine-memory-min-mib", "4800", "--engine-memory-reserve-mib", "1024", "-fit", "off"};
+        t.assert_true("shared server arguments parse", common_params_parse(10, const_cast<char **>(args), params, LLAMA_EXAMPLE_SERVER));
+        t.assert_true("automatic mode and fit setting", params.engine_memory_auto && !params.fit_params);
+        t.assert_equal("total model budget forwarded", common_model_params_to_llama(params).memory_budget_size, size_t(5120) * 1024 * 1024);
+        t.assert_equal("lower bound", params.engine_memory_min, size_t(4800) * 1024 * 1024);
+        server_task_result_metrics result;
+        result.engine_memory["budget_applied_bytes"] = uint64_t(5120) * 1024 * 1024;
+        t.assert_true("memory metrics preserve integer bytes", result.to_metrics().find("llamacpp:engine_memory_budget_applied_bytes 5368709120\n") != std::string::npos);
+    });
 
     t.test("server_tokens", test_server_tokens);
     t.test("utf8",          test_utf8);

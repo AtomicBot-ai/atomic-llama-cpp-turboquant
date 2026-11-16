@@ -1,0 +1,140 @@
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -351,7 +351,7 @@
+ static json probe_mtp(const llama_model & model, llama_context * target, llama_batch_ext * target_batch,
+         llama_context * draft, const std::vector<llama_token> & prompt, llama_token seed, size_t vocab_size,
+         bool try_batch_commit, mtp_layer_probe * layers, int (*q8_probe)(bool), int (*router_probe)(bool),
+-        bool retain_draft_prefix = false, mtp_hidden_tail * tail = nullptr) {
++        bool retain_draft_prefix = false, mtp_hidden_tail * tail = nullptr, bool force_rejection = false) {
+     const size_t width = llama_model_n_embd_out(&model);
+     const llama_pos pos = prompt.size();
+     auto ledger = model.memory_contract->ledger;
+@@ -433,15 +433,16 @@
+         }
+         return llama_sampler_sample(greedy.get(), draft, -1);
+     };
+-    const llama_token proposal = propose();
++    const llama_token draft_proposal = propose();
+     const auto draft_logits = float_digest(llama_get_logits_ith(draft, -1), vocab_size);
+     restore(draft, draft_state, draft_hash);
+-    if (propose() != proposal || float_digest(llama_get_logits_ith(draft, -1), vocab_size) != draft_logits) {
++    if (propose() != draft_proposal || float_digest(llama_get_logits_ith(draft, -1), vocab_size) != draft_logits) {
+         throw std::runtime_error("draft rollback changed the repeated proposal");
+     }
+     restore(draft, draft_state, draft_hash);
+     llama_set_embeddings_nextn(target, tail != nullptr, tail != nullptr);
+     restore(target, target_state, target_hash);
++    llama_token proposal = draft_proposal;
+ 
+     if (try_batch_commit) {
+         const auto * vocab = llama_model_get_vocab(&model);
+@@ -482,12 +483,27 @@
+         }
+         const auto serial_id = llama_sampler_sample(greedy.get(), target, -1);
+         result["serial_id"] = serial_id;
+-        if (proposal != serial_id) {
++        if (force_rejection) {
++            // Run an actual verifier batch with an incorrect suffix. Keep the
++            // normal serial mismatch handling for all real proposals.
++            for (llama_token wrong : {0, 1, 2, 3}) {
++                if (wrong != serial_id && wrong != draft_proposal && !llama_vocab_is_eog(vocab, wrong)) {
++                    proposal = wrong;
++                    break;
++                }
++            }
++            if (proposal == draft_proposal) { throw std::runtime_error("no negative control token"); }
++            result["draft_proposal"] = draft_proposal;
++            result["proposal"] = proposal;
++            result["forced_rejection"] = true;
++            result["serial_seed_hidden_hash"] = float_digest(serial_hidden.data(), width);
++        }
++        if (!force_rejection && proposal != serial_id) {
+             restore(target, target_state, target_hash);
+             result["decision"] = "proposal_differs_from_serial";
+             return result;
+         }
+-        serial_step(proposal, pos + 1, 1);
++        serial_step(serial_id, pos + 1, 1);
+         const size_t serial_size = llama_state_get_size(target);
+         // Two host copies fit with single-token workspace. Keep the serial
+         // reference on disk for the larger, uninstrumented verifier.
+@@ -545,6 +561,9 @@
+             result["batch_layers"] = std::move(layers->rows);
+         }
+         const auto verified_id = llama_sampler_sample(greedy.get(), target, 0);
++        if (force_rejection && (verified_id != serial_id || verified_id == proposal)) {
++            throw std::runtime_error("incorrect suffix changed the verifier's prefix decision");
++        }
+         const auto serial_next = std::max_element(serial_logits.data() + vocab_size,
+             serial_logits.data() + 2 * vocab_size) - (serial_logits.data() + vocab_size);
+         const auto verified_next = llama_sampler_sample(greedy.get(), target, 1);
+@@ -606,6 +625,11 @@
+             {"memory_while_charged", memory_snapshot(target)}});
+         if (!commit) {
+             restore(target, target_state, target_hash);
++            if (force_rejection) {
++                result["target_restored_state"] = target_hash;
++                result["target_position_after_restore"] = llama_memory_seq_pos_max(llama_get_memory(target), 0);
++                result["draft_position_after_restore"] = llama_memory_seq_pos_max(llama_get_memory(draft), 0);
++            }
+         } else if (tail) {
+             tail->append(target, 0, pos);
+             tail->append(target, 1, pos + 1);
+@@ -661,6 +685,7 @@
+         bool mtp_batch_commit_probe = false, mtp_multi_round_probe = false;
+         bool mtp_retain_draft_prefix = false;
+         bool mtp_carry_hidden = false;
++        int mtp_reject_step = -1;
+         bool mtp_trace_layers = false;
+         bool mtp_q8_rows = false, mtp_router_rows = false;
+         int read_overlap = -1;
+@@ -755,6 +780,10 @@
+             else if (arg == "--mtp-multi-round-probe") { mtp_probe = mtp_batch_commit_probe = mtp_multi_round_probe = true; }
+             else if (arg == "--mtp-retain-draft-prefix") { mtp_retain_draft_prefix = true; }
+             else if (arg == "--mtp-carry-hidden") { mtp_carry_hidden = true; }
++            else if (arg == "--mtp-reject-step") {
++                mtp_reject_step = std::stoi(value());
++                if (mtp_reject_step < 0) { throw std::invalid_argument("MTP rejection step must be nonnegative"); }
++            }
+             else if (arg == "--mtp-trace-layers") { mtp_trace_layers = true; }
+             else if (arg == "--mtp-q8-rows") { mtp_q8_rows = true; }
+             else if (arg == "--mtp-router-rows") { mtp_router_rows = true; }
+@@ -815,6 +844,9 @@
+         if (mtp_carry_hidden && !mtp_retain_draft_prefix) {
+             throw std::invalid_argument("MTP hidden carry requires draft prefix reuse");
+         }
++        if (mtp_reject_step >= 0 && (!mtp_carry_hidden || mtp_reject_step >= tokens - 3)) {
++            throw std::invalid_argument("MTP rejection control requires hidden carry and room for a later pair");
++        }
+         if (mtp_multi_round_probe && (mtp_trace_layers || !mtp_router_rows || ubatch < 2 || tokens < 5)) {
+             throw std::invalid_argument("multi-round probe requires both matvec overrides and room for two pairs");
+         }
+@@ -1011,6 +1043,7 @@
+                 tail_ticket.commit();
+             }
+             if (mtp_multi_round_probe) { row["mtp_rounds"] = json::array(); }
++            bool rejection_exercised = false;
+             for (int step = 0; step < tokens; ++step) {
+                 const int output_row = step == pair_second ? 0 : -1;
+                 if (run >= 0 && logits.is_open()) {
+@@ -1040,8 +1073,9 @@
+                     prefix.insert(prefix.end(), committed.begin(), committed.end());
+                     auto round = probe_mtp(*model, ctx.get(), batch.get(), draft.ctx.get(), prefix, token,
+                             llama_vocab_n_tokens(vocab), true, nullptr, q8_probe, router_probe, mtp_retain_draft_prefix,
+-                            mtp_carry_hidden ? &hidden_tail : nullptr);
++                            mtp_carry_hidden ? &hidden_tail : nullptr, step == mtp_reject_step);
+                     round["step"] = step;
++                    rejection_exercised |= round.contains("forced_rejection");
+                     if (round["batch_committed"].get<bool>()) { pair_second = step + 1; }
+                     row["mtp_rounds"].push_back(std::move(round));
+                 } else if (mtp_probe && !mtp_multi_round_probe && step == 0) {
+@@ -1100,6 +1134,9 @@
+                     }
+                 }
+             }
++            if (mtp_reject_step >= 0 && !rejection_exercised) {
++                throw std::runtime_error("MTP rejection control did not reach the requested verifier round");
++            }
+             if (rollback_probe && !row.contains("rollback")) { throw std::runtime_error("rollback probe needs a non-EOG token"); }
+             if (mtp_probe && !mtp_multi_round_probe && (!row.contains("mtp") ||
+                     (!mtp_batch_commit_probe && !row["mtp"].contains("verify_matches_serial_token")))) {

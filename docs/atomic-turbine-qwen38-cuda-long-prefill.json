@@ -1,0 +1,1792 @@
+{
+  "scope": "One checkpoint, 3481 prompt tokens, context 4096, microbatch 8, 22 GPU layers, four output rows; no performance qualification",
+  "status": "PASS: selected long-prefill memory and bitwise logits/state gates",
+  "memory_measurement": "shared managed ledger, not whole-process RSS or all driver allocations",
+  "runtime_envelope_bytes": 2147483648,
+  "host_cap_bytes": 4294967296,
+  "device_cap_bytes": 2147483648,
+  "logits_bitwise_equal": true,
+  "state_bitwise_equal": true,
+  "output_ids_equal": true,
+  "within_managed_caps": true,
+  "final_qualification": {
+    "runner_sha256": "fb1fc17f169c88ed8c03b34d4009e1f39b40f81b4ace30b3e8b3ab169eddc9db",
+    "libllama_sha256": "c54b2f52f0cddbc4b74f61bcc268e56562b1c8cb420ac90ecc93b1a2d15ab76e",
+    "graph_source_sha256": "1bd4f946bdd245457d55c34eda3c4a65576cd6178a3d95920af1a9a07f595815",
+    "runner_source_sha256": "da6ee03186131ebaf94e47f5b22bea64d36a66af8a8d536630db99babe0ef7ed",
+    "prompt_sha256": "ff564330c036acd2575b9c4174df6f1223b09d2e55fdc1f3a7d1ced3a0f7ea2e",
+    "ordinary_full_control_reused": true,
+    "runtime_envelope_bytes": 2147483648,
+    "host_cap_bytes": 4294967296,
+    "device_cap_bytes": 2147483648,
+    "resumed_token": {
+      "stream": {
+        "mode": "stream",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 3481,
+        "state_format": "session-file",
+        "trace_regex": "",
+        "resume_position": 3480,
+        "prefill_only": true,
+        "native_host_expert_cache_bytes": 0,
+        "prefill_seconds": 0.378224102,
+        "ids": [
+          271
+        ],
+        "state_bytes": 225143324,
+        "host_used": 4208401062,
+        "device_used": 2091581440,
+        "host_peak": 4219153062,
+        "device_peak": 2147483648,
+        "prompt_ids_sha256": "a67210a9dace2599566c61819a2e31655f79105d0623821287e1a1a5512cab94",
+        "f32": {
+          "bytes": 993280,
+          "sha256": "f386830d733e2c484e70c6c543ae9a57d50b088bb49283acdef7030fd850bc4f",
+          "float_values": 248320,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 225143336,
+          "sha256": "a5b4b43303848070fb8734b1d19eea6db63298722f38f439ace2b84edb1be7ba"
+        }
+      },
+      "native": {
+        "mode": "native",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 3481,
+        "state_format": "session-file",
+        "trace_regex": "",
+        "resume_position": 3480,
+        "prefill_only": true,
+        "native_host_expert_cache_bytes": 4294967296,
+        "prefill_seconds": 0.207210588,
+        "ids": [
+          271
+        ],
+        "state_bytes": 225143324,
+        "prompt_ids_sha256": "a67210a9dace2599566c61819a2e31655f79105d0623821287e1a1a5512cab94",
+        "f32": {
+          "bytes": 993280,
+          "sha256": "f386830d733e2c484e70c6c543ae9a57d50b088bb49283acdef7030fd850bc4f",
+          "float_values": 248320,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 225143336,
+          "sha256": "a5b4b43303848070fb8734b1d19eea6db63298722f38f439ace2b84edb1be7ba"
+        }
+      },
+      "logits_bitwise_equal": true,
+      "state_bitwise_equal": true,
+      "ids_equal": true,
+      "prompt_ids_equal": true,
+      "within_managed_caps": true
+    },
+    "long": {
+      "stream": {
+        "mode": "stream",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 3481,
+        "state_format": "session-file",
+        "trace_regex": "",
+        "resume_position": 0,
+        "prefill_only": false,
+        "native_host_expert_cache_bytes": 0,
+        "prefill_seconds": 715.414363017,
+        "ids": [
+          271,
+          248068,
+          271,
+          248069
+        ],
+        "state_bytes": 225235628,
+        "host_used": 4208422038,
+        "device_used": 2147352576,
+        "host_peak": 4286049462,
+        "device_peak": 2147483648,
+        "prompt_ids_sha256": "a67210a9dace2599566c61819a2e31655f79105d0623821287e1a1a5512cab94",
+        "f32": {
+          "bytes": 3973120,
+          "sha256": "ea4d042797b174d4da03bcf4ed18a324664753a5720c8244edc778d022aefea2",
+          "float_values": 993280,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 225235640,
+          "sha256": "7e729c57890f2d0e86ad86e95656bfa21bbd4dc03e9e64dd52fad4e72f39b71d"
+        }
+      },
+      "native": {
+        "mode": "native",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 3481,
+        "state_format": "session-file",
+        "trace_regex": "",
+        "native_host_expert_cache_bytes": 4294967296,
+        "prefill_seconds": 208.507891771,
+        "ids": [
+          271,
+          248068,
+          271,
+          248069
+        ],
+        "state_bytes": 225235628,
+        "prompt_ids_sha256": "a67210a9dace2599566c61819a2e31655f79105d0623821287e1a1a5512cab94",
+        "f32": {
+          "bytes": 3973120,
+          "sha256": "ea4d042797b174d4da03bcf4ed18a324664753a5720c8244edc778d022aefea2",
+          "float_values": 993280,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 225235640,
+          "sha256": "7e729c57890f2d0e86ad86e95656bfa21bbd4dc03e9e64dd52fad4e72f39b71d"
+        }
+      },
+      "logits_bitwise_equal": true,
+      "state_bitwise_equal": true,
+      "ids_equal": true,
+      "prompt_ids_equal": true,
+      "within_managed_caps": true
+    },
+    "ordinary_single_token_unchanged": {
+      "logits": true,
+      "state": true
+    },
+    "original_reduction_arithmetic": {
+      "stream_unfused": 0,
+      "native_unfused": 1267,
+      "stream_fma": 1267,
+      "native_fma": 0
+    },
+    "rejected_direct_output_flag": {
+      "reason": "ggml_set_output propagates to view_src DIV and disables Top-K fusion",
+      "first_affected_layer": 27,
+      "different_router_weights": 6,
+      "max_router_weight_difference": 1.4901161193847656e-08
+    },
+    "scope": "One checkpoint, 3481 prompt tokens, context 4096, microbatch 8, 22 GPU layers, four output rows; no performance qualification",
+    "original_reduction_layout": {
+      "stream": {
+        "weights_bytes": 40,
+        "output_bytes": 10240,
+        "same_start_address": true
+      },
+      "native": {
+        "weights_bytes": 40,
+        "output_bytes": 10240,
+        "same_start_address": false
+      }
+    }
+  },
+  "intermediate_corrected_control": {
+    "runner_sha256": "58453af62e67635455d60925a876228080a320f63f71b8917b88595125c11533",
+    "prompt_sha256": "ff564330c036acd2575b9c4174df6f1223b09d2e55fdc1f3a7d1ced3a0f7ea2e",
+    "streaming_reused_from_previous_long_run": true,
+    "production_changes": false,
+    "ordinary_control_cache_bytes": 4294967296,
+    "runtime_envelope_bytes": 2147483648,
+    "host_cap_bytes": 4294967296,
+    "device_cap_bytes": 2147483648,
+    "prefix8": {
+      "stream": {
+        "mode": "stream",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 8,
+        "state_format": "session-file",
+        "trace_regex": "",
+        "native_host_expert_cache_bytes": 0,
+        "prefill_seconds": 1.661866282,
+        "ids": [
+          369,
+          264,
+          6891,
+          11
+        ],
+        "state_bytes": 118378364,
+        "host_used": 4208422038,
+        "device_used": 2147287040,
+        "host_peak": 4280124358,
+        "device_peak": 2147483648,
+        "prompt_ids_sha256": "c626e5941884bd8ed5d1aef56f30acb33b7a6cc6286a5e3cb6fe9fdfe02ff4df",
+        "f32": {
+          "bytes": 3973120,
+          "sha256": "5ebcdf4a857bcb41dd7ed44716dbba7e547d646641ea02126dd3aabc3b61890c",
+          "float_values": 993280,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 118378376,
+          "sha256": "d012beff3eb0beb5af7199c8fcf6f6c3034888b0b70ab170b37024155d5f1c9e"
+        }
+      },
+      "native": {
+        "mode": "native",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 8,
+        "state_format": "session-file",
+        "trace_regex": "",
+        "native_host_expert_cache_bytes": 4294967296,
+        "prefill_seconds": 0.566417952,
+        "ids": [
+          369,
+          264,
+          6891,
+          11
+        ],
+        "state_bytes": 118378364,
+        "prompt_ids_sha256": "c626e5941884bd8ed5d1aef56f30acb33b7a6cc6286a5e3cb6fe9fdfe02ff4df",
+        "f32": {
+          "bytes": 3973120,
+          "sha256": "5ebcdf4a857bcb41dd7ed44716dbba7e547d646641ea02126dd3aabc3b61890c",
+          "float_values": 993280,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 118378376,
+          "sha256": "d012beff3eb0beb5af7199c8fcf6f6c3034888b0b70ab170b37024155d5f1c9e"
+        }
+      },
+      "logits_bitwise_equal": true,
+      "state_bitwise_equal": true,
+      "ids_equal": true,
+      "prompt_ids_equal": true,
+      "within_managed_caps": true
+    },
+    "long": {
+      "stream": {
+        "mode": "stream",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 3481,
+        "state_format": "session-file",
+        "native_host_expert_cache_bytes": 0,
+        "prefill_seconds": 724.570182344,
+        "ids": [
+          271,
+          248068,
+          271,
+          248069
+        ],
+        "state_bytes": 225235628,
+        "host_used": 4208422038,
+        "device_used": 2147352576,
+        "host_peak": 4286049462,
+        "device_peak": 2147483648,
+        "prompt_ids_sha256": "a67210a9dace2599566c61819a2e31655f79105d0623821287e1a1a5512cab94",
+        "f32": {
+          "bytes": 3973120,
+          "sha256": "ea4d042797b174d4da03bcf4ed18a324664753a5720c8244edc778d022aefea2",
+          "float_values": 993280,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 225235640,
+          "sha256": "38c035d167d6a690395530461345f9f5b6f169eba894617da201ec204c1eb5e2"
+        }
+      },
+      "native": {
+        "mode": "native",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 3481,
+        "state_format": "session-file",
+        "trace_regex": "",
+        "native_host_expert_cache_bytes": 4294967296,
+        "prefill_seconds": 208.507891771,
+        "ids": [
+          271,
+          248068,
+          271,
+          248069
+        ],
+        "state_bytes": 225235628,
+        "prompt_ids_sha256": "a67210a9dace2599566c61819a2e31655f79105d0623821287e1a1a5512cab94",
+        "f32": {
+          "bytes": 3973120,
+          "sha256": "ea4d042797b174d4da03bcf4ed18a324664753a5720c8244edc778d022aefea2",
+          "float_values": 993280,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 225235640,
+          "sha256": "7e729c57890f2d0e86ad86e95656bfa21bbd4dc03e9e64dd52fad4e72f39b71d"
+        }
+      },
+      "logits_bitwise_equal": true,
+      "state_bitwise_equal": false,
+      "ids_equal": true,
+      "prompt_ids_equal": true,
+      "within_managed_caps": true
+    },
+    "localization": {
+      "layers8": [
+        {
+          "key": [
+            "model.input_embed",
+            0
+          ],
+          "op_stream": "CUSTOM",
+          "op_native": "GET_ROWS",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "hc_init",
+            0
+          ],
+          "op_stream": "REPEAT",
+          "op_native": "REPEAT",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-0",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-1",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-2",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-3",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-4",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-5",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-6",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-7",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-8",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-9",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-10",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-11",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-12",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-13",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-14",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-15",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-16",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-17",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-18",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-19",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-20",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-21",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-22",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-23",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-24",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-25",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-26",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "l_last-27",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 79247,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.0008700690232217312
+        },
+        {
+          "key": [
+            "l_last-28",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81896,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.001658063381910324
+        },
+        {
+          "key": [
+            "l_last-29",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81910,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.003120899200439453
+        },
+        {
+          "key": [
+            "l_last-30",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81911,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.02593352645635605
+        },
+        {
+          "key": [
+            "l_last-31",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81918,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.034571153577417135
+        },
+        {
+          "key": [
+            "l_last-32",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81918,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.040124017745256424
+        },
+        {
+          "key": [
+            "l_last-33",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81914,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.04742032289505005
+        },
+        {
+          "key": [
+            "l_last-34",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.04246073216199875
+        },
+        {
+          "key": [
+            "l_last-35",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81917,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.0523579865694046
+        },
+        {
+          "key": [
+            "l_last-36",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81918,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.08711117506027222
+        },
+        {
+          "key": [
+            "l_last-37",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81919,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.08726179599761963
+        },
+        {
+          "key": [
+            "l_last-38",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.08750969171524048
+        },
+        {
+          "key": [
+            "l_last-39",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.11758190393447876
+        },
+        {
+          "key": [
+            "l_last-40",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.12710559368133545
+        },
+        {
+          "key": [
+            "l_last-41",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.15750837326049805
+        },
+        {
+          "key": [
+            "l_last-42",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.1519712209701538
+        },
+        {
+          "key": [
+            "l_last-43",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.14621692895889282
+        },
+        {
+          "key": [
+            "l_last-44",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.2788369655609131
+        },
+        {
+          "key": [
+            "l_last-45",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.28473758697509766
+        },
+        {
+          "key": [
+            "l_last-46",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 81920,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.4751553535461426
+        },
+        {
+          "key": [
+            "l_last-47",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 10240,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.5115652084350586
+        },
+        {
+          "key": [
+            "result_norm",
+            0
+          ],
+          "op_stream": "SCALE",
+          "op_native": "SCALE",
+          "different": 2560,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 3.396392822265625
+        },
+        {
+          "key": [
+            "result_output",
+            0
+          ],
+          "op_stream": "MUL_MAT",
+          "op_native": "MUL_MAT",
+          "different": 248320,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.804682195186615
+        }
+      ],
+      "layers8_preserves_untraced_logits": {
+        "stream": true,
+        "native": true
+      },
+      "stage27": [
+        {
+          "key": [
+            "l_last-26",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "hc_norm-27",
+            0
+          ],
+          "op_stream": "RESHAPE",
+          "op_native": "RESHAPE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "hc_mixed-27",
+            0
+          ],
+          "op_stream": "DSV4_HC_PRE",
+          "op_native": "DSV4_HC_PRE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "attn_output-27",
+            0
+          ],
+          "op_stream": "MUL_MAT",
+          "op_native": "MUL_MAT",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "hc_norm-27",
+            1
+          ],
+          "op_stream": "RESHAPE",
+          "op_native": "RESHAPE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "hc_mixed-27",
+            1
+          ],
+          "op_stream": "DSV4_HC_PRE",
+          "op_native": "DSV4_HC_PRE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_out-27",
+            0
+          ],
+          "op_stream": "ADD",
+          "op_native": "ADD",
+          "different": 20480,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.00044059939682483673
+        },
+        {
+          "key": [
+            "ffn_shexp_gated-27",
+            0
+          ],
+          "op_stream": "MUL",
+          "op_native": "MUL",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_out-27",
+            0
+          ],
+          "op_stream": "ADD",
+          "op_native": "ADD",
+          "different": 20480,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.00044059939682483673
+        },
+        {
+          "key": [
+            "l_last-27",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 79247,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.0008700690232217312
+        }
+      ],
+      "stage27_preserves_untraced_logits": {
+        "stream": true,
+        "native": true
+      },
+      "moe27": [
+        {
+          "key": [
+            "hc_mixed-27",
+            0
+          ],
+          "op_stream": "DSV4_HC_PRE",
+          "op_native": "DSV4_HC_PRE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "hc_mixed-27",
+            1
+          ],
+          "op_stream": "DSV4_HC_PRE",
+          "op_native": "DSV4_HC_PRE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_logits-27",
+            0
+          ],
+          "op_stream": "MUL_MAT",
+          "op_native": "MUL_MAT",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_probs-27",
+            0
+          ],
+          "op_stream": "SOFT_MAX",
+          "op_native": "SOFT_MAX",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_argsort-27",
+            0
+          ],
+          "op_stream": "ARGSORT",
+          "op_native": "ARGSORT",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_topk-27",
+            0
+          ],
+          "op_stream": "VIEW",
+          "op_native": "VIEW",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_weights-27",
+            0
+          ],
+          "op_stream": "GET_ROWS",
+          "op_native": "GET_ROWS",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_weights_sum-27",
+            0
+          ],
+          "op_stream": "SUM_ROWS",
+          "op_native": "SUM_ROWS",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_weights_sum_clamped-27",
+            0
+          ],
+          "op_stream": "CLAMP",
+          "op_native": "CLAMP",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_weights_norm-27",
+            0
+          ],
+          "op_stream": "DIV",
+          "op_native": "DIV",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_gate-27",
+            0
+          ],
+          "op_stream": "CUSTOM",
+          "op_native": "MUL_MAT_ID",
+          "different": 51197,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.013054430484771729
+        },
+        {
+          "key": [
+            "ffn_moe_up-27",
+            0
+          ],
+          "op_stream": "CUSTOM",
+          "op_native": "MUL_MAT_ID",
+          "different": 51200,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.012952595949172974
+        },
+        {
+          "key": [
+            "ffn_moe_swiglu-27",
+            0
+          ],
+          "op_stream": "GLU",
+          "op_native": "GLU",
+          "different": 51199,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.0115395188331604
+        },
+        {
+          "key": [
+            "ffn_moe_down-27",
+            0
+          ],
+          "op_stream": "CUSTOM",
+          "op_native": "MUL_MAT_ID",
+          "different": 204800,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.001690044067800045
+        },
+        {
+          "key": [
+            "ffn_moe_weighted-27",
+            0
+          ],
+          "op_stream": "MUL",
+          "op_native": "MUL",
+          "different": 204800,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.0003646597033366561
+        },
+        {
+          "key": [
+            "ffn_moe_out-27",
+            0
+          ],
+          "op_stream": "ADD",
+          "op_native": "ADD",
+          "different": 20480,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.00044060032814741135
+        },
+        {
+          "key": [
+            "l_last-27",
+            0
+          ],
+          "op_stream": "DSV4_HC_POST",
+          "op_native": "DSV4_HC_POST",
+          "different": 79247,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.0008700727485120296
+        }
+      ],
+      "moe27_preserves_untraced_logits": {
+        "stream": false,
+        "native": false
+      },
+      "input27": [
+        {
+          "key": [
+            "hc_mixed-27",
+            0
+          ],
+          "op_stream": "DSV4_HC_PRE",
+          "op_native": "DSV4_HC_PRE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "hc_mixed-27",
+            1
+          ],
+          "op_stream": "DSV4_HC_PRE",
+          "op_native": "DSV4_HC_PRE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        },
+        {
+          "key": [
+            "ffn_moe_gate-27",
+            0
+          ],
+          "op_stream": "CUSTOM",
+          "op_native": "MUL_MAT_ID",
+          "different": 51197,
+          "first": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "max_abs": 0.013054430484771729
+        },
+        {
+          "key": [
+            "ffn_moe_gate-27.input",
+            0
+          ],
+          "op_stream": "NONE",
+          "op_native": "NONE",
+          "different": 0,
+          "first": null,
+          "max_abs": 0.0
+        }
+      ],
+      "input27_preserves_untraced_logits": {
+        "stream": true,
+        "native": true
+      }
+    },
+    "projection_replay": {
+      "log": "ggml_cuda_init: found 1 CUDA devices (Total VRAM: 7807 MiB):\n  Device 0: NVIDIA GeForce RTX 4070 Laptop GPU, compute capability 8.9, VMM: yes, VRAM: 7807 MiB\nstart native CUDA iq2_xxs tokens=8\nstart streamed\nexact CUDA iq2_xxs tokens=8 floats=51200\nPASS host_peak=3222072672 device_peak=554041344 host_after=3221225472 device_after=536870912\n",
+      "cuda_streaming_equal": true,
+      "cuda_equals_initial_host_projection": false
+    },
+    "native_cache_groups": [
+      "impl:  1 layers, q2_0:   101 slots (19.7%, 10.1 tokens worth)",
+      "impl:  6 layers, iq4_nl:   614 slots (20.0%, 10.2 tokens worth)",
+      "impl:  4 layers, iq4_nl:   409 slots (20.0%, 10.2 tokens worth)",
+      "impl:  1 layers, iq4_nl:   101 slots (19.7%, 10.1 tokens worth)",
+      "impl:  1 layers, q2_0:   101 slots (19.7%, 10.1 tokens worth)",
+      "impl:  3 layers, iq4_nl:   306 slots (19.9%, 10.2 tokens worth)",
+      "impl:  3 layers, q2_0:   306 slots (19.9%, 10.2 tokens worth)",
+      "impl:  1 layers, iq4_nl:   101 slots (19.7%, 10.1 tokens worth)",
+      "impl:  1 layers, q2_0:   101 slots (19.7%, 10.1 tokens worth)"
+    ],
+    "initial_cache_groups": [
+      "impl:  1 layers, q2_0:    50 slots (9.8%, 5.0 tokens worth)",
+      "impl:  6 layers, iq4_nl:   306 slots (10.0%, 5.1 tokens worth)",
+      "impl:  4 layers, iq4_nl:   204 slots (10.0%, 5.1 tokens worth)",
+      "impl:  1 layers, iq4_nl:    50 slots (9.8%, 5.0 tokens worth)",
+      "impl:  1 layers, q2_0:    50 slots (9.8%, 5.0 tokens worth)",
+      "impl:  3 layers, iq4_nl:   152 slots (9.9%, 5.1 tokens worth)",
+      "impl:  3 layers, q2_0:   152 slots (9.9%, 5.1 tokens worth)",
+      "impl:  1 layers, iq4_nl:    50 slots (9.8%, 5.0 tokens worth)",
+      "impl:  1 layers, q2_0:    50 slots (9.8%, 5.0 tokens worth)"
+    ]
+  },
+  "initial_mismatched_placement": {
+    "scope": "One 3481-token Qwen4Exp prefill and up to four greedy outputs, context 4096, CUDA",
+    "prompt_sha256": "ff564330c036acd2575b9c4174df6f1223b09d2e55fdc1f3a7d1ced3a0f7ea2e",
+    "runner_sha256": "a30afdddda3a5011e20c0bdd961e68eaa36fd712dc4e1f757609d46b4d193fe6",
+    "runtime_envelope_bytes": 2147483648,
+    "host_cap_bytes": 4294967296,
+    "device_cap_bytes": 2147483648,
+    "memory_measurement": "shared managed ledger, not whole-process RSS or all driver allocations",
+    "order": [
+      "stream",
+      "native"
+    ],
+    "runs": {
+      "stream": {
+        "mode": "stream",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 3481,
+        "state_format": "session-file",
+        "native_host_expert_cache_bytes": 0,
+        "prefill_seconds": 724.570182344,
+        "ids": [
+          271,
+          248068,
+          271,
+          248069
+        ],
+        "state_bytes": 225235628,
+        "host_used": 4208422038,
+        "device_used": 2147352576,
+        "host_peak": 4286049462,
+        "device_peak": 2147483648,
+        "prompt_ids_sha256": "a67210a9dace2599566c61819a2e31655f79105d0623821287e1a1a5512cab94",
+        "f32": {
+          "bytes": 3973120,
+          "sha256": "ea4d042797b174d4da03bcf4ed18a324664753a5720c8244edc778d022aefea2",
+          "float_values": 993280,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 225235640,
+          "sha256": "38c035d167d6a690395530461345f9f5b6f169eba894617da201ec204c1eb5e2"
+        }
+      },
+      "native": {
+        "mode": "native",
+        "gpu_layers": 22,
+        "context_requested": 4096,
+        "microbatch": 8,
+        "threads": 4,
+        "capture_capacity": 33554432,
+        "prompt_tokens": 3481,
+        "state_format": "session-file",
+        "native_host_expert_cache_bytes": 2147483648,
+        "prefill_seconds": 231.438767063,
+        "ids": [
+          271,
+          248068,
+          198,
+          760
+        ],
+        "state_bytes": 225235628,
+        "prompt_ids_sha256": "a67210a9dace2599566c61819a2e31655f79105d0623821287e1a1a5512cab94",
+        "f32": {
+          "bytes": 3973120,
+          "sha256": "97413606ac4d699e98dd958edceb363388ae79649663380217631923f19a426a",
+          "float_values": 993280,
+          "all_finite": true
+        },
+        "state": {
+          "bytes": 225235640,
+          "sha256": "a9db089cfd77fd814f91bb770de5f2f983aace43ca9357b59c7a6cb54caffd7e"
+        }
+      }
+    },
+    "logits_bitwise_equal": false,
+    "state_bitwise_equal": false,
+    "output_ids_equal": false,
+    "prompt_ids_equal": true,
+    "within_managed_caps": true,
+    "logit_differences": [
+      {
+        "row": 0,
+        "different": 248320,
+        "first_index": 0,
+        "max_abs": 1.1570472717285156,
+        "stream_top": [
+          [
+            271,
+            21.164688110351562
+          ],
+          [
+            25,
+            16.74319076538086
+          ],
+          [
+            11751,
+            16.488628387451172
+          ],
+          [
+            248046,
+            15.575761795043945
+          ],
+          [
+            1076,
+            15.526453971862793
+          ]
+        ],
+        "native_top": [
+          [
+            271,
+            21.293254852294922
+          ],
+          [
+            25,
+            16.884538650512695
+          ],
+          [
+            11751,
+            16.583208084106445
+          ],
+          [
+            248046,
+            15.54825496673584
+          ],
+          [
+            1076,
+            15.53882884979248
+          ]
+        ]
+      },
+      {
+        "row": 1,
+        "different": 248320,
+        "first_index": 0,
+        "max_abs": 0.5090962648391724,
+        "stream_top": [
+          [
+            248068,
+            26.066837310791016
+          ],
+          [
+            57590,
+            19.1783447265625
+          ],
+          [
+            248069,
+            14.191696166992188
+          ],
+          [
+            248044,
+            13.877228736877441
+          ],
+          [
+            760,
+            13.81987190246582
+          ]
+        ],
+        "native_top": [
+          [
+            248068,
+            26.096092224121094
+          ],
+          [
+            57590,
+            19.00814437866211
+          ],
+          [
+            248069,
+            14.080410957336426
+          ],
+          [
+            248044,
+            13.871678352355957
+          ],
+          [
+            760,
+            13.759892463684082
+          ]
+        ]
+      },
+      {
+        "row": 2,
+        "different": 248320,
+        "first_index": 0,
+        "max_abs": 0.5601062774658203,
+        "stream_top": [
+          [
+            271,
+            28.37761688232422
+          ],
+          [
+            198,
+            28.274906158447266
+          ],
+          [
+            1358,
+            13.349199295043945
+          ],
+          [
+            248044,
+            12.091562271118164
+          ],
+          [
+            248046,
+            11.418262481689453
+          ]
+        ],
+        "native_top": [
+          [
+            198,
+            28.835012435913086
+          ],
+          [
+            271,
+            28.801132202148438
+          ],
+          [
+            1358,
+            13.758705139160156
+          ],
+          [
+            248044,
+            12.414117813110352
+          ],
+          [
+            248046,
+            11.831972122192383
+          ]
+        ]
+      },
+      {
+        "row": 3,
+        "different": 248320,
+        "first_index": 0,
+        "max_abs": 24.687227249145508,
+        "stream_top": [
+          [
+            248069,
+            38.012508392333984
+          ],
+          [
+            510,
+            12.185758590698242
+          ],
+          [
+            23400,
+            11.850297927856445
+          ],
+          [
+            61206,
+            11.714973449707031
+          ],
+          [
+            248045,
+            10.641194343566895
+          ]
+        ],
+        "native_top": [
+          [
+            760,
+            23.949087142944336
+          ],
+          [
+            90700,
+            15.379032135009766
+          ],
+          [
+            248069,
+            13.325281143188477
+          ],
+          [
+            32,
+            13.190666198730469
+          ],
+          [
+            1421,
+            12.70125675201416
+          ]
+        ]
+      }
+    ],
+    "status": "Capacity passes; numerical qualification fails",
+    "first_observed_divergence": "All 248320 logits already differ at the end of prefill; first internal divergent operation not localized",
+    "state_comparison_limit": "Final state follows different third generated input tokens; does not independently localize a state-update defect",
+    "host_peak_headroom_bytes": 8917834,
+    "diagnostic_staging_bound": {
+      "conservative_tensor_range_bytes": 8388608,
+      "old_plus_new_vector_bound_bytes": 25165824,
+      "charged_bytes": 33554432,
+      "note": "Final source tightens the admission assertion from 2x to 3x range size for transient vector growth; checked dimensions satisfy both. Numerical runs used the recorded binary; final target rebuilt without repeating inference."
+    },
+    "unrun": [
+      "full suite",
+      "aggregate verification",
+      "first-operation tensor tracing",
+      "same-token teacher-forced state control",
+      "performance qualification"
+    ]
+  }
+}

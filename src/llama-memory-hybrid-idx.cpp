@@ -3,6 +3,7 @@
 #include "llama-impl.h"
 #include "llama-batch.h"
 #include "llama-io.h"
+#include "llama-prefix-state.h"
 #include "llama-model.h"
 
 #include <algorithm>
@@ -279,7 +280,25 @@ void llama_memory_hybrid_idx::state_read(llama_io_read_i & io, llama_seq_id seq_
             mem_idx->state_read_sinfo(io, seq_id, flags, nullptr, &sinfos_attn);
             // a restore that rewrites cells does it behind the pool layout's back
             if (!sinfos_attn.empty()) {
-                mem_idx_stale_set(seq_id, 0);
+                if (flags & LLAMA_STATE_SEQ_FLAGS_ATOMIC_PREFIX) {
+                    // Complete server-owned text files contain the canonical pools.
+                    // Move the dirty boundary to the append position, but force
+                    // the host-side layout to be rebuilt after remapping cells.
+                    const auto & cells = mem_idx->get_cells(0).seq_pos_get(seq_id);
+                    llama_pos pos = 0;
+                    for (const auto & cell : cells) {
+                        if (cell.first != pos++) {
+                            throw std::runtime_error("prefix checkpoint positions are not contiguous");
+                        }
+                    }
+                    if (seq_id != 0 || pos == 0) {
+                        throw std::runtime_error("prefix checkpoint has no text sequence");
+                    }
+                    mem_idx_stale_clear();
+                    mem_idx_stale_set(seq_id, pos);
+                } else {
+                    mem_idx_stale_set(seq_id, 0);
+                }
             }
         }
 

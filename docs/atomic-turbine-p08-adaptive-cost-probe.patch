@@ -1,0 +1,89 @@
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -789,6 +789,7 @@
+         bool mtp_one_prefill = false;
+         bool mtp_compact_checkpoint = false;
+         bool mtp_retain_checkpoint = false;
++        double mtp_serial_seconds = 0;
+         bool mtp_trace_layers = false;
+         bool mtp_q8_rows = false, mtp_router_rows = false;
+         int read_overlap = -1;
+@@ -887,6 +888,11 @@
+             else if (arg == "--mtp-one-prefill") { mtp_one_prefill = true; }
+             else if (arg == "--mtp-compact-checkpoint") { mtp_compact_checkpoint = true; }
+             else if (arg == "--mtp-retain-checkpoint") { mtp_retain_checkpoint = true; }
++            else if (arg == "--mtp-serial-ms") {
++                const double ms = std::stod(value());
++                if (!std::isfinite(ms) || ms <= 0) { throw std::invalid_argument("invalid serial decode calibration"); }
++                mtp_serial_seconds = ms / 1000;
++            }
+             else if (arg == "--mtp-reject-step") {
+                 mtp_reject_step = std::stoi(value());
+                 if (mtp_reject_step < 0) { throw std::invalid_argument("MTP rejection step must be nonnegative"); }
+@@ -966,6 +972,10 @@
+         if (mtp_retain_checkpoint && !mtp_compact_checkpoint) {
+             throw std::invalid_argument("retained MTP checkpoint requires compact rollback");
+         }
++        if (mtp_serial_seconds && (!mtp_compact_checkpoint || mtp_retain_checkpoint || mtp_reject_step >= 0 ||
++                !trace_path.empty())) {
++            throw std::invalid_argument("MTP cost control requires an untraced compact checkpoint run");
++        }
+         if (mtp_multi_round_probe && (mtp_trace_layers || !mtp_router_rows || ubatch < 2 || tokens < 5)) {
+             throw std::invalid_argument("multi-round probe requires both matvec overrides and room for two pairs");
+         }
+@@ -1189,7 +1199,10 @@
+             }
+             if (mtp_multi_round_probe) { row["mtp_rounds"] = json::array(); }
+             bool rejection_exercised = false;
++            int slow_rounds = 0;
+             for (int step = 0; step < tokens; ++step) {
++                const bool time_round = mtp_serial_seconds && draft.ctx && step != pair_second && step + 2 < tokens;
++                const auto round_start = time_round ? steady_clock::now() : steady_clock::time_point{};
+                 const int output_row = step == pair_second ? 0 : -1;
+                 if (run >= 0 && logits.is_open()) {
+                     logits.write(reinterpret_cast<const char *>(llama_get_logits_ith(ctx.get(), output_row)),
+@@ -1208,7 +1221,7 @@
+                 if (rollback_probe && step == 0) {
+                     row["rollback"] = probe_rollback(*model, ctx.get(), batch.get(), count, token);
+                 }
+-                if (mtp_multi_round_probe && step != pair_second && step + 2 < tokens) {
++                if (mtp_multi_round_probe && draft.ctx && step != pair_second && step + 2 < tokens) {
+                     // The verifier restores draft KV to the prefix used for its proposal.
+                     // Keep that prefix and append only the newly committed tokens.
+                     if (!mtp_retain_draft_prefix || step == 0) {
+@@ -1276,10 +1289,26 @@
+                     set_batch(batch.get(), {token}, count + step);
+                     if (preview.file) { preview.begin_call(count + step); }
+                     if (llama_process(ctx.get(), LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) { throw std::runtime_error("decode failed"); }
+-                    if (mtp_carry_hidden && hidden_tail.last >= 0 && step + 2 < tokens) {
++                    if (mtp_carry_hidden && draft.ctx && hidden_tail.last >= 0 && step + 2 < tokens) {
+                         hidden_tail.append(ctx.get(), -1, count + step);
+                     }
+                 }
++                if (time_round) {
++                    auto & round = row["mtp_rounds"].back();
++                    const int count = round["batch_committed"].get<bool>() ? 2 : 1;
++                    const double elapsed = seconds(round_start);
++                    round["cycle_seconds"] = elapsed;
++                    round["cycle_committed_tokens"] = count;
++                    slow_rounds = elapsed > count * mtp_serial_seconds ? slow_rounds + 1 : 0;
++                    if (slow_rounds == 2) {
++                        // An accepted pair still owns two output rows. Changing the
++                        // NextN configuration here could discard them before publish.
++                        draft.ctx.reset();
++                        draft.model.reset();
++                        row["mtp_disabled_at_step"] = step;
++                        report["memory_after_draft_release"] = memory_snapshot(ctx.get());
++                    }
++                }
+             }
+             if (mtp_reject_step >= 0 && !rejection_exercised) {
+                 throw std::runtime_error("MTP rejection control did not reach the requested verifier round");
+@@ -1316,6 +1345,7 @@
+             report["memory_after_draft_release"] = memory_snapshot(ctx.get());
+         }
+         report["process_seconds_before_cleanup"] = seconds(process_start);
++        if (mtp_serial_seconds) { report["mtp_serial_seconds_per_token"] = mtp_serial_seconds; }
+         std::ofstream file(output);
+         file << report.dump(2) << '\n';
+         if (!file || (logits.is_open() && !logits)) { throw std::runtime_error("cannot write diagnostic output"); }

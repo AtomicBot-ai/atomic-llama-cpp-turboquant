@@ -1,0 +1,137 @@
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -348,12 +348,24 @@
+         return rows.data() + (position % 3) * width;
+     }
+ };
++
++static json mtp_cache_sample(const llama_context * ctx) {
++    llama_expert_streaming_data stats {};
++    llama_budget_data budget {};
++    if (!llama_get_expert_streaming_stats(ctx, &stats) || !llama_memory_budget_get(ctx, &budget)) {
++        throw std::runtime_error("MTP cache counters unavailable");
++    }
++    return {{"hits", stats.hits}, {"misses", stats.misses}, {"evictions", stats.evictions},
++        {"logical_read_bytes", stats.logical_read_bytes}, {"budget_request_id", budget.request_id}};
++}
+ 
+ static json probe_mtp(const llama_model & model, llama_context * target, llama_batch_ext * target_batch,
+         llama_context * draft, const std::vector<llama_token> & prompt, llama_token seed, size_t vocab_size,
+         bool try_batch_commit, mtp_layer_probe * layers, int (*q8_probe)(bool), int (*router_probe)(bool),
+         bool retain_draft_prefix = false, mtp_hidden_tail * tail = nullptr, bool force_rejection = false,
+-        bool offline_control = false, bool prefill_hidden = false, bool compact_checkpoint = false) {
++        bool offline_control = false, bool prefill_hidden = false, bool compact_checkpoint = false,
++        std::vector<uint8_t> * retained_checkpoint = nullptr) {
++    const auto cache_before_round = compact_checkpoint ? mtp_cache_sample(target) : json{};
+     const size_t width = llama_model_n_embd_out(&model);
+     const llama_pos pos = prompt.size();
+     auto ledger = model.memory_contract->ledger;
+@@ -482,15 +494,27 @@
+             return result;
+         }
+         constexpr auto partial = LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
++        uint8_t * checkpoint_data = nullptr;
++        size_t checkpoint_size = 0;
+         if (compact_checkpoint) {
+             const size_t n = llama_state_seq_get_size_ext(target, 0, partial);
+             if (n == 0) { throw std::runtime_error("compact checkpoint size missing"); }
+-            target_ticket = reserve_probe(model, target, n);
+-            target_state.resize(n);
+-            target_ticket.commit();
+-            if (llama_state_seq_get_data_ext(target, target_state.data(), n, 0, partial) != n) {
++            result["cache_before_checkpoint"] = mtp_cache_sample(target);
++            if (retained_checkpoint) {
++                if (n > retained_checkpoint->size()) { throw std::runtime_error("retained MTP checkpoint too small"); }
++                checkpoint_data = retained_checkpoint->data();
++            } else {
++                target_ticket = reserve_probe(model, target, n);
++                target_state.resize(n);
++                target_ticket.commit();
++                checkpoint_data = target_state.data();
++            }
++            checkpoint_size = n;
++            result["cache_after_checkpoint_reserve"] = mtp_cache_sample(target);
++            if (llama_state_seq_get_data_ext(target, checkpoint_data, n, 0, partial) != n) {
+                 throw std::runtime_error("compact checkpoint capture failed");
+             }
++            result["cache_before_round"] = cache_before_round;
+             result["full_checkpoint_bytes"] = llama_state_get_size(target);
+             result["compact_checkpoint_bytes"] = n;
+         }
+@@ -610,6 +634,7 @@
+             result["batch_layers"] = std::move(layers->rows);
+         }
+         const auto verified_id = llama_sampler_sample(greedy.get(), target, 0);
++        if (compact_checkpoint) { result["cache_after_verify"] = mtp_cache_sample(target); }
+         if (offline_control) {
+             const bool accept = verified_id == proposal;
+             if (force_rejection && accept) { throw std::runtime_error("offline control suffix was accepted"); }
+@@ -622,7 +647,7 @@
+                 if (compact_checkpoint) {
+                     // Restore recurrent state before trimming the suffix from KV.
+                     auto * memory = llama_get_memory(target);
+-                    if (llama_state_seq_set_data_ext(target, target_state.data(), target_state.size(), 0, partial) != target_state.size() ||
++                    if (llama_state_seq_set_data_ext(target, checkpoint_data, checkpoint_size, 0, partial) != checkpoint_size ||
+                             !llama_memory_seq_rm(memory, 0, pos, -1) || llama_memory_seq_pos_max(memory, 0) != pos - 1) {
+                         throw std::runtime_error("compact checkpoint restore failed");
+                     }
+@@ -763,6 +788,7 @@
+         bool mtp_offline_control = false;
+         bool mtp_one_prefill = false;
+         bool mtp_compact_checkpoint = false;
++        bool mtp_retain_checkpoint = false;
+         bool mtp_trace_layers = false;
+         bool mtp_q8_rows = false, mtp_router_rows = false;
+         int read_overlap = -1;
+@@ -860,6 +886,7 @@
+             else if (arg == "--mtp-offline-control") { mtp_offline_control = true; }
+             else if (arg == "--mtp-one-prefill") { mtp_one_prefill = true; }
+             else if (arg == "--mtp-compact-checkpoint") { mtp_compact_checkpoint = true; }
++            else if (arg == "--mtp-retain-checkpoint") { mtp_retain_checkpoint = true; }
+             else if (arg == "--mtp-reject-step") {
+                 mtp_reject_step = std::stoi(value());
+                 if (mtp_reject_step < 0) { throw std::invalid_argument("MTP rejection step must be nonnegative"); }
+@@ -936,6 +963,9 @@
+         if (mtp_compact_checkpoint && !mtp_one_prefill) {
+             throw std::invalid_argument("compact MTP checkpoint requires one-pass prefill");
+         }
++        if (mtp_retain_checkpoint && !mtp_compact_checkpoint) {
++            throw std::invalid_argument("retained MTP checkpoint requires compact rollback");
++        }
+         if (mtp_multi_round_probe && (mtp_trace_layers || !mtp_router_rows || ubatch < 2 || tokens < 5)) {
+             throw std::invalid_argument("multi-round probe requires both matvec overrides and room for two pairs");
+         }
+@@ -1129,6 +1159,8 @@
+             llama_perf_context_reset(ctx.get());
+             std::vector<llama_token> committed;
+             std::string text;
++            llama_memory_budget::ticket checkpoint_ticket;
++            std::vector<uint8_t> checkpoint;
+             json row = {{"memory_before", memory_snapshot(ctx.get())}};
+             row["resizes"] = json::array();
+             const auto start = steady_clock::now();
+@@ -1138,6 +1170,14 @@
+             if (llama_process(ctx.get(), LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) { throw std::runtime_error("prefill failed"); }
+             row["prefill_seconds"] = seconds(start);
+             row["memory_after_prefill"] = memory_snapshot(ctx.get());
++            if (mtp_retain_checkpoint) {
++                const size_t size = llama_state_seq_get_size_ext(ctx.get(), 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++                if (!size) { throw std::runtime_error("cannot size retained MTP checkpoint"); }
++                checkpoint_ticket = reserve_probe(*model, ctx.get(), size);
++                checkpoint.resize(size);
++                checkpoint_ticket.commit();
++                row["cache_after_retained_reserve"] = mtp_cache_sample(ctx.get());
++            }
+             row["prefill_resize_request_id"] = prefill.request_id;
+             int pair_second = -1;
+             llama_memory_budget::ticket tail_ticket;
+@@ -1179,7 +1219,8 @@
+                     auto round = probe_mtp(*model, ctx.get(), batch.get(), draft.ctx.get(), prefix, token,
+                             llama_vocab_n_tokens(vocab), true, nullptr, q8_probe, router_probe, mtp_retain_draft_prefix,
+                             mtp_carry_hidden ? &hidden_tail : nullptr, step == mtp_reject_step, mtp_offline_control,
+-                            mtp_one_prefill && step == 0, mtp_compact_checkpoint);
++                            mtp_one_prefill && step == 0, mtp_compact_checkpoint,
++                            mtp_retain_checkpoint ? &checkpoint : nullptr);
+                     round["step"] = step;
+                     rejection_exercised |= round.contains("forced_rejection");
+                     if (round["batch_committed"].get<bool>()) { pair_second = step + 1; }

@@ -1358,6 +1358,7 @@ struct ggml_backend_cuda_context {
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {};
     void * cublas_workspaces[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {};
     size_t cublas_workspace_sizes[GGML_CUDA_MAX_DEVICES] = {};
+    ggml_backend_buffer_t observed_cublas_workspace = nullptr;
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11080
     cublasLtHandle_t cublaslt_handles[GGML_CUDA_MAX_DEVICES] = {};
 #endif
@@ -1401,12 +1402,11 @@ struct ggml_backend_cuda_context {
 
     ggml_cuda_stream_context & stream_context() { return *concurrent_stream_context; }
 
+    void init_observed_cublas_workspace(size_t bytes);
+
     cublasHandle_t cublas_handle() {
         if (cublas_handles[device][curr_stream_no] == nullptr) {
             ggml_cuda_set_device(device);
-            CUBLAS_CHECK(cublasCreate(&cublas_handles[device][curr_stream_no]));
-            CUBLAS_CHECK(cublasSetMathMode(cublas_handles[device][curr_stream_no], CUBLAS_TF32_TENSOR_OP_MATH));
-            CUBLAS_CHECK(cublasSetStream(cublas_handles[device][curr_stream_no], stream()));
 #if (defined(GGML_USE_HIP) && HIP_VERSION >= 70000000) || (!defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (CUBLAS_VER_MAJOR > 11 || (CUBLAS_VER_MAJOR == 11 && CUBLAS_VER_MINOR >= 2)))
             if (cublas_workspace_sizes[device] == 0) {
 #if defined(GGML_USE_HIP)
@@ -1416,8 +1416,24 @@ struct ggml_backend_cuda_context {
                 cublas_workspace_sizes[device] = (cc >= GGML_CUDA_CC_HOPPER) ? 32 * 1024 * 1024 : 4 * 1024 * 1024;
 #endif
             }
-            CUDA_CHECK(cudaMalloc(&cublas_workspaces[device][curr_stream_no], cublas_workspace_sizes[device]));
-            CUBLAS_CHECK(cublasSetWorkspace(cublas_handles[device][curr_stream_no], cublas_workspaces[device][curr_stream_no], cublas_workspace_sizes[device]));
+            if (observed_pool) {
+                // A denied allocation leaves the handle uninitialized so a
+                // retry cannot silently fall back to cuBLAS-owned workspace.
+                init_observed_cublas_workspace(cublas_workspace_sizes[device]);
+            }
+#endif
+            CUBLAS_CHECK(cublasCreate(&cublas_handles[device][curr_stream_no]));
+            CUBLAS_CHECK(cublasSetMathMode(cublas_handles[device][curr_stream_no], CUBLAS_TF32_TENSOR_OP_MATH));
+            CUBLAS_CHECK(cublasSetStream(cublas_handles[device][curr_stream_no], stream()));
+#if (defined(GGML_USE_HIP) && HIP_VERSION >= 70000000) || (!defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (CUBLAS_VER_MAJOR > 11 || (CUBLAS_VER_MAJOR == 11 && CUBLAS_VER_MINOR >= 2)))
+            void * workspace;
+            if (observed_pool) {
+                workspace = ggml_backend_buffer_get_base(observed_cublas_workspace);
+            } else {
+                CUDA_CHECK(cudaMalloc(&cublas_workspaces[device][curr_stream_no], cublas_workspace_sizes[device]));
+                workspace = cublas_workspaces[device][curr_stream_no];
+            }
+            CUBLAS_CHECK(cublasSetWorkspace(cublas_handles[device][curr_stream_no], workspace, cublas_workspace_sizes[device]));
 #endif
         }
         return cublas_handles[device][curr_stream_no];
@@ -1434,6 +1450,7 @@ struct ggml_backend_cuda_context {
 #endif
 
     // pool
+    bool observed_pool = false;
     std::unique_ptr<ggml_cuda_pool> pools[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS];
 
     static std::unique_ptr<ggml_cuda_pool> new_pool_for_device(ggml_backend_cuda_context & ctx, int device, int stream_no);

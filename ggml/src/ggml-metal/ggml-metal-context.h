@@ -18,6 +18,8 @@ void ggml_metal_free(ggml_metal_t ctx);
 const char * ggml_metal_get_name(ggml_metal_t ctx);
 
 void ggml_metal_synchronize(ggml_metal_t ctx);
+// Diagnostic only: query after synchronization, before the next graph submission.
+bool ggml_metal_last_graph_timing(ggml_metal_t ctx, uint64_t * gpu_ns, uint64_t * buffers);
 
 void ggml_metal_set_tensor_async(ggml_metal_t ctx, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
 void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size);

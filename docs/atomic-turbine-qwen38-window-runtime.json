@@ -1,0 +1,716 @@
+{
+  "status": "isolated Metal layer-window prototype; not enabled in production",
+  "workspace": "/tmp/qwen38-layer-window.vDqugZ",
+  "base_revision": "31953bcf74ba489a8bbb0c936c5fcf24fcf9485c",
+  "profile": {
+    "model": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS",
+    "backend": "Metal",
+    "engine_cap_bytes": 8589934592,
+    "context": 4096,
+    "microbatch": 8,
+    "threads": 8,
+    "sequences": 1,
+    "prompt_prefix_tokens": [
+      16,
+      64
+    ],
+    "generated_logit_rows": 4,
+    "decode_steps": 3
+  },
+  "cases": {
+    "native": {
+      "report": {
+        "mode": "native",
+        "input_ids": [
+          4274,
+          411,
+          2002,
+          17593,
+          15060,
+          13,
+          561,
+          17593,
+          4108,
+          5134,
+          421,
+          279,
+          6511,
+          314,
+          9338,
+          369
+        ],
+        "context": 4096,
+        "batch": 16,
+        "microbatch": 8,
+        "threads": 8,
+        "state_staging_bytes": 33554432,
+        "prefill_seconds": 10.113312917,
+        "ids": [
+          11751,
+          13,
+          4213,
+          11
+        ]
+      },
+      "comparison": null,
+      "layer_boundaries": 0,
+      "graph_admission": [],
+      "budget_at_window_end": []
+    },
+    "serial": {
+      "report": {
+        "mode": "stream",
+        "input_ids": [
+          4274,
+          411,
+          2002,
+          17593,
+          15060,
+          13,
+          561,
+          17593,
+          4108,
+          5134,
+          421,
+          279,
+          6511,
+          314,
+          9338,
+          369
+        ],
+        "context": 4096,
+        "batch": 16,
+        "microbatch": 8,
+        "threads": 8,
+        "state_staging_bytes": 33554432,
+        "prefill_seconds": 0.804578208,
+        "ids": [
+          11751,
+          13,
+          4213,
+          11
+        ],
+        "budget": {
+          "used": 8588608106,
+          "peak": 8589843802,
+          "cap": 8589934592
+        }
+      },
+      "comparison": {
+        "f32": {
+          "equal": true,
+          "bytes": 3973120,
+          "candidate_bytes": 3973120,
+          "first_different_byte": null,
+          "candidate_sha256": "4649aeb5e8596790dbe09bd6133ffa3da693cbe358db2d04f6c7aea4dffd8a33"
+        },
+        "prefill.state": {
+          "equal": true,
+          "bytes": 118532216,
+          "candidate_bytes": 118532216,
+          "first_different_byte": null,
+          "candidate_sha256": "1f1020a113d491c69efc70253d35f9def9a3443b9c4c2884e0f38ab08351e5d3"
+        },
+        "state": {
+          "equal": true,
+          "bytes": 118624520,
+          "candidate_bytes": 118624520,
+          "first_different_byte": null,
+          "candidate_sha256": "54596e1e54d96acb4d514e4edd40c79a439ea0f3467005d5733705069628dc8b"
+        }
+      },
+      "layer_boundaries": 96,
+      "graph_admission": [
+        "WINDOW_GRAPH batch=0 nodes=6487 tensor_bound=7769 outputs=0 metadata=861635552",
+        "WINDOW_GRAPH batch=1 nodes=6487 tensor_bound=7769 outputs=1 metadata=861635552"
+      ],
+      "budget_at_window_end": [
+        "WINDOW_DONE mode=serial used=8588922202 peak=8589843802 cap=8589934592"
+      ]
+    },
+    "interleave": {
+      "report": {
+        "mode": "stream",
+        "input_ids": [
+          4274,
+          411,
+          2002,
+          17593,
+          15060,
+          13,
+          561,
+          17593,
+          4108,
+          5134,
+          421,
+          279,
+          6511,
+          314,
+          9338,
+          369
+        ],
+        "context": 4096,
+        "batch": 16,
+        "microbatch": 8,
+        "threads": 8,
+        "state_staging_bytes": 33554432,
+        "prefill_seconds": 0.726070959,
+        "ids": [
+          11751,
+          13,
+          4213,
+          11
+        ],
+        "budget": {
+          "used": 8588608106,
+          "peak": 8589843802,
+          "cap": 8589934592
+        }
+      },
+      "comparison": {
+        "f32": {
+          "equal": false,
+          "bytes": 3973120,
+          "candidate_bytes": 3973120,
+          "first_different_byte": 0,
+          "candidate_sha256": "86050c24410ffe709286b84fc72d8ca7232a2d246fbfdab96de2d6ab0287957b"
+        },
+        "prefill.state": {
+          "equal": false,
+          "bytes": 118532216,
+          "candidate_bytes": 118532216,
+          "first_different_byte": 8636,
+          "candidate_sha256": "e7b7811113f7606835952bbe9ac9faa824a48a35755f54b8c742d49d30ad4add"
+        },
+        "state": {
+          "equal": false,
+          "bytes": 118624520,
+          "candidate_bytes": 118624520,
+          "first_different_byte": 8708,
+          "candidate_sha256": "85d182e60a4df6f97b52b36ee9b338a5b6bd3b881efe025a4a534dd67c6be167"
+        }
+      },
+      "layer_boundaries": 96,
+      "graph_admission": [
+        "WINDOW_GRAPH batch=0 nodes=6487 tensor_bound=7769 outputs=0 metadata=861635552",
+        "WINDOW_GRAPH batch=1 nodes=6487 tensor_bound=7769 outputs=1 metadata=861635552"
+      ],
+      "budget_at_window_end": [
+        "WINDOW_DONE mode=interleave used=8588922202 peak=8589843802 cap=8589934592"
+      ]
+    },
+    "serial-barrier": {
+      "report": {
+        "mode": "stream",
+        "input_ids": [
+          4274,
+          411,
+          2002,
+          17593,
+          15060,
+          13,
+          561,
+          17593,
+          4108,
+          5134,
+          421,
+          279,
+          6511,
+          314,
+          9338,
+          369
+        ],
+        "context": 4096,
+        "batch": 16,
+        "microbatch": 8,
+        "threads": 8,
+        "state_staging_bytes": 33554432,
+        "prefill_seconds": 0.768506125,
+        "ids": [
+          11751,
+          13,
+          4213,
+          11
+        ],
+        "budget": {
+          "used": 8588608106,
+          "peak": 8589843802,
+          "cap": 8589934592
+        }
+      },
+      "comparison": {
+        "f32": {
+          "equal": true,
+          "bytes": 3973120,
+          "candidate_bytes": 3973120,
+          "first_different_byte": null,
+          "candidate_sha256": "4649aeb5e8596790dbe09bd6133ffa3da693cbe358db2d04f6c7aea4dffd8a33"
+        },
+        "prefill.state": {
+          "equal": true,
+          "bytes": 118532216,
+          "candidate_bytes": 118532216,
+          "first_different_byte": null,
+          "candidate_sha256": "1f1020a113d491c69efc70253d35f9def9a3443b9c4c2884e0f38ab08351e5d3"
+        },
+        "state": {
+          "equal": true,
+          "bytes": 118624520,
+          "candidate_bytes": 118624520,
+          "first_different_byte": null,
+          "candidate_sha256": "54596e1e54d96acb4d514e4edd40c79a439ea0f3467005d5733705069628dc8b"
+        }
+      },
+      "layer_boundaries": 96,
+      "graph_admission": [
+        "WINDOW_GRAPH batch=0 nodes=6487 tensor_bound=7769 outputs=0 metadata=861635552",
+        "WINDOW_GRAPH batch=1 nodes=6487 tensor_bound=7769 outputs=1 metadata=861635552"
+      ],
+      "budget_at_window_end": [
+        "WINDOW_DONE mode=serial used=8588922202 peak=8589843802 cap=8589934592"
+      ]
+    },
+    "interleave-barrier": {
+      "report": {
+        "mode": "stream",
+        "input_ids": [
+          4274,
+          411,
+          2002,
+          17593,
+          15060,
+          13,
+          561,
+          17593,
+          4108,
+          5134,
+          421,
+          279,
+          6511,
+          314,
+          9338,
+          369
+        ],
+        "context": 4096,
+        "batch": 16,
+        "microbatch": 8,
+        "threads": 8,
+        "state_staging_bytes": 33554432,
+        "prefill_seconds": 0.691467333,
+        "ids": [
+          11751,
+          13,
+          4213,
+          11
+        ],
+        "budget": {
+          "used": 8588608106,
+          "peak": 8589843802,
+          "cap": 8589934592
+        }
+      },
+      "comparison": {
+        "f32": {
+          "equal": true,
+          "bytes": 3973120,
+          "candidate_bytes": 3973120,
+          "first_different_byte": null,
+          "candidate_sha256": "4649aeb5e8596790dbe09bd6133ffa3da693cbe358db2d04f6c7aea4dffd8a33"
+        },
+        "prefill.state": {
+          "equal": true,
+          "bytes": 118532216,
+          "candidate_bytes": 118532216,
+          "first_different_byte": null,
+          "candidate_sha256": "1f1020a113d491c69efc70253d35f9def9a3443b9c4c2884e0f38ab08351e5d3"
+        },
+        "state": {
+          "equal": true,
+          "bytes": 118624520,
+          "candidate_bytes": 118624520,
+          "first_different_byte": null,
+          "candidate_sha256": "54596e1e54d96acb4d514e4edd40c79a439ea0f3467005d5733705069628dc8b"
+        }
+      },
+      "layer_boundaries": 96,
+      "graph_admission": [
+        "WINDOW_GRAPH batch=0 nodes=6487 tensor_bound=7769 outputs=0 metadata=861635552",
+        "WINDOW_GRAPH batch=1 nodes=6487 tensor_bound=7769 outputs=1 metadata=861635552"
+      ],
+      "budget_at_window_end": [
+        "WINDOW_DONE mode=interleave used=8588922202 peak=8589843802 cap=8589934592"
+      ]
+    },
+    "native64": {
+      "report": {
+        "mode": "native",
+        "input_ids": [
+          4274,
+          411,
+          2002,
+          17593,
+          15060,
+          13,
+          561,
+          17593,
+          4108,
+          5134,
+          421,
+          279,
+          6511,
+          314,
+          9338,
+          369,
+          11751,
+          13,
+          198,
+          6269,
+          220,
+          15,
+          15,
+          15,
+          25,
+          561,
+          17631,
+          7803,
+          13332,
+          2708,
+          47635,
+          11,
+          264,
+          22316,
+          43776,
+          11,
+          321,
+          14733,
+          22591,
+          13,
+          561,
+          5604,
+          1970,
+          364,
+          411,
+          21254,
+          369,
+          443,
+          15,
+          15,
+          15,
+          13,
+          198,
+          6269,
+          220,
+          15,
+          15,
+          16,
+          25,
+          561,
+          17631,
+          7803,
+          13332,
+          2708
+        ],
+        "context": 4096,
+        "batch": 64,
+        "microbatch": 8,
+        "threads": 8,
+        "state_staging_bytes": 33554432,
+        "prefill_seconds": 23.563766208,
+        "ids": [
+          47635,
+          11,
+          264,
+          22316
+        ]
+      },
+      "comparison": null,
+      "layer_boundaries": 0,
+      "graph_admission": [],
+      "budget_at_window_end": []
+    },
+    "interleave8": {
+      "report": {
+        "mode": "stream",
+        "input_ids": [
+          4274,
+          411,
+          2002,
+          17593,
+          15060,
+          13,
+          561,
+          17593,
+          4108,
+          5134,
+          421,
+          279,
+          6511,
+          314,
+          9338,
+          369,
+          11751,
+          13,
+          198,
+          6269,
+          220,
+          15,
+          15,
+          15,
+          25,
+          561,
+          17631,
+          7803,
+          13332,
+          2708,
+          47635,
+          11,
+          264,
+          22316,
+          43776,
+          11,
+          321,
+          14733,
+          22591,
+          13,
+          561,
+          5604,
+          1970,
+          364,
+          411,
+          21254,
+          369,
+          443,
+          15,
+          15,
+          15,
+          13,
+          198,
+          6269,
+          220,
+          15,
+          15,
+          16,
+          25,
+          561,
+          17631,
+          7803,
+          13332,
+          2708
+        ],
+        "context": 4096,
+        "batch": 64,
+        "microbatch": 8,
+        "threads": 8,
+        "state_staging_bytes": 33554432,
+        "prefill_seconds": 2.561553291,
+        "ids": [
+          47635,
+          11,
+          264,
+          22316
+        ],
+        "budget": {
+          "used": 8588608106,
+          "peak": 8589737514,
+          "cap": 8589934592
+        }
+      },
+      "comparison": {
+        "f32": {
+          "equal": true,
+          "bytes": 3973120,
+          "candidate_bytes": 3973120,
+          "first_different_byte": null,
+          "candidate_sha256": "d98002da4717607a1330b76a4ffb56931f8782f41ff1cfa2dd2ee785bfccc923"
+        },
+        "prefill.state": {
+          "equal": true,
+          "bytes": 120009080,
+          "candidate_bytes": 120009080,
+          "first_different_byte": null,
+          "candidate_sha256": "6f995082b8bbfc07b2caf91fdb0425267f9e6b0c0fc5778fece7d6245a03d8a7"
+        },
+        "state": {
+          "equal": true,
+          "bytes": 120101384,
+          "candidate_bytes": 120101384,
+          "first_different_byte": null,
+          "candidate_sha256": "53d6a29f8d7e5ada47dbee0f84830d52885ea55a0e299c389fa0a8ec11906baa"
+        }
+      },
+      "layer_boundaries": 384,
+      "graph_admission": [
+        "WINDOW_GRAPH batch=0 nodes=6487 tensor_bound=7769 outputs=0 metadata=1750617728 splits=194",
+        "WINDOW_GRAPH batch=1 nodes=6487 tensor_bound=7769 outputs=0 metadata=1750617728 splits=194",
+        "WINDOW_GRAPH batch=2 nodes=6487 tensor_bound=7769 outputs=0 metadata=1750617728 splits=194",
+        "WINDOW_GRAPH batch=3 nodes=6487 tensor_bound=7769 outputs=0 metadata=1750617728 splits=194",
+        "WINDOW_GRAPH batch=4 nodes=6487 tensor_bound=7769 outputs=0 metadata=1750617728 splits=194",
+        "WINDOW_GRAPH batch=5 nodes=6487 tensor_bound=7769 outputs=0 metadata=1750617728 splits=194",
+        "WINDOW_GRAPH batch=6 nodes=6487 tensor_bound=7769 outputs=0 metadata=1750617728 splits=194",
+        "WINDOW_GRAPH batch=7 nodes=6487 tensor_bound=7769 outputs=1 metadata=1750617728 splits=194"
+      ],
+      "budget_at_window_end": [
+        "WINDOW_DONE mode=interleave used=8587984570 peak=8589737514 cap=8589934592"
+      ],
+      "layer_order_verified": true,
+      "admission": {
+        "fixed_bytes": 8415957754,
+        "available_cache_and_staging_bytes": 173976838,
+        "metadata_reservation_bytes": 1750617728,
+        "graphs": 8
+      },
+      "prefill_io": {
+        "hits": 14684,
+        "misses": 37324,
+        "logical_read_bytes": 21827008000
+      }
+    },
+    "stream64": {
+      "report": {
+        "mode": "stream",
+        "input_ids": [
+          4274,
+          411,
+          2002,
+          17593,
+          15060,
+          13,
+          561,
+          17593,
+          4108,
+          5134,
+          421,
+          279,
+          6511,
+          314,
+          9338,
+          369,
+          11751,
+          13,
+          198,
+          6269,
+          220,
+          15,
+          15,
+          15,
+          25,
+          561,
+          17631,
+          7803,
+          13332,
+          2708,
+          47635,
+          11,
+          264,
+          22316,
+          43776,
+          11,
+          321,
+          14733,
+          22591,
+          13,
+          561,
+          5604,
+          1970,
+          364,
+          411,
+          21254,
+          369,
+          443,
+          15,
+          15,
+          15,
+          13,
+          198,
+          6269,
+          220,
+          15,
+          15,
+          16,
+          25,
+          561,
+          17631,
+          7803,
+          13332,
+          2708
+        ],
+        "context": 4096,
+        "batch": 64,
+        "microbatch": 8,
+        "threads": 8,
+        "state_staging_bytes": 33554432,
+        "prefill_seconds": 2.872863791,
+        "prefill_io": {
+          "hits": 0,
+          "misses": 52008,
+          "logical_read_bytes": 30258278400
+        },
+        "ids": [
+          47635,
+          11,
+          264,
+          22316
+        ],
+        "budget": {
+          "used": 8588608106,
+          "peak": 8589657050,
+          "cap": 8589934592
+        }
+      },
+      "comparison": {
+        "f32": {
+          "equal": true,
+          "bytes": 3973120,
+          "candidate_bytes": 3973120,
+          "first_different_byte": null,
+          "candidate_sha256": "d98002da4717607a1330b76a4ffb56931f8782f41ff1cfa2dd2ee785bfccc923"
+        },
+        "prefill.state": {
+          "equal": true,
+          "bytes": 120009080,
+          "candidate_bytes": 120009080,
+          "first_different_byte": null,
+          "candidate_sha256": "6f995082b8bbfc07b2caf91fdb0425267f9e6b0c0fc5778fece7d6245a03d8a7"
+        },
+        "state": {
+          "equal": true,
+          "bytes": 120101384,
+          "candidate_bytes": 120101384,
+          "first_different_byte": null,
+          "candidate_sha256": "53d6a29f8d7e5ada47dbee0f84830d52885ea55a0e299c389fa0a8ec11906baa"
+        }
+      },
+      "layer_boundaries": 0,
+      "graph_admission": [],
+      "budget_at_window_end": []
+    }
+  },
+  "confirmed_failure": {
+    "variant": "interleaving without explicit graph layer barriers",
+    "first_different_microbatch": 1,
+    "first_different_layer": 1,
+    "cause": "PLE layer-one history gather is expanded into the graph before l_last-0; the second microbatch reads stale history before the first reaches PLE.",
+    "correction": "Expand each l_last node before constructing the next layer in the isolated model-builder copy."
+  },
+  "runtime_read_reduction": {
+    "control_bytes": 30258278400,
+    "candidate_bytes": 21827008000,
+    "fraction": 0.278643427380191,
+    "scope": "One 64-token prefill. The current streaming control uses LRU at this prompt length. This does not measure automatic long-prefill retention or the 3481-token fixture."
+  },
+  "timing_scope": "Single unpaired diagnostic runs with uncontrolled OS file cache, metadata construction and per-layer hashing. No stable latency, TPS or long-prompt speedup claim.",
+  "remaining": [
+    "scheduler host metadata footprint",
+    "full-length multi-window prefill",
+    "runtime window admission fallback",
+    "abort and partial-state rollback",
+    "live resize and native pressure",
+    "server integration and multi-sequence use"
+  ],
+  "checks": {
+    "direct_byte_comparisons": true,
+    "interleaved_eight_window_boundaries": 384,
+    "full_suite_run": false,
+    "ordinary_runtime_modified": false
+  }
+}

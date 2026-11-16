@@ -1,6 +1,7 @@
 #include "ggml-cuda.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
+#include "ggml-alloc-observer.h"
 
 #include "ggml-cuda/allreduce.cuh"
 #include "ggml-cuda/common.cuh"
@@ -90,6 +91,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -772,9 +774,52 @@ struct ggml_cuda_pool_debug : public ggml_cuda_pool {
     }
 };
 
+// The opt-in pool lets ggml buffers own the admission tickets. Each block
+// returns its physical charge when freed, with no retained VRAM between uses.
+struct ggml_cuda_pool_observed : ggml_cuda_pool {
+    explicit ggml_cuda_pool_observed(int device) : device(device) {}
+
+    void * alloc(size_t size, size_t * actual_size) override {
+        if (!ggml_backend_has_alloc_observer()) {
+            throw std::bad_alloc();
+        }
+        auto * buffer = ggml_backend_buft_alloc_buffer(ggml_backend_cuda_buffer_type(device), size);
+        if (!buffer) {
+            throw std::bad_alloc();
+        }
+        void * ptr = ggml_backend_buffer_get_base(buffer);
+        try {
+            blocks.emplace(ptr, buffer);
+        } catch (...) {
+            ggml_backend_buffer_free(buffer);
+            throw;
+        }
+        *actual_size = ggml_backend_buffer_get_size(buffer);
+        return ptr;
+    }
+
+    void free(void * ptr, size_t) override {
+        const auto it = blocks.find(ptr);
+        GGML_ASSERT(it != blocks.end());
+        // cudaFree on this cudaMalloc-backed buffer synchronizes its uses.
+        ggml_backend_buffer_free(it->second);
+        blocks.erase(it);
+    }
+
+    ~ggml_cuda_pool_observed() override {
+        GGML_ASSERT(blocks.empty());
+    }
+
+    int device;
+    std::unordered_map<void *, ggml_backend_buffer_t> blocks;
+};
+
 std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(ggml_backend_cuda_context & ctx,
                                                                                int                         device,
                                                                                [[maybe_unused]] int        stream_no) {
+    if (ctx.observed_pool) {
+        return std::make_unique<ggml_cuda_pool_observed>(device);
+    }
     if (ggml_cuda_pool_debug_enabled()) {
         return std::unique_ptr<ggml_cuda_pool>(new ggml_cuda_pool_debug(device));
     }
@@ -911,6 +956,18 @@ static std::mutex ggml_cuda_lock;
 static std::condition_variable ggml_cuda_lock_cv;
 static std::atomic<int> ggml_cuda_lock_counter;
 
+void ggml_backend_cuda_context::init_observed_cublas_workspace(size_t bytes) {
+    // Observed graphs run on one stream without capture or graph optimization.
+    GGML_ASSERT(curr_stream_no == 0 && observed_cublas_workspace == nullptr);
+    if (!ggml_backend_has_alloc_observer()) {
+        throw std::bad_alloc();
+    }
+    observed_cublas_workspace = ggml_backend_buft_alloc_buffer(ggml_backend_cuda_buffer_type(device), bytes);
+    if (!observed_cublas_workspace) {
+        throw std::bad_alloc();
+    }
+}
+
 ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     std::unique_lock<std::mutex> lock(ggml_cuda_lock);
     ggml_cuda_lock_cv.wait(lock, []{ return ggml_cuda_lock_counter.load(std::memory_order_relaxed) == 0; });
@@ -936,6 +993,7 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
         }
 #endif
     }
+    ggml_backend_buffer_free(observed_cublas_workspace);
 }
 
 
@@ -5424,6 +5482,19 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     ggml_cuda_set_device(cuda_ctx->device);
 
+    if (cuda_ctx->observed_pool) {
+        if (!ggml_backend_has_alloc_observer()) {
+            return GGML_STATUS_ALLOC_FAILED;
+        }
+        try {
+            ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, false, false, nullptr);
+        } catch (const std::bad_alloc &) {
+            ggml_backend_synchronize(backend);
+            return GGML_STATUS_ALLOC_FAILED;
+        }
+        return GGML_STATUS_SUCCESS;
+    }
+
     bool use_cuda_graph             = false;
     bool cuda_graph_update_required = false;
     const void * graph_key = nullptr;
@@ -5512,6 +5583,9 @@ static void ggml_backend_cuda_event_wait(ggml_backend_t backend, ggml_backend_ev
 static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph * cgraph, ggml_backend_graph_optimize_params * params) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
+    if (cuda_ctx->observed_pool) {
+        return;
+    }
     const bool disable_fusion = ggml_cuda_fusion_disabled();
 
     auto add_alloc_deps = [&](size_t start, size_t last_node) {
@@ -6854,8 +6928,50 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+// Call once, before any graph optimization or submission on this backend.
+static bool ggml_backend_cuda_enable_observed_pool(ggml_backend_t backend) {
+    if (!backend || !ggml_backend_is_cuda(backend) || ggml_cuda_unified_memory_enabled()) {
+        return false;
+    }
+    auto * ctx = static_cast<ggml_backend_cuda_context *>(backend->context);
+    if (ggml_cuda_info().devices[ctx->device].integrated) {
+        return false;
+    }
+    for (const auto & streams : ctx->cublas_handles) {
+        for (const auto & handle : streams) {
+            if (handle) {
+                return false;
+            }
+        }
+    }
+    for (const auto & streams : ctx->pools) {
+        for (const auto & pool : streams) {
+            if (pool) {
+                return false;
+            }
+        }
+    }
+    if (!ctx->stream_context().concurrent_events.empty()) {
+        return false;
+    }
+#ifdef USE_CUDA_GRAPH
+    if (!ctx->cuda_graphs.empty()) {
+        return false;
+    }
+#endif
+    ctx->observed_pool = true;
+    return true;
+}
+#endif
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (strcmp(name, "ggml_backend_cuda_enable_observed_pool") == 0) {
+        return (void *)ggml_backend_cuda_enable_observed_pool;
+    }
+#endif
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *)ggml_backend_cuda_comm_init;
     }

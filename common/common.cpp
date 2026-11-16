@@ -4,8 +4,10 @@
 
 #include "build-info.h"
 #include "common.h"
+#include "atomic-budget.h"
 
 #include "../src/llama-ext.h"
+#include "../src/llama-atomic.h"
 
 #include "fit.h"
 #include "log.h"
@@ -1278,9 +1280,22 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
+    if (params.engine_prefill_window && !params.engine_budget) {
+        throw std::invalid_argument("--engine-prefill-window requires --engine-budget-mib");
+    }
+    if (params.engine_memory_auto && !params.engine_budget) {
+        throw std::invalid_argument("--engine-memory-auto requires --engine-budget-mib");
+    }
+    if (params.engine_budget && (params.fit_params || params.speculative.has_dft() ||
+        std::any_of(params.speculative.types.begin(), params.speculative.types.end(),
+            [](common_speculative_type type) { return type != COMMON_SPECULATIVE_TYPE_NONE; }) || !params.mmproj.path.empty())) {
+        throw std::invalid_argument("engine budget requires -fit off, no speculative decoding and no multimodal projector");
+    }
+    if (params.engine_ram_budget || params.engine_vram_budget) { common_atomic_discrete_validate(params); }
     common_fit_apply(params, mparams, cparams);
 
-    llama_model * model = common_model_load(params.model.get_paths(), mparams);
+    llama_model * model = params.engine_ram_budget ? common_atomic_discrete_load(params, mparams) :
+        common_model_load(params.model.get_paths(), mparams);
     if (model == NULL) {
         return;
     }
@@ -1390,6 +1405,24 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     pimpl->context.reset(lctx);
+    if (params.engine_budget) {
+        llama_memory_policy_config policy;
+        policy.mode = params.engine_memory_auto ? llama_memory_mode::automatic : llama_memory_mode::fixed;
+        policy.preferred = params.engine_budget;
+        policy.minimum = params.engine_memory_min;
+        policy.reserve = params.engine_memory_reserve;
+        if (!llama_memory_policy_configure(lctx, &policy, params.engine_memory_auto)) {
+            COM_ERR("%s", "engine memory policy rejected: check platform, preferred/minimum budgets and live floor\n");
+            pimpl->context.reset();
+            return;
+        }
+    }
+
+    if (params.engine_prefill_window && !llama_prefill_window_set(lctx, true)) {
+        COM_ERR("%s", "prefill window requires a managed Qwen4Exp/Metal context\n");
+        pimpl->context.reset();
+        return;
+    }
 
     set_process_priority(params.cpuparams.priority);
 
@@ -1690,6 +1723,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
         mparams.devices = params.devices.data();
     }
 
+    mparams.memory_budget_size = params.engine_budget;
     mparams.n_gpu_layers    = params.n_gpu_layers;
     mparams.main_gpu        = params.main_gpu;
     mparams.split_mode      = params.split_mode;

@@ -116,6 +116,11 @@ struct llama_model_loader {
     } lazy;
 
     llama_files files;
+    std::vector<std::string> file_paths;
+    bool stream_experts = false;
+    bool stream_ple = false;
+    bool stream_tok_embd = false;
+    std::set<std::string> streamed_names;
     llama_ftype ftype;
     llama_fver  fver;
 
@@ -149,10 +154,12 @@ struct llama_model_loader {
     struct ctx_key {
         ggml_backend_buffer_type_t buft;
         bool lazy;
+        bool streamed = false;
     };
 
     struct ctx_key_comparator {
         bool operator()(const ctx_key & lhs, const ctx_key & rhs) const {
+            if (lhs.streamed != rhs.streamed) { return lhs.streamed < rhs.streamed; }
             if (lhs.lazy != rhs.lazy) {
                 return lhs.lazy < rhs.lazy;
             }
@@ -181,7 +188,8 @@ struct llama_model_loader {
         bool no_alloc,
         bool load_mtp,
         const llama_model_kv_override * param_overrides_p,
-        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p);
+        const llama_model_tensor_buft_override * param_tensor_buft_overrides_p,
+        bool collect_expert_paths = false);
 
     template<typename T>
     typename std::enable_if<std::is_integral<T>::value, bool>::type
@@ -264,7 +272,8 @@ struct llama_model_loader {
             std::vector<ggml_backend_buffer_t> & bufs,
             llama_mlocks * lmlocks,
             llama_progress_callback progress_callback,
-            void * progress_callback_user_data);
+            void * progress_callback_user_data,
+            class llama_discrete_load_staging * discrete_staging = nullptr);
 
     std::string ftype_name() const;
 

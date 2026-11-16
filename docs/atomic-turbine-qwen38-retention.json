@@ -1,0 +1,1465 @@
+{
+  "configuration": {
+    "model": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS, qwen4exp",
+    "machine": "Apple M4 Max, 48 GiB",
+    "engine_budget_bytes": 8589934592,
+    "context": 4096,
+    "batch": 256,
+    "microbatch": 8,
+    "threads": 8,
+    "slots": 1,
+    "output_tokens": 16,
+    "temperature": 0,
+    "seed": 42,
+    "ignore_eos": true,
+    "cache_prompt": false
+  },
+  "long_prompt": "atomic-turbine-qwen38-context.txt",
+  "small_prompt_source": "atomic-turbine-qwen38-prefill.json: small_prompt",
+  "runs": {
+    "small-before": [
+      {
+        "case": "long1",
+        "ttft_s": 28.184246999997413,
+        "server_tps": 6.431491325633266,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 523,
+          "prompt_ms": 28182.127,
+          "prompt_per_token_ms": 53.88552007648184,
+          "prompt_per_second": 18.557861157889185,
+          "predicted_n": 16,
+          "predicted_ms": 2332.274,
+          "predicted_per_token_ms": 155.48493333333332,
+          "predicted_per_second": 6.431491325633266
+        },
+        "ids": [
+          271,
+          248068,
+          198,
+          760,
+          1156,
+          369,
+          9859,
+          728,
+          310,
+          4087,
+          264,
+          4145,
+          51356,
+          3296,
+          25,
+          328
+        ],
+        "logits_sha256": "c30f7411aa95d58fee2dddb5df146180d5978b3723904a001f862949268415d6",
+        "slot_sha256": "d9751c751712cdd03e4a3cf158d43c9be2151855f7aa17b60193ac08f8223f4b",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588770170,
+            "peak": 8589819482,
+            "floor": 6551593578,
+            "footprint": 7326341096,
+            "footprint_peak": 7326341096,
+            "rss": 7191625728,
+            "disk": 32301391872
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7328536576,
+            "footprint_peak": 7328569344,
+            "rss": 7192821760,
+            "disk": 34020450304
+          }
+        ],
+        "prefill": {
+          "hits": 36541,
+          "misses": 410915,
+          "logical_read_bytes": 238396441600,
+          "submissions": 32340,
+          "disk_read_bytes": 28289568768
+        },
+        "decode": {
+          "hits": 8734,
+          "misses": 12866,
+          "logical_read_bytes": 7555980800,
+          "submissions": 2160,
+          "disk_read_bytes": 1719058432
+        },
+        "profiled_prefill_ns": {
+          "projection_ns": 24654464756,
+          "acquire_ns": 17148538916,
+          "admission_ns": 309079245,
+          "eviction_search_ns": 142696940,
+          "allocation_ns": 269246344,
+          "padding_ns": 148411732,
+          "read_ns": 16461771403,
+          "source_setup_ns": 41621795,
+          "source_validate_ns": 298911867,
+          "source_seek_ns": 101138236,
+          "source_transfer_ns": 16007349983,
+          "overlap_acquire_ns": 11502116705,
+          "preview_ns": 0,
+          "prefetch_ns": 0,
+          "preview_dot_ns": 0,
+          "preview_rank_ns": 0,
+          "preview_residency_ns": 0,
+          "preview_guard_ns": 0,
+          "preview_window_host_ns": 0,
+          "preview_window_gpu_ns": 0,
+          "preview_bind_ns": 0,
+          "early_bind_ns": 0,
+          "early_acquire_ns": 0,
+          "early_window_gpu_ns": 0,
+          "upload_ns": 6191097,
+          "release_ns": 19769593,
+          "graph_setup_ns": 185340136,
+          "map_prepare_ns": 0,
+          "route_index_ns": 0,
+          "gather_ns": 189771900,
+          "input_ns": 222148722,
+          "compute_ns": 16600991276,
+          "submit_ns": 1001344431,
+          "wait_ns": 1779148799,
+          "gpu_command_ns": 2031358785,
+          "readback_ns": 148883472,
+          "scatter_ns": 215747623
+        }
+      }
+    ],
+    "small-compact": [
+      {
+        "case": "long1",
+        "ttft_s": 38.52001650002785,
+        "server_tps": 5.694682988387402,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 523,
+          "prompt_ms": 38518.112,
+          "prompt_per_token_ms": 73.64839770554494,
+          "prompt_per_second": 13.578027915802311,
+          "predicted_n": 16,
+          "predicted_ms": 2634.036,
+          "predicted_per_token_ms": 175.60240000000002,
+          "predicted_per_second": 5.694682988387402
+        },
+        "ids": [
+          271,
+          248068,
+          198,
+          760,
+          1156,
+          369,
+          9859,
+          728,
+          310,
+          4087,
+          264,
+          4145,
+          51356,
+          3296,
+          25,
+          328
+        ],
+        "logits_sha256": "c30f7411aa95d58fee2dddb5df146180d5978b3723904a001f862949268415d6",
+        "slot_sha256": "d9751c751712cdd03e4a3cf158d43c9be2151855f7aa17b60193ac08f8223f4b",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550328810,
+          "budget_used_bytes": 8588678570,
+          "budget_high_water_bytes": 8589934586,
+          "budget_released_bytes": 157254234688,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588772890,
+            "peak": 8589934586,
+            "floor": 6551528042,
+            "footprint": 7344904456,
+            "footprint_peak": 7350605872,
+            "rss": 7209959424,
+            "disk": 29803757568
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588678570,
+            "peak": 8589934586,
+            "floor": 6550328810,
+            "footprint": 7346706648,
+            "footprint_peak": 7350605872,
+            "rss": 7210844160,
+            "disk": 31392804864
+          }
+        ],
+        "prefill": {
+          "hits": 94569,
+          "misses": 352887,
+          "logical_read_bytes": 204788953600,
+          "submissions": 32340,
+          "disk_read_bytes": 25156386816
+        },
+        "decode": {
+          "hits": 11308,
+          "misses": 10292,
+          "logical_read_bytes": 6060620800,
+          "submissions": 2160,
+          "disk_read_bytes": 1589047296
+        },
+        "profiled_prefill_ns": {
+          "projection_ns": 35049898301,
+          "acquire_ns": 28444286236,
+          "admission_ns": 2975448051,
+          "eviction_search_ns": 143963889,
+          "allocation_ns": 8230083325,
+          "padding_ns": 546687402,
+          "read_ns": 17115592614,
+          "source_setup_ns": 58893841,
+          "source_validate_ns": 282617684,
+          "source_seek_ns": 91283800,
+          "source_transfer_ns": 16671315581,
+          "overlap_acquire_ns": 19262287091,
+          "preview_ns": 0,
+          "prefetch_ns": 0,
+          "preview_dot_ns": 0,
+          "preview_rank_ns": 0,
+          "preview_residency_ns": 0,
+          "preview_guard_ns": 0,
+          "preview_window_host_ns": 0,
+          "preview_window_gpu_ns": 0,
+          "preview_bind_ns": 0,
+          "early_bind_ns": 0,
+          "early_acquire_ns": 0,
+          "early_window_gpu_ns": 0,
+          "upload_ns": 5327477,
+          "release_ns": 21767042,
+          "graph_setup_ns": 207769713,
+          "map_prepare_ns": 0,
+          "route_index_ns": 0,
+          "gather_ns": 194426870,
+          "input_ns": 219238747,
+          "compute_ns": 23698871768,
+          "submit_ns": 1035960041,
+          "wait_ns": 1678324518,
+          "gpu_command_ns": 2057654005,
+          "readback_ns": 152050114,
+          "scatter_ns": 219085950
+        }
+      }
+    ],
+    "small-frequency": [
+      {
+        "case": "long1",
+        "ttft_s": 26.19452150000143,
+        "server_tps": 6.381398309014534,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 523,
+          "prompt_ms": 26190.949,
+          "prompt_per_token_ms": 50.07829636711281,
+          "prompt_per_second": 19.96873041904667,
+          "predicted_n": 16,
+          "predicted_ms": 2350.582,
+          "predicted_per_token_ms": 156.70546666666667,
+          "predicted_per_second": 6.381398309014534
+        },
+        "ids": [
+          271,
+          248068,
+          198,
+          760,
+          1156,
+          369,
+          9859,
+          728,
+          310,
+          4087,
+          264,
+          4145,
+          51356,
+          3296,
+          25,
+          328
+        ],
+        "logits_sha256": "c30f7411aa95d58fee2dddb5df146180d5978b3723904a001f862949268415d6",
+        "slot_sha256": "d9751c751712cdd03e4a3cf158d43c9be2151855f7aa17b60193ac08f8223f4b",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588770170,
+            "peak": 8589819482,
+            "floor": 6551593578,
+            "footprint": 7318329320,
+            "footprint_peak": 7318394856,
+            "rss": 7183613952,
+            "disk": 29914574848
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7320475648,
+            "footprint_peak": 7320524800,
+            "rss": 7184793600,
+            "disk": 31625101312
+          }
+        ],
+        "prefill": {
+          "hits": 63372,
+          "misses": 384084,
+          "logical_read_bytes": 222753139200,
+          "submissions": 32340,
+          "disk_read_bytes": 25846788096
+        },
+        "decode": {
+          "hits": 8540,
+          "misses": 13060,
+          "logical_read_bytes": 7668441600,
+          "submissions": 2160,
+          "disk_read_bytes": 1710526464
+        },
+        "profiled_prefill_ns": {
+          "projection_ns": 22752018209,
+          "acquire_ns": 15761637802,
+          "admission_ns": 288913319,
+          "eviction_search_ns": 128798268,
+          "allocation_ns": 167103669,
+          "padding_ns": 85133011,
+          "read_ns": 15203481960,
+          "source_setup_ns": 36407573,
+          "source_validate_ns": 268722338,
+          "source_seek_ns": 92574125,
+          "source_transfer_ns": 14794026226,
+          "overlap_acquire_ns": 10576903674,
+          "preview_ns": 0,
+          "prefetch_ns": 0,
+          "preview_dot_ns": 0,
+          "preview_rank_ns": 0,
+          "preview_residency_ns": 0,
+          "preview_guard_ns": 0,
+          "preview_window_host_ns": 0,
+          "preview_window_gpu_ns": 0,
+          "preview_bind_ns": 0,
+          "early_bind_ns": 0,
+          "early_acquire_ns": 0,
+          "early_window_gpu_ns": 0,
+          "upload_ns": 5754235,
+          "release_ns": 15886309,
+          "graph_setup_ns": 180018093,
+          "map_prepare_ns": 0,
+          "route_index_ns": 0,
+          "gather_ns": 172018710,
+          "input_ns": 216745337,
+          "compute_ns": 15328291220,
+          "submit_ns": 944438995,
+          "wait_ns": 1728402165,
+          "gpu_command_ns": 1960289446,
+          "readback_ns": 140409914,
+          "scatter_ns": 206909427
+        }
+      }
+    ],
+    "full-before": [
+      {
+        "case": "long1",
+        "ttft_s": 192.69510195797193,
+        "server_tps": 7.141092272909696,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 3481,
+          "prompt_ms": 192695.612,
+          "prompt_per_token_ms": 55.35639528871014,
+          "prompt_per_second": 18.064760083898538,
+          "predicted_n": 16,
+          "predicted_ms": 2100.519,
+          "predicted_per_token_ms": 140.03459999999998,
+          "predicted_per_second": 7.141092272909696
+        },
+        "ids": [
+          271,
+          248068,
+          271,
+          248069,
+          271,
+          760,
+          6511,
+          314,
+          9338,
+          369,
+          11751,
+          13,
+          561,
+          6511,
+          314,
+          9338
+        ],
+        "logits_sha256": "edceb13e289c358773d1eee765d1c93aa8700e235f7f7346ec61b6ad980d866e",
+        "slot_sha256": "2d78e23a15d48b51eed431551218a46052f8f019b07294508677f466f405d8d4",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588770170,
+            "peak": 8589819482,
+            "floor": 6551593578,
+            "footprint": 7318296576,
+            "footprint_peak": 7318296576,
+            "rss": 7182614528,
+            "disk": 132523888640
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7319328768,
+            "footprint_peak": 7319361536,
+            "rss": 7183679488,
+            "disk": 133747113984
+          }
+        ],
+        "prefill": {
+          "hits": 490408,
+          "misses": 2885267,
+          "logical_read_bytes": 1663154291200,
+          "buffer_allocations": 0,
+          "buffer_reuses": 2885267,
+          "submissions": 239868,
+          "disk_read_bytes": 128240488448
+        },
+        "decode": {
+          "hits": 7230,
+          "misses": 14370,
+          "logical_read_bytes": 8362598400,
+          "buffer_allocations": 1,
+          "buffer_reuses": 14369,
+          "submissions": 2160,
+          "disk_read_bytes": 1223225344
+        }
+      },
+      {
+        "case": "short",
+        "ttft_s": 1.9778105840086937,
+        "server_tps": 7.838501780123755,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 33,
+          "prompt_ms": 1977.431,
+          "prompt_per_token_ms": 59.92215151515152,
+          "prompt_per_second": 16.688319339587576,
+          "predicted_n": 16,
+          "predicted_ms": 1913.631,
+          "predicted_per_token_ms": 127.5754,
+          "predicted_per_second": 7.838501780123755
+        },
+        "ids": [
+          271,
+          248068,
+          198,
+          760,
+          1156,
+          369,
+          9859,
+          264,
+          4145,
+          51356,
+          3296,
+          25,
+          3437,
+          369,
+          279,
+          6511
+        ],
+        "logits_sha256": "e9aebb0d05656d6ab4cd346a524ce6b47ff3e2ee8a78b14be99545386628109f",
+        "slot_sha256": "7d772f3225a7d86d5639ee8b6ab1e65fcc640bf7e4a6a21fc45687c51e24bcf2",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7319541760,
+            "footprint_peak": 7319541760,
+            "rss": 7183859712,
+            "disk": 135159943168
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7319508992,
+            "footprint_peak": 7319541760,
+            "rss": 7183859712,
+            "disk": 136135675904
+          }
+        ],
+        "prefill": {
+          "hits": 170,
+          "misses": 23965,
+          "logical_read_bytes": 13984870400,
+          "buffer_allocations": 0,
+          "buffer_reuses": 23965,
+          "submissions": 1839,
+          "disk_read_bytes": 1412546560
+        },
+        "decode": {
+          "hits": 8184,
+          "misses": 13416,
+          "logical_read_bytes": 7858124800,
+          "buffer_allocations": 0,
+          "buffer_reuses": 13416,
+          "submissions": 2160,
+          "disk_read_bytes": 975732736
+        }
+      }
+    ],
+    "full-after": [
+      {
+        "case": "long1",
+        "ttft_s": 176.3478095419996,
+        "server_tps": 6.953761196714486,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 3481,
+          "prompt_ms": 176348.228,
+          "prompt_per_token_ms": 50.66022062625682,
+          "prompt_per_second": 19.739353434274374,
+          "predicted_n": 16,
+          "predicted_ms": 2157.106,
+          "predicted_per_token_ms": 143.80706666666669,
+          "predicted_per_second": 6.953761196714486
+        },
+        "ids": [
+          271,
+          248068,
+          271,
+          248069,
+          271,
+          760,
+          6511,
+          314,
+          9338,
+          369,
+          11751,
+          13,
+          561,
+          6511,
+          314,
+          9338
+        ],
+        "logits_sha256": "edceb13e289c358773d1eee765d1c93aa8700e235f7f7346ec61b6ad980d866e",
+        "slot_sha256": "2d78e23a15d48b51eed431551218a46052f8f019b07294508677f466f405d8d4",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588770170,
+            "peak": 8589819482,
+            "floor": 6551593578,
+            "footprint": 7316805608,
+            "footprint_peak": 7316805608,
+            "rss": 7181123584,
+            "disk": 125292281856
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7317870568,
+            "footprint_peak": 7317886952,
+            "rss": 7182221312,
+            "disk": 126563454976
+          }
+        ],
+        "prefill": {
+          "hits": 532575,
+          "misses": 2843100,
+          "logical_read_bytes": 1638479744000,
+          "buffer_allocations": 0,
+          "buffer_reuses": 2843100,
+          "submissions": 239868,
+          "disk_read_bytes": 121158955008
+        },
+        "decode": {
+          "hits": 6883,
+          "misses": 14717,
+          "logical_read_bytes": 8554508800,
+          "buffer_allocations": 1,
+          "buffer_reuses": 14716,
+          "submissions": 2160,
+          "disk_read_bytes": 1271173120
+        }
+      },
+      {
+        "case": "short",
+        "ttft_s": 1.9924974999739788,
+        "server_tps": 7.76385861702904,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 33,
+          "prompt_ms": 1992.06,
+          "prompt_per_token_ms": 60.36545454545455,
+          "prompt_per_second": 16.56576609138279,
+          "predicted_n": 16,
+          "predicted_ms": 1932.029,
+          "predicted_per_token_ms": 128.80193333333332,
+          "predicted_per_second": 7.76385861702904
+        },
+        "ids": [
+          271,
+          248068,
+          198,
+          760,
+          1156,
+          369,
+          9859,
+          264,
+          4145,
+          51356,
+          3296,
+          25,
+          3437,
+          369,
+          279,
+          6511
+        ],
+        "logits_sha256": "e9aebb0d05656d6ab4cd346a524ce6b47ff3e2ee8a78b14be99545386628109f",
+        "slot_sha256": "7d772f3225a7d86d5639ee8b6ab1e65fcc640bf7e4a6a21fc45687c51e24bcf2",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7318067176,
+            "footprint_peak": 7318067176,
+            "rss": 7182385152,
+            "disk": 127982821376
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7318034408,
+            "footprint_peak": 7318067176,
+            "rss": 7182385152,
+            "disk": 128974897152
+          }
+        ],
+        "prefill": {
+          "hits": 170,
+          "misses": 23965,
+          "logical_read_bytes": 13984870400,
+          "buffer_allocations": 0,
+          "buffer_reuses": 23965,
+          "submissions": 1839,
+          "disk_read_bytes": 1419034624
+        },
+        "decode": {
+          "hits": 8184,
+          "misses": 13416,
+          "logical_read_bytes": 7858124800,
+          "buffer_allocations": 0,
+          "buffer_reuses": 13416,
+          "submissions": 2160,
+          "disk_read_bytes": 992075776
+        }
+      }
+    ],
+    "full-after2": [
+      {
+        "case": "long1",
+        "ttft_s": 178.31431099999463,
+        "server_tps": 6.911617461326045,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 3481,
+          "prompt_ms": 178313.185,
+          "prompt_per_token_ms": 51.224701235277216,
+          "prompt_per_second": 19.521831770320293,
+          "predicted_n": 16,
+          "predicted_ms": 2170.259,
+          "predicted_per_token_ms": 144.68393333333333,
+          "predicted_per_second": 6.911617461326045
+        },
+        "ids": [
+          271,
+          248068,
+          271,
+          248069,
+          271,
+          760,
+          6511,
+          314,
+          9338,
+          369,
+          11751,
+          13,
+          561,
+          6511,
+          314,
+          9338
+        ],
+        "logits_sha256": "edceb13e289c358773d1eee765d1c93aa8700e235f7f7346ec61b6ad980d866e",
+        "slot_sha256": "2d78e23a15d48b51eed431551218a46052f8f019b07294508677f466f405d8d4",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588770170,
+            "peak": 8589819482,
+            "floor": 6551593578,
+            "footprint": 7320573952,
+            "footprint_peak": 7320573952,
+            "rss": 7184875520,
+            "disk": 126953398272
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7321606144,
+            "footprint_peak": 7321638912,
+            "rss": 7185940480,
+            "disk": 128257269760
+          }
+        ],
+        "prefill": {
+          "hits": 532575,
+          "misses": 2843100,
+          "logical_read_bytes": 1638479744000,
+          "buffer_allocations": 0,
+          "buffer_reuses": 2843100,
+          "submissions": 239868,
+          "disk_read_bytes": 123415904256
+        },
+        "decode": {
+          "hits": 6883,
+          "misses": 14717,
+          "logical_read_bytes": 8554508800,
+          "buffer_allocations": 1,
+          "buffer_reuses": 14716,
+          "submissions": 2160,
+          "disk_read_bytes": 1303871488
+        }
+      },
+      {
+        "case": "short",
+        "ttft_s": 2.0255317080009263,
+        "server_tps": 7.621312237541059,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 33,
+          "prompt_ms": 2025.044,
+          "prompt_per_token_ms": 61.3649696969697,
+          "prompt_per_second": 16.295942211626016,
+          "predicted_n": 16,
+          "predicted_ms": 1968.165,
+          "predicted_per_token_ms": 131.21099999999998,
+          "predicted_per_second": 7.621312237541059
+        },
+        "ids": [
+          271,
+          248068,
+          198,
+          760,
+          1156,
+          369,
+          9859,
+          264,
+          4145,
+          51356,
+          3296,
+          25,
+          3437,
+          369,
+          279,
+          6511
+        ],
+        "logits_sha256": "e9aebb0d05656d6ab4cd346a524ce6b47ff3e2ee8a78b14be99545386628109f",
+        "slot_sha256": "7d772f3225a7d86d5639ee8b6ab1e65fcc640bf7e4a6a21fc45687c51e24bcf2",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7321753600,
+            "footprint_peak": 7321753600,
+            "rss": 7186055168,
+            "disk": 129704882176
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7321720832,
+            "footprint_peak": 7321753600,
+            "rss": 7186055168,
+            "disk": 130706382848
+          }
+        ],
+        "prefill": {
+          "hits": 170,
+          "misses": 23965,
+          "logical_read_bytes": 13984870400,
+          "buffer_allocations": 0,
+          "buffer_reuses": 23965,
+          "submissions": 1839,
+          "disk_read_bytes": 1447231488
+        },
+        "decode": {
+          "hits": 8184,
+          "misses": 13416,
+          "logical_read_bytes": 7858124800,
+          "buffer_allocations": 0,
+          "buffer_reuses": 13416,
+          "submissions": 2160,
+          "disk_read_bytes": 1001500672
+        }
+      }
+    ],
+    "full-before2": [
+      {
+        "case": "long1",
+        "ttft_s": 179.64549758299836,
+        "server_tps": 7.12896923184406,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 3481,
+          "prompt_ms": 179644.264,
+          "prompt_per_token_ms": 51.607085320310254,
+          "prompt_per_second": 19.37718423339139,
+          "predicted_n": 16,
+          "predicted_ms": 2104.091,
+          "predicted_per_token_ms": 140.27273333333332,
+          "predicted_per_second": 7.12896923184406
+        },
+        "ids": [
+          271,
+          248068,
+          271,
+          248069,
+          271,
+          760,
+          6511,
+          314,
+          9338,
+          369,
+          11751,
+          13,
+          561,
+          6511,
+          314,
+          9338
+        ],
+        "logits_sha256": "edceb13e289c358773d1eee765d1c93aa8700e235f7f7346ec61b6ad980d866e",
+        "slot_sha256": "2d78e23a15d48b51eed431551218a46052f8f019b07294508677f466f405d8d4",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588770170,
+            "peak": 8589819482,
+            "floor": 6551593578,
+            "footprint": 7318247400,
+            "footprint_peak": 7318247400,
+            "rss": 7182565376,
+            "disk": 119005073408
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7319295976,
+            "footprint_peak": 7319328744,
+            "rss": 7183646720,
+            "disk": 120202670080
+          }
+        ],
+        "prefill": {
+          "hits": 490408,
+          "misses": 2885267,
+          "logical_read_bytes": 1663154291200,
+          "buffer_allocations": 0,
+          "buffer_reuses": 2885267,
+          "submissions": 239868,
+          "disk_read_bytes": 114118254592
+        },
+        "decode": {
+          "hits": 7230,
+          "misses": 14370,
+          "logical_read_bytes": 8362598400,
+          "buffer_allocations": 1,
+          "buffer_reuses": 14369,
+          "submissions": 2160,
+          "disk_read_bytes": 1197596672
+        }
+      },
+      {
+        "case": "short",
+        "ttft_s": 1.9809090420021676,
+        "server_tps": 7.744165803622412,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 33,
+          "prompt_ms": 1980.504,
+          "prompt_per_token_ms": 60.01527272727272,
+          "prompt_per_second": 16.662425322039237,
+          "predicted_n": 16,
+          "predicted_ms": 1936.942,
+          "predicted_per_token_ms": 129.12946666666667,
+          "predicted_per_second": 7.744165803622412
+        },
+        "ids": [
+          271,
+          248068,
+          198,
+          760,
+          1156,
+          369,
+          9859,
+          264,
+          4145,
+          51356,
+          3296,
+          25,
+          3437,
+          369,
+          279,
+          6511
+        ],
+        "logits_sha256": "e9aebb0d05656d6ab4cd346a524ce6b47ff3e2ee8a78b14be99545386628109f",
+        "slot_sha256": "7d772f3225a7d86d5639ee8b6ab1e65fcc640bf7e4a6a21fc45687c51e24bcf2",
+        "logits_bytes": 15892480,
+        "memory": {
+          "budget_requested_bytes": 8589934592,
+          "budget_applied_bytes": 8589934592,
+          "budget_minimum_bytes": 6550394346,
+          "budget_used_bytes": 8588619882,
+          "budget_high_water_bytes": 8589819482,
+          "budget_released_bytes": 2248176,
+          "policy_mode": 0,
+          "pressure_level": 0,
+          "policy_reason": 0,
+          "policy_decisions": 0,
+          "headroom_bytes": 0,
+          "headroom_valid": 0
+        },
+        "snapshots": [
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7319492584,
+            "footprint_peak": 7319508968,
+            "rss": 7183810560,
+            "disk": 121562279936
+          },
+          {
+            "managed": 1,
+            "cap": 8589934592,
+            "used": 8588619882,
+            "peak": 8589819482,
+            "floor": 6550394346,
+            "footprint": 7319459816,
+            "footprint_peak": 7319508968,
+            "rss": 7183810560,
+            "disk": 122551599104
+          }
+        ],
+        "prefill": {
+          "hits": 170,
+          "misses": 23965,
+          "logical_read_bytes": 13984870400,
+          "buffer_allocations": 0,
+          "buffer_reuses": 23965,
+          "submissions": 1839,
+          "disk_read_bytes": 1359249408
+        },
+        "decode": {
+          "hits": 8184,
+          "misses": 13416,
+          "logical_read_bytes": 7858124800,
+          "buffer_allocations": 0,
+          "buffer_reuses": 13416,
+          "submissions": 2160,
+          "disk_read_bytes": 989319168
+        }
+      }
+    ]
+  },
+  "replay": {
+    "trace": "long-class.trace",
+    "version": "ATET3",
+    "sha256": "ac137bad6a63ba055765b4ded77077632f6c351b7355642e23d7247639cae667",
+    "accesses": 451776,
+    "projections": 9741,
+    "observed_policy": "class_lru",
+    "observed_policy_matches_runtime": true,
+    "class_lru_history_bytes": 1199232,
+    "lru": {
+      "total": {
+        "hits": 1680,
+        "misses": 450096,
+        "read_bytes": 260872051200,
+        "evictions": 448055
+      },
+      "phases": {
+        "prefill": {
+          "hits": 0,
+          "misses": 447426,
+          "read_bytes": 259326771200,
+          "evictions": 445385
+        },
+        "decode": {
+          "hits": 1680,
+          "misses": 2670,
+          "read_bytes": 1545280000,
+          "evictions": 2670
+        }
+      },
+      "resident_bytes": 2140894704,
+      "peak_cache_and_staging": 2142417248
+    },
+    "class_lru": {
+      "total": {
+        "hits": 42941,
+        "misses": 408835,
+        "read_bytes": 237122009600,
+        "evictions": 406795
+      },
+      "phases": {
+        "prefill": {
+          "hits": 41117,
+          "misses": 406309,
+          "read_bytes": 235633574400,
+          "evictions": 404269
+        },
+        "decode": {
+          "hits": 1824,
+          "misses": 2526,
+          "read_bytes": 1488435200,
+          "evictions": 2526
+        }
+      },
+      "resident_bytes": 2139845760,
+      "peak_cache_and_staging": 2140767360
+    },
+    "saved_read_bytes": 23750041600,
+    "saved_read_fraction": 0.09104095854941474,
+    "limitations": "Synchronous UMA, fixed total cap, one request. One-token projections are classified as decode. Replay does not predict latency or physical SSD traffic. Frequency mode is simulated for the whole trace; only prefill counts are a candidate prediction. Runtime restores LRU for decode.",
+    "prefill_frequency": {
+      "total": {
+        "hits": 67821,
+        "misses": 383955,
+        "read_bytes": 222715712000,
+        "evictions": 381915
+      },
+      "phases": {
+        "prefill": {
+          "hits": 67160,
+          "misses": 380266,
+          "read_bytes": 220547584000,
+          "evictions": 378226
+        },
+        "decode": {
+          "hits": 661,
+          "misses": 3689,
+          "read_bytes": 2168128000,
+          "evictions": 3689
+        }
+      },
+      "resident_bytes": 2139845760,
+      "peak_cache_and_staging": 2140767360
+    },
+    "frequency_saved_prefill_bytes": 15085990400,
+    "frequency_saved_prefill_fraction": 0.06402309364619985
+  },
+  "rejected_replays": {
+    "trace": "/tmp/qwen38-long.5mukA3/long-class.trace",
+    "sha256": "ac137bad6a63ba055765b4ded77077632f6c351b7355642e23d7247639cae667",
+    "accesses": 451776,
+    "baseline_exact": true,
+    "results": {
+      "baseline": {
+        "total": {
+          "hits": 42941,
+          "misses": 408835,
+          "read_bytes": 237122009600,
+          "evictions": 406795
+        },
+        "phases": {
+          "prefill": {
+            "hits": 41117,
+            "misses": 406309,
+            "read_bytes": 235633574400,
+            "evictions": 404269
+          },
+          "decode": {
+            "hits": 1824,
+            "misses": 2526,
+            "read_bytes": 1488435200,
+            "evictions": 2526
+          }
+        },
+        "resident_bytes": 2139845760,
+        "peak_cache_and_staging": 2140767360
+      },
+      "bytes": {
+        "total": {
+          "hits": 40905,
+          "misses": 410871,
+          "read_bytes": 238171596800,
+          "evictions": 408831
+        },
+        "phases": {
+          "prefill": {
+            "hits": 39120,
+            "misses": 408306,
+            "read_bytes": 236664153600,
+            "evictions": 406266
+          },
+          "decode": {
+            "hits": 1785,
+            "misses": 2565,
+            "read_bytes": 1507443200,
+            "evictions": 2565
+          }
+        },
+        "resident_bytes": 2139845760,
+        "peak_cache_and_staging": 2140767360
+      },
+      "age_floor": {
+        "total": {
+          "hits": 42822,
+          "misses": 408954,
+          "read_bytes": 237218931200,
+          "evictions": 406914
+        },
+        "phases": {
+          "prefill": {
+            "hits": 42003,
+            "misses": 405423,
+            "read_bytes": 235139827200,
+            "evictions": 403383
+          },
+          "decode": {
+            "hits": 819,
+            "misses": 3531,
+            "read_bytes": 2079104000,
+            "evictions": 3531
+          }
+        },
+        "resident_bytes": 2139845760,
+        "peak_cache_and_staging": 2140767360
+      }
+    }
+  },
+  "compact_replay": {
+    "total": {
+      "hits": 100286,
+      "misses": 351490,
+      "read_bytes": 203877299200,
+      "evictions": 348116
+    },
+    "phases": {
+      "prefill": {
+        "hits": 98093,
+        "misses": 349333,
+        "read_bytes": 202606592000,
+        "evictions": 345954
+      },
+      "decode": {
+        "hits": 2193,
+        "misses": 2157,
+        "read_bytes": 1270707200,
+        "evictions": 2162
+      }
+    },
+    "resident_bytes": 2140205600,
+    "peak_cache_and_staging": 2141236992
+  },
+  "methodology": [
+    "Small probes enable phase timers; full probes disable timers and record counters at phase boundaries.",
+    "One server per run; the full prompt is followed by the 33-token control in the same slot.",
+    "Measurements and builds are sequential. File cache is not purged; disk traffic and timing are not controlled cold-cache measurements.",
+    "Logit capture covers every vocabulary value and is included in request time.",
+    "The replay uses a saved 523-token trace at context 1024; runtime probes use context 4096. Replay validates old runtime decisions, not candidate latency.",
+    "The candidate replay stays in frequency mode for the full trace; decode replay is not a prediction for automatic runtime, which restores LRU."
+  ],
+  "tests": {
+    "cpp_store_cases": 3,
+    "cpp_assertions": 29,
+    "python_replay_cases": 1
+  },
+  "byte_comparisons": {
+    "full-before": [
+      {
+        "case": "long1",
+        "ttft_s": 192.69510195797193,
+        "tps": 7.141092272909696,
+        "logits_exact": true,
+        "state_exact": true,
+        "logits_bytes": 15892480,
+        "state_bytes": 225618840,
+        "managed_peak": 8589819482,
+        "footprint_peak": 7319361536
+      },
+      {
+        "case": "short",
+        "ttft_s": 1.9778105840086937,
+        "tps": 7.838501780123755,
+        "logits_exact": true,
+        "state_exact": true,
+        "logits_bytes": 15892480,
+        "state_bytes": 119516984,
+        "managed_peak": 8589819482,
+        "footprint_peak": 7319541760
+      }
+    ],
+    "full-after": [
+      {
+        "case": "long1",
+        "ttft_s": 176.3478095419996,
+        "tps": 6.953761196714486,
+        "logits_exact": true,
+        "state_exact": true,
+        "logits_bytes": 15892480,
+        "state_bytes": 225618840,
+        "managed_peak": 8589819482,
+        "footprint_peak": 7317886952
+      },
+      {
+        "case": "short",
+        "ttft_s": 1.9924974999739788,
+        "tps": 7.76385861702904,
+        "logits_exact": true,
+        "state_exact": true,
+        "logits_bytes": 15892480,
+        "state_bytes": 119516984,
+        "managed_peak": 8589819482,
+        "footprint_peak": 7318067176
+      }
+    ],
+    "full-after2": [
+      {
+        "case": "long1",
+        "ttft_s": 178.31431099999463,
+        "tps": 6.911617461326045,
+        "logits_exact": true,
+        "state_exact": true,
+        "logits_bytes": 15892480,
+        "state_bytes": 225618840,
+        "managed_peak": 8589819482,
+        "footprint_peak": 7321638912
+      },
+      {
+        "case": "short",
+        "ttft_s": 2.0255317080009263,
+        "tps": 7.621312237541059,
+        "logits_exact": true,
+        "state_exact": true,
+        "logits_bytes": 15892480,
+        "state_bytes": 119516984,
+        "managed_peak": 8589819482,
+        "footprint_peak": 7321753600
+      }
+    ],
+    "full-before2": [
+      {
+        "case": "long1",
+        "ttft_s": 179.64549758299836,
+        "tps": 7.12896923184406,
+        "logits_exact": true,
+        "state_exact": true,
+        "logits_bytes": 15892480,
+        "state_bytes": 225618840,
+        "managed_peak": 8589819482,
+        "footprint_peak": 7319328744
+      },
+      {
+        "case": "short",
+        "ttft_s": 1.9809090420021676,
+        "tps": 7.744165803622412,
+        "logits_exact": true,
+        "state_exact": true,
+        "logits_bytes": 15892480,
+        "state_bytes": 119516984,
+        "managed_peak": 8589819482,
+        "footprint_peak": 7319508968
+      }
+    ]
+  }
+}

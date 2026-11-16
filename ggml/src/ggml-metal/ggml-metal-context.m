@@ -251,6 +251,22 @@ const char * ggml_metal_get_name(ggml_metal_t ctx) {
     return ctx->name;
 }
 
+bool ggml_metal_last_graph_timing(ggml_metal_t ctx, uint64_t * gpu_ns, uint64_t * buffers) {
+    *gpu_ns = *buffers = 0;
+    if (@available(macOS 10.15, iOS 10.3, *)) {
+        for (int i = 0; i <= ctx->n_cb; ++i) {
+            id<MTLCommandBuffer> buffer = ctx->cmd_bufs[i].obj;
+            if (!buffer) { continue; }
+            const double start = buffer.GPUStartTime, end = buffer.GPUEndTime;
+            if (buffer.status != MTLCommandBufferStatusCompleted || start <= 0 || end < start) { return false; }
+            *gpu_ns += (uint64_t) ((end - start) * 1e9);
+            ++*buffers;
+        }
+        return *buffers > 0;
+    }
+    return false;
+}
+
 void ggml_metal_synchronize(ggml_metal_t ctx) {
     // wait for any backend operations to finish
     if (ctx->cmd_buf_last) {

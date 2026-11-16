@@ -44,6 +44,19 @@ set(LLAMA_CORE_SOURCES
     unicode.cpp
 )
 
+# Fork-owned implementations; keep the upstream core source list unchanged.
+list(APPEND LLAMA_CORE_SOURCES
+    llama-context-atomic.cpp
+    llama-prefill-window.cpp
+    llama-expert-source.cpp
+    llama-expert-executor.cpp
+    llama-expert-store.cpp
+    llama-memory-budget.cpp
+    llama-memory-policy.cpp
+    llama-memory-pressure.cpp
+    llama-memory-contract.cpp
+)
+
 add_library(llama
             ../include/llama.h
             ${LLAMA_CORE_SOURCES}

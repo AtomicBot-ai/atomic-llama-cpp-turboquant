@@ -362,6 +362,11 @@ void server_queue::start_loop(int64_t idle_sleep_ms) {
                 if (res) {
                     break; // new task arrived or terminate
                 }
+                if (callback_idle_poll) {
+                    // Poll only on the inference thread, outside the task mutex.
+                    lock.unlock();
+                    callback_idle_poll();
+                }
                 // otherwise, loop again to check sleeping condition
             }
         }

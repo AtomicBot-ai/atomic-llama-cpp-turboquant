@@ -1,0 +1,1696 @@
+{
+  "scope": "Qwen4Exp CUDA manual resize at synchronized boundaries; one checkpoint, 22 GPU layers, microbatch 8",
+  "production_changes": false,
+  "runtime_envelope_bytes": 2147483648,
+  "resize_headroom_bytes": 67108864,
+  "host_cap_bytes": 4294967296,
+  "device_cap_bytes": 2147483648,
+  "final_runner_sha256": "d894f348208260265e5af4677f89831ed3061214ba89bf52044dba80ed1a6eca",
+  "final_runner_source_sha256": "6792ffded7e415cf34b02b81898bed2572ac189cb28571a3140ee3ec364691b1",
+  "libllama_sha256": "c54b2f52f0cddbc4b74f61bcc268e56562b1c8cb420ac90ecc93b1a2d15ab76e",
+  "graph_source_sha256": "1bd4f946bdd245457d55c34eda3c4a65576cd6178a3d95920af1a9a07f595815",
+  "baseline_provenance": "Ordinary CUDA baseline uses the same unchanged library. Its diagnostic binary was rebuilt later only for resize-specific changes; original runner hash was not captured.",
+  "context4096_rejection": {
+    "stream": {
+      "mode": "stream",
+      "gpu_layers": 22,
+      "context_requested": 4096,
+      "microbatch": 8,
+      "threads": 4,
+      "capture_capacity": 33554432,
+      "prompt_tokens": 8,
+      "state_format": "session-file",
+      "trace_regex": "",
+      "resume_position": 0,
+      "prefill_only": false,
+      "native_host_expert_cache_bytes": 0,
+      "prefill_seconds": 1.695075931,
+      "ids": [
+        369,
+        264,
+        6891,
+        11
+      ],
+      "resize_events": [
+        {
+          "name": "reject-host",
+          "host_target": 1048576,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422774,
+              "peak": 4280124358,
+              "released": 4957601088,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510992
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1222377472,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422774,
+              "peak": 4280124358,
+              "released": 4957601088,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510992
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1222377472,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "reject-device",
+          "host_target": 4294967296,
+          "device_target": 1048576,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422774,
+              "peak": 4280124358,
+              "released": 4957601088,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510992
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1222377472,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422774,
+              "peak": 4280124358,
+              "released": 4957601088,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510992
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1222377472,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "same-cap-admission",
+          "host_target": 4294967296,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422774,
+              "peak": 4280124358,
+              "released": 4957601088,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510992
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1222377472,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422774,
+              "peak": 4280124358,
+              "released": 4957601088,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510992
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1222377472,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "shrink",
+          "host_target": 4290772992,
+          "device_target": 2139095040,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422774,
+              "peak": 4280124358,
+              "released": 4957601088,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510992
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1222377472,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422774,
+              "peak": 4280124358,
+              "released": 4957601088,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510992
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1222377472,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "grow",
+          "host_target": 4294967296,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422038,
+              "peak": 4280124358,
+              "released": 6121007856,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510256
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1279655936,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4208422038,
+              "peak": 4280124358,
+              "released": 6121007856,
+              "categories": [
+                1885077504,
+                0,
+                132972544,
+                42205184,
+                0,
+                656550,
+                2147510256
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2147287040,
+              "peak": 2147483648,
+              "released": 1279655936,
+              "categories": [
+                1957756928,
+                65536000,
+                112001024,
+                11993088,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "state_bytes": 118378364,
+      "host_used": 4208422038,
+      "device_used": 2147287040,
+      "host_peak": 4280124358,
+      "device_peak": 2147483648,
+      "prompt_ids_sha256": "c626e5941884bd8ed5d1aef56f30acb33b7a6cc6286a5e3cb6fe9fdfe02ff4df",
+      "f32": {
+        "bytes": 3973120,
+        "sha256": "5ebcdf4a857bcb41dd7ed44716dbba7e547d646641ea02126dd3aabc3b61890c",
+        "values": 993280,
+        "all_finite": true
+      },
+      "state": {
+        "bytes": 118378376,
+        "sha256": "d012beff3eb0beb5af7199c8fcf6f6c3034888b0b70ab170b37024155d5f1c9e"
+      }
+    },
+    "native": {
+      "mode": "native",
+      "gpu_layers": 22,
+      "context_requested": 4096,
+      "microbatch": 8,
+      "threads": 4,
+      "capture_capacity": 33554432,
+      "prompt_tokens": 8,
+      "state_format": "session-file",
+      "trace_regex": "",
+      "native_host_expert_cache_bytes": 4294967296,
+      "prefill_seconds": 0.566417952,
+      "ids": [
+        369,
+        264,
+        6891,
+        11
+      ],
+      "state_bytes": 118378364,
+      "prompt_ids_sha256": "c626e5941884bd8ed5d1aef56f30acb33b7a6cc6286a5e3cb6fe9fdfe02ff4df",
+      "f32": {
+        "bytes": 3973120,
+        "sha256": "5ebcdf4a857bcb41dd7ed44716dbba7e547d646641ea02126dd3aabc3b61890c",
+        "values": 993280,
+        "all_finite": true
+      },
+      "state": {
+        "bytes": 118378376,
+        "sha256": "d012beff3eb0beb5af7199c8fcf6f6c3034888b0b70ab170b37024155d5f1c9e"
+      }
+    },
+    "logits_bitwise_equal": true,
+    "state_bitwise_equal": true,
+    "ids_equal": true,
+    "prompt_ids_equal": true,
+    "within_managed_caps": true
+  },
+  "context2048_worker_completion": {
+    "stream": {
+      "mode": "stream",
+      "gpu_layers": 22,
+      "context_requested": 2048,
+      "microbatch": 8,
+      "threads": 4,
+      "capture_capacity": 33554432,
+      "prompt_tokens": 24,
+      "state_format": "session-file",
+      "trace_regex": "",
+      "resume_position": 0,
+      "prefill_only": false,
+      "native_host_expert_cache_bytes": 0,
+      "prefill_seconds": 4.84774797,
+      "ids": [
+        16,
+        25,
+        561,
+        6511
+      ],
+      "resize_events": [
+        {
+          "name": "prefill-shrink",
+          "host_target": 4261412864,
+          "device_target": 2122317824,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176429798,
+              "peak": 4248142790,
+              "released": 4935889664,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147499584
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2085486592,
+              "peak": 2147483648,
+              "released": 1300824064,
+              "categories": [
+                1957756928,
+                37355520,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4261412864,
+              "applied": 4261412864,
+              "used": 4176429798,
+              "peak": 4248142790,
+              "released": 4935889664,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147499584
+              ]
+            },
+            {
+              "requested": 2122317824,
+              "applied": 2122317824,
+              "used": 2085486592,
+              "peak": 2147483648,
+              "released": 1300824064,
+              "categories": [
+                1957756928,
+                37355520,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "read_staging": 1078950,
+          "read_requests": 1,
+          "worker": true
+        },
+        {
+          "name": "prefill-grow",
+          "host_target": 4294967296,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4261412864,
+              "applied": 4261412864,
+              "used": 4176443414,
+              "peak": 4248156774,
+              "released": 10217883520,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513200
+              ]
+            },
+            {
+              "requested": 2122317824,
+              "applied": 2122317824,
+              "used": 2121859072,
+              "peak": 2147483648,
+              "released": 2395734016,
+              "categories": [
+                1957756928,
+                73728000,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443414,
+              "peak": 4248156774,
+              "released": 10217883520,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513200
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2121859072,
+              "peak": 2147483648,
+              "released": 2395734016,
+              "categories": [
+                1957756928,
+                73728000,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "read_staging": 1078950,
+          "read_requests": 2,
+          "worker": true
+        },
+        {
+          "name": "reject-host",
+          "host_target": 1048576,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15357567232,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 3722772480,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15357567232,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 3722772480,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "reject-device",
+          "host_target": 4294967296,
+          "device_target": 1048576,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15357567232,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 3722772480,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15357567232,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 3722772480,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "same-cap-admission",
+          "host_target": 4294967296,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15357567232,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 3722772480,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15357567232,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 3722772480,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "shrink",
+          "host_target": 4261412864,
+          "device_target": 2122317824,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15357567232,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 3722772480,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4261412864,
+              "applied": 4261412864,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15357567232,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2122317824,
+              "applied": 2122317824,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 3722772480,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "grow",
+          "host_target": 4294967296,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4261412864,
+              "applied": 4261412864,
+              "used": 4176452246,
+              "peak": 4248156774,
+              "released": 16521132240,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147522032
+              ]
+            },
+            {
+              "requested": 2122317824,
+              "applied": 2122317824,
+              "used": 2122186752,
+              "peak": 2147483648,
+              "released": 4102422528,
+              "categories": [
+                1957756928,
+                74055680,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176452246,
+              "peak": 4248156774,
+              "released": 16521132240,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147522032
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2122186752,
+              "peak": 2147483648,
+              "released": 4102422528,
+              "categories": [
+                1957756928,
+                74055680,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "state_bytes": 118870652,
+      "host_used": 4176419126,
+      "device_used": 2056978432,
+      "host_peak": 4248156774,
+      "device_peak": 2147483648,
+      "prompt_ids_sha256": "086063c42a62a059861295b9d313f5d7a51ca64acb870316dde868a606bdb82a",
+      "f32": {
+        "bytes": 3973120,
+        "sha256": "8103328c0db436f764660d6a53035bd764263ea8bda3a32eb66369ced1414839",
+        "values": 993280,
+        "all_finite": true
+      },
+      "state": {
+        "bytes": 118870664,
+        "sha256": "991835899d2bcfe1ee93110ebe1ab4ffeb69cba760416940ce4cf3b2a9d106cb"
+      }
+    },
+    "native": {
+      "mode": "native",
+      "gpu_layers": 22,
+      "context_requested": 2048,
+      "microbatch": 8,
+      "threads": 4,
+      "capture_capacity": 33554432,
+      "prompt_tokens": 24,
+      "state_format": "session-file",
+      "trace_regex": "",
+      "resume_position": 0,
+      "prefill_only": false,
+      "native_host_expert_cache_bytes": 4294967296,
+      "prefill_seconds": 1.490688799,
+      "ids": [
+        16,
+        25,
+        561,
+        6511
+      ],
+      "state_bytes": 118870652,
+      "prompt_ids_sha256": "086063c42a62a059861295b9d313f5d7a51ca64acb870316dde868a606bdb82a",
+      "f32": {
+        "bytes": 3973120,
+        "sha256": "8103328c0db436f764660d6a53035bd764263ea8bda3a32eb66369ced1414839",
+        "values": 993280,
+        "all_finite": true
+      },
+      "state": {
+        "bytes": 118870664,
+        "sha256": "991835899d2bcfe1ee93110ebe1ab4ffeb69cba760416940ce4cf3b2a9d106cb"
+      }
+    },
+    "logits_bitwise_equal": true,
+    "state_bitwise_equal": true,
+    "ids_equal": true,
+    "prompt_ids_equal": true,
+    "within_managed_caps": true
+  },
+  "context2048_reclaim_and_cancel": {
+    "stream": {
+      "mode": "stream",
+      "gpu_layers": 22,
+      "context_requested": 2048,
+      "microbatch": 8,
+      "threads": 4,
+      "capture_capacity": 33554432,
+      "prompt_tokens": 24,
+      "state_format": "session-file",
+      "trace_regex": "",
+      "resume_position": 0,
+      "prefill_only": false,
+      "native_host_expert_cache_bytes": 0,
+      "prefill_seconds": 4.922248746,
+      "ids": [
+        16,
+        25,
+        561,
+        6511
+      ],
+      "resize_events": [
+        {
+          "name": "prefill-shrink",
+          "host_target": 4261412864,
+          "device_target": 2117074944,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176429798,
+              "peak": 4248142790,
+              "released": 4936312432,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147499584
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2085486592,
+              "peak": 2147483648,
+              "released": 1301282816,
+              "categories": [
+                1957756928,
+                37355520,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4261412864,
+              "applied": 4261412864,
+              "used": 4176429798,
+              "peak": 4248142790,
+              "released": 4936312432,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147499584
+              ]
+            },
+            {
+              "requested": 2117074944,
+              "applied": 2117074944,
+              "used": 2085486592,
+              "peak": 2147483648,
+              "released": 1301282816,
+              "categories": [
+                1957756928,
+                37355520,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "read_staging": 1078950,
+          "read_requests": 1,
+          "worker": true,
+          "read_cancelled": true
+        },
+        {
+          "name": "prefill-grow",
+          "host_target": 4294967296,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4261412864,
+              "applied": 4261412864,
+              "used": 4176441574,
+              "peak": 4248156774,
+              "released": 10218474096,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147511360
+              ]
+            },
+            {
+              "requested": 2117074944,
+              "applied": 2117074944,
+              "used": 2116616192,
+              "peak": 2147483648,
+              "released": 2746351616,
+              "categories": [
+                1957756928,
+                68485120,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176441574,
+              "peak": 4248156774,
+              "released": 10218474096,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147511360
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116616192,
+              "peak": 2147483648,
+              "released": 2746351616,
+              "categories": [
+                1957756928,
+                68485120,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "read_staging": 1078950,
+          "read_requests": 2,
+          "worker": true,
+          "read_cancelled": false
+        },
+        {
+          "name": "reject-host",
+          "host_target": 1048576,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15358161856,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 4075356160,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15358161856,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 4075356160,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "reject-device",
+          "host_target": 4294967296,
+          "device_target": 1048576,
+          "scratch_headroom": 67108864,
+          "accepted": false,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15358161856,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 4075356160,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15358161856,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 4075356160,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "same-cap-admission",
+          "host_target": 4294967296,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15358161856,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 4075356160,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176443782,
+              "peak": 4248156774,
+              "released": 15358161856,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147513568
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2116288512,
+              "peak": 2147483648,
+              "released": 4075356160,
+              "categories": [
+                1957756928,
+                68157440,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "shrink",
+          "host_target": 4261412864,
+          "device_target": 2117074944,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176451878,
+              "peak": 4248156774,
+              "released": 16521766608,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147521664
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2118909952,
+              "peak": 2147483648,
+              "released": 4524998656,
+              "categories": [
+                1957756928,
+                70778880,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4261412864,
+              "applied": 4261412864,
+              "used": 4176451142,
+              "peak": 4248156774,
+              "released": 16521767344,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147520928
+              ]
+            },
+            {
+              "requested": 2117074944,
+              "applied": 2117074944,
+              "used": 2116943872,
+              "peak": 2147483648,
+              "released": 4526964736,
+              "categories": [
+                1957756928,
+                68812800,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "grow",
+          "host_target": 4294967296,
+          "device_target": 2147483648,
+          "scratch_headroom": 67108864,
+          "accepted": true,
+          "before": [
+            {
+              "requested": 4261412864,
+              "applied": 4261412864,
+              "used": 4176450038,
+              "peak": 4248156774,
+              "released": 17685353696,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147519824
+              ]
+            },
+            {
+              "requested": 2117074944,
+              "applied": 2117074944,
+              "used": 2113994752,
+              "peak": 2147483648,
+              "released": 4946264064,
+              "categories": [
+                1957756928,
+                65863680,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "after": [
+            {
+              "requested": 4294967296,
+              "applied": 4294967296,
+              "used": 4176450038,
+              "peak": 4248156774,
+              "released": 17685353696,
+              "categories": [
+                1885077504,
+                0,
+                101515264,
+                41680896,
+                0,
+                656550,
+                2147519824
+              ]
+            },
+            {
+              "requested": 2147483648,
+              "applied": 2147483648,
+              "used": 2113994752,
+              "peak": 2147483648,
+              "released": 4946264064,
+              "categories": [
+                1957756928,
+                65863680,
+                80543744,
+                9830400,
+                0,
+                0,
+                0
+              ]
+            }
+          ]
+        }
+      ],
+      "state_bytes": 118870652,
+      "host_used": 4176451878,
+      "device_used": 2118909952,
+      "host_peak": 4248156774,
+      "device_peak": 2147483648,
+      "prompt_ids_sha256": "086063c42a62a059861295b9d313f5d7a51ca64acb870316dde868a606bdb82a",
+      "f32": {
+        "bytes": 3973120,
+        "sha256": "8103328c0db436f764660d6a53035bd764263ea8bda3a32eb66369ced1414839",
+        "values": 993280,
+        "all_finite": true
+      },
+      "state": {
+        "bytes": 118870664,
+        "sha256": "991835899d2bcfe1ee93110ebe1ab4ffeb69cba760416940ce4cf3b2a9d106cb"
+      }
+    },
+    "native": {
+      "mode": "native",
+      "gpu_layers": 22,
+      "context_requested": 2048,
+      "microbatch": 8,
+      "threads": 4,
+      "capture_capacity": 33554432,
+      "prompt_tokens": 24,
+      "state_format": "session-file",
+      "trace_regex": "",
+      "resume_position": 0,
+      "prefill_only": false,
+      "native_host_expert_cache_bytes": 4294967296,
+      "prefill_seconds": 1.490688799,
+      "ids": [
+        16,
+        25,
+        561,
+        6511
+      ],
+      "state_bytes": 118870652,
+      "prompt_ids_sha256": "086063c42a62a059861295b9d313f5d7a51ca64acb870316dde868a606bdb82a",
+      "f32": {
+        "bytes": 3973120,
+        "sha256": "8103328c0db436f764660d6a53035bd764263ea8bda3a32eb66369ced1414839",
+        "values": 993280,
+        "all_finite": true
+      },
+      "state": {
+        "bytes": 118870664,
+        "sha256": "991835899d2bcfe1ee93110ebe1ab4ffeb69cba760416940ce4cf3b2a9d106cb"
+      }
+    },
+    "logits_bitwise_equal": true,
+    "state_bitwise_equal": true,
+    "ids_equal": true,
+    "prompt_ids_equal": true,
+    "within_managed_caps": true
+  },
+  "rejected_probe": "A 2022 MiB target admitted resize but did not evict occupied cache; the final probe uses 2019 MiB and asserts a positive completed release.",
+  "limits": [
+    "Engine ledger, not total process RSS or driver allocations",
+    "24 prompt tokens and four output rows at context 2048, not a long-context soak",
+    "Cooperative midpoint worker cancellation, not io_uring kernel cancellation",
+    "Manual embedding diagnostic, not automatic OS pressure or server resize integration",
+    "No aggregate suite or performance claim"
+  ],
+  "completed_device_reclaim_bytes": 1966080
+}

@@ -1,0 +1,17 @@
+--- a/src/llama-memory-hybrid-idx.cpp
++++ b/src/llama-memory-hybrid-idx.cpp
+@@ -279,7 +279,13 @@
+             mem_idx->state_read_sinfo(io, seq_id, flags, nullptr, &sinfos_attn);
+             // a restore that rewrites cells does it behind the pool layout's back
+             if (!sinfos_attn.empty()) {
+-                mem_idx_stale_set(seq_id, 0);
++                if (seq_id == 0 && mem_idx->seq_pos_min(seq_id) == 0) {
++                    mem_idx_stale_clear();
++                    mem_idx_stale_set(seq_id, mem_idx->seq_pos_max(seq_id) + 1);
++                    LLAMA_LOG_WARN("prefix probe: preserve saved pools, first stale position %d\n", mem_idx->seq_pos_max(seq_id) + 1);
++                } else {
++                    mem_idx_stale_set(seq_id, 0);
++                }
+             }
+         }
+ 

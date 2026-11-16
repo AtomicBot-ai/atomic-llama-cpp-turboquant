@@ -18,6 +18,8 @@ struct llama_cparams;
 struct llama_ubatch;
 struct llama_model_loader;
 struct llama_model;
+class llama_expert_source;
+struct llama_memory_contract;
 
 // available models
 enum llm_type {
@@ -766,6 +768,12 @@ struct llama_rope_params {
 };
 
 struct llama_model {
+    size_t expert_streaming_size = 0;
+    std::shared_ptr<llama_memory_contract> memory_contract;
+    std::shared_ptr<llama_expert_source> expert_source;
+    std::unordered_set<const ggml_tensor *> streamed_experts;
+    const ggml_tensor * streamed_ple = nullptr;
+    const ggml_tensor * streamed_tok_embd = nullptr;
     llm_type type = LLM_TYPE_UNKNOWN;
     llm_arch arch = LLM_ARCH_UNKNOWN;
 

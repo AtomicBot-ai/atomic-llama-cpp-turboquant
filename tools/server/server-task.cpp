@@ -1647,6 +1647,14 @@ std::string server_task_result_metrics::to_metrics() {
     add_items("counter", counters);
     add_items("gauge",   gauges);
 
+    // Keep integer byte counters exact instead of rounding through double output.
+    for (const auto & item : engine_memory.items()) {
+        const auto name = "llamacpp:engine_memory_" + item.key();
+        prometheus << "# HELP " << name << " Engine memory controller " << item.key() << "\n"
+                   << "# TYPE " << name << " gauge\n"
+                   << name << " " << item.value().dump() << "\n";
+    }
+
     // labeled counter: one time series per draft position
     if (!metrics.n_accepted_per_pos.empty()) {
         prometheus << "# HELP llamacpp:spec_decode_num_accepted_tokens_per_pos_total"

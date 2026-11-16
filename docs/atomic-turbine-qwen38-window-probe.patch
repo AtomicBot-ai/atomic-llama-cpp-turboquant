@@ -1,0 +1,29 @@
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -26,6 +26,8 @@
+ #include <stdexcept>
+ #include <string>
+ #include <unordered_map>
++
++#include "qwen38-window-worker.h"
+ 
+ //
+ // llama_context
+@@ -2442,6 +2444,7 @@
+         ggml_backend_event_wait(h_nextn_backend, ev_h_nextn_read.get());
+     }
+ 
++#include "qwen38-window-decode.inc"
+     do {
+         const auto & ubatch = mctx->get_ubatch();
+ 
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -547,6 +547,7 @@
+ 
+         // "l_last" is the layer output name that build_cvec and imatrix look for
+         cb(res_hc, "l_last", il);
++        if (expert_executor && std::getenv("QWEN_LAYER_WINDOW")) { ggml_build_forward_expand(gf, res_hc); }
+     }
+ 
+     // the MTP head reads the hc-wide residual, before the final mixer

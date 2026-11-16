@@ -1,0 +1,495 @@
+{
+  "status": "PASS",
+  "production_changes": false,
+  "profile": {
+    "context": 4096,
+    "batch": 128,
+    "microbatch": 8,
+    "gpu_layers": 22,
+    "slots": 1,
+    "ram_cap_bytes": 4294967296,
+    "vram_cap_bytes": 2147483648,
+    "runtime_reserve_bytes": 2147483648
+  },
+  "observed_metric_peaks": {
+    "ram": 4193465894,
+    "vram": 2147483648
+  },
+  "runs": {
+    "native": {
+      "mode": "native",
+      "runtime_reserve_bytes": 2147483648,
+      "input_state": {
+        "bytes": 225249576,
+        "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+      },
+      "diagnostic_sha256": "30dd9111c16380c4f7675e5fe18e9d4833288a09cd5b2ca02104aec46640b434",
+      "command": [
+        "$HOME/.cache/atomic-qwen38-cuda/build/bin/llama-server",
+        "-m",
+        "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "--device",
+        "CUDA0",
+        "-ngl",
+        "22",
+        "-c",
+        "4096",
+        "-b",
+        "128",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "4",
+        "-tb",
+        "4",
+        "-fit",
+        "off",
+        "--no-warmup",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--metrics",
+        "--slots",
+        "--slot-save-path",
+        "$HOME/.cache/atomic-qwen38-cuda/http-long-restore/native",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "19164",
+        "--cpu-moe",
+        "--moe-cache-mib",
+        "4096",
+        "--moe-cache-cpu-share",
+        "0"
+      ],
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "startup_metrics": {},
+      "restore": {
+        "id_slot": 0,
+        "filename": "long.slot",
+        "n_restored": 3484,
+        "n_read": 225249576,
+        "timings": {
+          "restore_ms": 40.694
+        }
+      },
+      "restore_metrics": {},
+      "states": {
+        "restored": {
+          "bytes": 225249576,
+          "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+        },
+        "continued": {
+          "bytes": 225372664,
+          "sha256": "6036655d467a04526708cbbf33c14153e3f63ebf97fc163829136fd727307a7f"
+        }
+      },
+      "round_trip_metrics": {},
+      "restored_bitwise_equal": true,
+      "continuation": {
+        "index": 0,
+        "content": "\n\nThe capital of",
+        "tokens": [
+          271,
+          760,
+          6511,
+          314
+        ],
+        "id_slot": 0,
+        "stop": true,
+        "model": "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "tokens_predicted": 4,
+        "tokens_evaluated": 3485,
+        "generation_settings": {
+          "seed": 42,
+          "temperature": 0.0,
+          "dynatemp_range": 0.0,
+          "dynatemp_exponent": 1.0,
+          "top_k": 20,
+          "top_p": 0.949999988079071,
+          "min_p": 0.05000000074505806,
+          "top_n_sigma": -1.0,
+          "xtc_probability": 0.0,
+          "xtc_threshold": 0.10000000149011612,
+          "typical_p": 1.0,
+          "repeat_last_n": 64,
+          "repeat_penalty": 1.0,
+          "presence_penalty": 0.0,
+          "frequency_penalty": 0.0,
+          "dry_multiplier": 0.0,
+          "dry_base": 1.75,
+          "dry_allowed_length": 2,
+          "dry_penalty_last_n": 64,
+          "dry_sequence_breakers": [
+            "\n",
+            ":",
+            "\"",
+            "*"
+          ],
+          "mirostat": 0,
+          "mirostat_tau": 5.0,
+          "mirostat_eta": 0.10000000149011612,
+          "adaptive_target": -1.0,
+          "adaptive_decay": 0.8999999761581421,
+          "stop": [],
+          "max_tokens": 4,
+          "n_predict": 4,
+          "n_keep": 0,
+          "n_discard": 0,
+          "ignore_eos": true,
+          "stream": false,
+          "logit_bias": [
+            {
+              "bias": null,
+              "token": 248044
+            },
+            {
+              "bias": null,
+              "token": 248046
+            },
+            {
+              "bias": null,
+              "token": 248063
+            },
+            {
+              "bias": null,
+              "token": 248064
+            },
+            {
+              "bias": null,
+              "token": 248065
+            }
+          ],
+          "n_probs": 0,
+          "min_keep": 0,
+          "grammar": "",
+          "grammar_lazy": false,
+          "grammar_triggers": [],
+          "preserved_tokens": [],
+          "chat_format": "Content-only",
+          "reasoning_format": "deepseek",
+          "reasoning_in_content": false,
+          "generation_prompt": "",
+          "samplers": [
+            "penalties",
+            "dry",
+            "top_n_sigma",
+            "top_k",
+            "typ_p",
+            "top_p",
+            "min_p",
+            "xtc",
+            "temperature"
+          ],
+          "speculative.types": "none",
+          "timings_per_token": false,
+          "post_sampling_probs": false,
+          "backend_sampling": false,
+          "lora": []
+        },
+        "has_new_line": true,
+        "truncated": false,
+        "stop_type": "limit",
+        "stopping_word": "",
+        "tokens_cached": 3488,
+        "timings": {
+          "cache_n": 3484,
+          "prompt_n": 1,
+          "prompt_ms": 157.673,
+          "prompt_per_token_ms": 157.673,
+          "prompt_per_second": 6.342239952306356,
+          "predicted_n": 4,
+          "predicted_ms": 452.518,
+          "predicted_per_token_ms": 150.83933333333331,
+          "predicted_per_second": 6.629570536420651
+        }
+      },
+      "continuation_metrics": {},
+      "save_metrics": {},
+      "passed": true,
+      "request_settings": {
+        "n_predict": 4,
+        "temperature": 0,
+        "seed": 42,
+        "id_slot": 0,
+        "return_tokens": true,
+        "cache_prompt": true,
+        "ignore_eos": true
+      },
+      "request_token_count": 3485
+    },
+    "stream": {
+      "mode": "stream",
+      "runtime_reserve_bytes": 2147483648,
+      "input_state": {
+        "bytes": 225249576,
+        "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+      },
+      "diagnostic_sha256": "30dd9111c16380c4f7675e5fe18e9d4833288a09cd5b2ca02104aec46640b434",
+      "command": [
+        "$HOME/.cache/atomic-qwen38-cuda/build/bin/llama-server",
+        "-m",
+        "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "--device",
+        "CUDA0",
+        "-ngl",
+        "22",
+        "-c",
+        "4096",
+        "-b",
+        "128",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "4",
+        "-tb",
+        "4",
+        "-fit",
+        "off",
+        "--no-warmup",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--metrics",
+        "--slots",
+        "--slot-save-path",
+        "$HOME/.cache/atomic-qwen38-cuda/http-long-restore/stream",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "19164",
+        "--engine-ram-mib",
+        "4096",
+        "--engine-vram-mib",
+        "2048"
+      ],
+      "binaries": {
+        "llama-server": "4e392b688ec18e955bf1455493f66f9e727f29141e6a7c23d90a8765d2a7b6a5",
+        "libllama.so": "6306a3657b92ecb7bb9d1f4c0363993724e7e9b09e50f076fce30c832851e883",
+        "libllama-common.so": "c5050b1bc6fe2d19d3d8adaa9cee4ca3aa781a7ac8a93985599fe18ea787673c",
+        "libllama-server-impl.so": "a32f306db77ef28961c41fe1b1a4b589193dc05b736bd18259e491be5a90daaa"
+      },
+      "startup_metrics": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174848470,
+        "ram_high_water_bytes": 4193465894,
+        "ram_released_bytes": 1916829376,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2094858240,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 710344704
+      },
+      "restore": {
+        "id_slot": 0,
+        "filename": "long.slot",
+        "n_restored": 3484,
+        "n_read": 225249576,
+        "timings": {
+          "restore_ms": 35.048
+        }
+      },
+      "restore_metrics": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174848470,
+        "ram_high_water_bytes": 4193465894,
+        "ram_released_bytes": 1920396992,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2094858240,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 710344704
+      },
+      "states": {
+        "restored": {
+          "bytes": 225249576,
+          "sha256": "e3c279638456f5e6e712a0e866f261a28f2810a24da8c936896e4bb3a8e90128"
+        },
+        "continued": {
+          "bytes": 225372664,
+          "sha256": "6036655d467a04526708cbbf33c14153e3f63ebf97fc163829136fd727307a7f"
+        }
+      },
+      "round_trip_metrics": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174848470,
+        "ram_high_water_bytes": 4193465894,
+        "ram_released_bytes": 1923964608,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2094858240,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 710344704
+      },
+      "restored_bitwise_equal": true,
+      "continuation": {
+        "index": 0,
+        "content": "\n\nThe capital of",
+        "tokens": [
+          271,
+          760,
+          6511,
+          314
+        ],
+        "id_slot": 0,
+        "stop": true,
+        "model": "$HOME/atomic-strata-live-qwen38/data/strata/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "tokens_predicted": 4,
+        "tokens_evaluated": 3485,
+        "generation_settings": {
+          "seed": 42,
+          "temperature": 0.0,
+          "dynatemp_range": 0.0,
+          "dynatemp_exponent": 1.0,
+          "top_k": 20,
+          "top_p": 0.949999988079071,
+          "min_p": 0.05000000074505806,
+          "top_n_sigma": -1.0,
+          "xtc_probability": 0.0,
+          "xtc_threshold": 0.10000000149011612,
+          "typical_p": 1.0,
+          "repeat_last_n": 64,
+          "repeat_penalty": 1.0,
+          "presence_penalty": 0.0,
+          "frequency_penalty": 0.0,
+          "dry_multiplier": 0.0,
+          "dry_base": 1.75,
+          "dry_allowed_length": 2,
+          "dry_penalty_last_n": 64,
+          "dry_sequence_breakers": [
+            "\n",
+            ":",
+            "\"",
+            "*"
+          ],
+          "mirostat": 0,
+          "mirostat_tau": 5.0,
+          "mirostat_eta": 0.10000000149011612,
+          "adaptive_target": -1.0,
+          "adaptive_decay": 0.8999999761581421,
+          "stop": [],
+          "max_tokens": 4,
+          "n_predict": 4,
+          "n_keep": 0,
+          "n_discard": 0,
+          "ignore_eos": true,
+          "stream": false,
+          "logit_bias": [
+            {
+              "bias": null,
+              "token": 248044
+            },
+            {
+              "bias": null,
+              "token": 248046
+            },
+            {
+              "bias": null,
+              "token": 248063
+            },
+            {
+              "bias": null,
+              "token": 248064
+            },
+            {
+              "bias": null,
+              "token": 248065
+            }
+          ],
+          "n_probs": 0,
+          "min_keep": 0,
+          "grammar": "",
+          "grammar_lazy": false,
+          "grammar_triggers": [],
+          "preserved_tokens": [],
+          "chat_format": "Content-only",
+          "reasoning_format": "deepseek",
+          "reasoning_in_content": false,
+          "generation_prompt": "",
+          "samplers": [
+            "penalties",
+            "dry",
+            "top_n_sigma",
+            "top_k",
+            "typ_p",
+            "top_p",
+            "min_p",
+            "xtc",
+            "temperature"
+          ],
+          "speculative.types": "none",
+          "timings_per_token": false,
+          "post_sampling_probs": false,
+          "backend_sampling": false,
+          "lora": []
+        },
+        "has_new_line": true,
+        "truncated": false,
+        "stop_type": "limit",
+        "stopping_word": "",
+        "tokens_cached": 3488,
+        "timings": {
+          "cache_n": 3484,
+          "prompt_n": 1,
+          "prompt_ms": 348.264,
+          "prompt_per_token_ms": 348.264,
+          "prompt_per_second": 2.8713849263776905,
+          "predicted_n": 4,
+          "predicted_ms": 1012.299,
+          "predicted_per_token_ms": 337.433,
+          "predicted_per_second": 2.9635512827731727
+        }
+      },
+      "continuation_metrics": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174846630,
+        "ram_high_water_bytes": 4193465894,
+        "ram_released_bytes": 6578288304,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2091581440,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 2279407616
+      },
+      "save_metrics": {
+        "ram_requested_bytes": 4294967296,
+        "ram_applied_bytes": 4294967296,
+        "ram_used_bytes": 4174846630,
+        "ram_high_water_bytes": 4193465894,
+        "ram_released_bytes": 6581860016,
+        "vram_requested_bytes": 2147483648,
+        "vram_applied_bytes": 2147483648,
+        "vram_used_bytes": 2091581440,
+        "vram_high_water_bytes": 2147483648,
+        "vram_released_bytes": 2279407616
+      },
+      "ordinary_continuation_and_state_bitwise_equal": true,
+      "passed": true,
+      "request_settings": {
+        "n_predict": 4,
+        "temperature": 0,
+        "seed": 42,
+        "id_slot": 0,
+        "return_tokens": true,
+        "cache_prompt": true,
+        "ignore_eos": true
+      },
+      "request_token_count": 3485
+    }
+  }
+}

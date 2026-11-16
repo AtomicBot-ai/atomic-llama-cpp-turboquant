@@ -1,0 +1,72 @@
+--- a/src/models/qwen35moe.cpp
++++ b/src/models/qwen35moe.cpp
+@@ -41,15 +41,18 @@
+     const auto nf = nextn_flags(ml);
+     const int trunk_flags = nf.trunk;
+     const int mtp_flags   = nf.mtp;
++    const bool borrow_vocab = ml.load_mtp && (trunk_flags & TENSOR_NOT_REQUIRED) &&
++            std::getenv("LLAMA_ATOMIC_MTP_SHARE_VOCAB");
++    const int vocab_flags = borrow_vocab ? TENSOR_SKIP : 0;
+ 
+-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
++    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, vocab_flags);
+ 
+     // output
+     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
+-    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
++    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED | vocab_flags);
+ 
+     // if output is NULL, init from the input tok embed
+-    if (output == NULL) {
++    if (!borrow_vocab && output == NULL) {
+         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
+     }
+ 
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include <chrono>
+ #include <cstdio>
++#include <cstdlib>
+ #include <fstream>
+ #include <memory>
+ #include <stdexcept>
+@@ -1060,6 +1061,7 @@
+         prefill.ctx = ctx.get();
+         draft_admission_probe draft;
+         if (!draft_admission_path.empty()) {
++            const bool share_vocab = mtp_compact_checkpoint && std::getenv("LLAMA_ATOMIC_MTP_SHARE_VOCAB");
+             auto ledger = model->memory_contract->ledger;
+             const auto charge = [&] {
+                 return ledger->snapshot(llama_memory_domain::host)
+@@ -1080,6 +1082,19 @@
+                         llama_vocab_n_tokens(llama_model_get_vocab(draft.model.get())) != llama_vocab_n_tokens(vocab) ||
+                         llama_model_n_embd_out(draft.model.get()) != llama_model_n_embd_out(model.get())) {
+                     throw std::runtime_error("MTP draft model load or hidden-width validation failed");
++                }
++                if (share_vocab) {
++                    // The probe requires a draft extracted from these exact target weights.
++                    const auto & nextn = draft.model->layers.at(model->hparams.n_layer()).nextn;
++                    if (draft.model->tok_embd || draft.model->output || !model->tok_embd || !model->output ||
++                            nextn.embed_tokens || nextn.shared_head_head || model->output_s || draft.model->output_s ||
++                            model->tok_embd->type != GGML_TYPE_Q8_0 || model->output->type != GGML_TYPE_Q8_0) {
++                        throw std::runtime_error("MTP vocabulary sharing requires the Ornith draft with inherited Q8_0 tensors");
++                    }
++                    draft.model->tok_embd = model->tok_embd;
++                    draft.model->output = model->output;
++                } else if (!draft.model->tok_embd || !draft.model->output) {
++                    throw std::runtime_error("missing draft vocabulary tensors");
+                 }
+                 weights = charge() - before;
+                 auto dc = cp;
+@@ -1096,7 +1111,8 @@
+                 throw std::runtime_error("MTP draft weights and context must both charge the shared ledger");
+             }
+             report["draft_admission"] = {{"weight_bytes", weights},
+-                {"context_bytes", charge() - before - weights}};
++                {"context_bytes", charge() - before - weights}, {"borrowed_vocab", share_vocab},
++                {"borrowed_vocab_bytes", share_vocab ? ggml_nbytes(model->tok_embd) + ggml_nbytes(model->output) : 0}};
+         }
+         report["memory_after_init"] = memory_snapshot(ctx.get());
+         std::unique_ptr<llama_batch_ext, decltype(&llama_batch_ext_free)> batch(llama_batch_ext_init(ctx.get()), llama_batch_ext_free);

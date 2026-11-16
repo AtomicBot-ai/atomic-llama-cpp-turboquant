@@ -1,0 +1,528 @@
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -15,6 +15,8 @@
+ #include <algorithm>
+ #include <limits>
+ #include <cmath>
++#include <atomic>
++#include <cstring>
+ 
+ // threadgroups needed to fill the GPU
+ // TODO: dedup
+@@ -2724,13 +2726,91 @@
+     } else {
+         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne01 + nr0*nsg - 1)/(nr0*nsg)), ((ne11 + nr1 - 1)/nr1), ne12*ne13, 32, nsg, 1);
+     }
++
++    return 1;
++}
++
++// Diagnostic only. The caller serializes use of the process-wide switch.
++static std::atomic<int> q8_row_probe {-1};
++static std::atomic<int> router_row_probe {-1};
++
++int ggml_metal_q8_row_probe(bool enabled);
++
++int ggml_metal_q8_row_probe(bool enabled) {
++    return q8_row_probe.exchange(enabled ? 0 : -1);
++}
++
++int ggml_metal_router_row_probe(bool enabled);
++
++int ggml_metal_router_row_probe(bool enabled) {
++    return router_row_probe.exchange(enabled ? 0 : -1);
++}
+ 
++static int ggml_metal_op_row_probe(ggml_metal_op_t ctx, const ggml_tensor * op, std::atomic<int> & counter) {
++    // Retain the one-row dispatch parameters and vary only the buffer offsets.
++    const auto * w = op->src[0];
++    const auto * x = op->src[1];
++    ggml_tensor row_x = *x;
++    row_x.ne[1] = 1;
++    ggml_tensor row_op = *op;
++    row_op.ne[1] = 1;
++    row_op.src[1] = &row_x;
++    const auto pipeline = ggml_metal_library_get_pipeline_mul_mv(ctx->lib, &row_op);
++    ggml_metal_kargs_mul_mv args = {
++        /*.ne00 =*/ int32_t(w->ne[0]),
++        /*.ne01 =*/ int32_t(w->ne[1]),
++        /*.ne02 =*/ 1,
++        /*.nb00 =*/ w->nb[0],
++        /*.nb01 =*/ w->nb[1],
++        /*.nb02 =*/ w->nb[2],
++        /*.nb03 =*/ w->nb[3],
++        /*.ne10 =*/ int32_t(x->ne[0]),
++        /*.ne11 =*/ 1,
++        /*.ne12 =*/ 1,
++        /*.nb10 =*/ x->nb[0],
++        /*.nb11 =*/ x->nb[1],
++        /*.nb12 =*/ x->nb[2],
++        /*.nb13 =*/ x->nb[3],
++        /*.ne0  =*/ int32_t(op->ne[0]),
++        /*.ne1  =*/ 1,
++        /*.nr0  =*/ pipeline.nr0,
++        /*.r2   =*/ 1,
++        /*.r3   =*/ 1,
++    };
++    auto input = ggml_metal_get_buffer_id(x);
++    auto output = ggml_metal_get_buffer_id(op);
++    ggml_metal_encoder_set_pipeline(ctx->enc, pipeline);
++    ggml_metal_encoder_set_bytes(ctx->enc, &args, sizeof(args), 0);
++    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(w), 1);
++    ggml_metal_encoder_set_threadgroup_memory_size(ctx->enc, pipeline.smem, 0);
++    for (int row = 0; row < 2; ++row) {
++        ggml_metal_encoder_set_buffer(ctx->enc, input, 2);
++        ggml_metal_encoder_set_buffer(ctx->enc, output, 3);
++        ggml_metal_encoder_dispatch_threadgroups(ctx->enc,
++            (op->ne[0] + pipeline.nr0 - 1)/pipeline.nr0, 1, 1, 32, pipeline.nsg, 1);
++        input.offs += x->nb[1];
++        output.offs += op->nb[1];
++    }
++    counter.fetch_add(1, std::memory_order_relaxed);
+     return 1;
+ }
+ 
+ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
+     ggml_tensor * op = ctx->node(idx);
+ 
++    const auto * w = op->src[0];
++    const auto * x = op->src[1];
++    const bool q8 = q8_row_probe.load(std::memory_order_relaxed) >= 0 && w->type == GGML_TYPE_Q8_0;
++    const bool router = router_row_probe.load(std::memory_order_relaxed) >= 0 &&
++        w->type == GGML_TYPE_F32 &&
++        (std::strncmp(op->name, "ffn_moe_logits-", 15) == 0 ||
++         std::strncmp(op->name, "shared_expert_gate-", 19) == 0);
++    if ((q8 || router) && x->type == GGML_TYPE_F32 && x->ne[1] == 2 && op->ne[1] == 2 &&
++            w->ne[2] == 1 && w->ne[3] == 1 && x->ne[2] == 1 && x->ne[3] == 1 &&
++            ggml_is_contiguous(w) && ggml_is_contiguous(x) && ggml_is_contiguous(op)) {
++        return ggml_metal_op_row_probe(ctx, op, q8 ? q8_row_probe : router_row_probe);
++    }
++
+     ggml_metal_library_t lib = ctx->lib;
+     ggml_metal_encoder_t enc = ctx->enc;
+ 
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -1027,8 +1027,17 @@
+     GGML_ASSERT(ggml_backend_is_metal(backend));
+     return ggml_metal_last_graph_timing((ggml_metal_t) backend->context, gpu_ns, buffers);
+ }
++
++int ggml_metal_q8_row_probe(bool enabled);
++int ggml_metal_router_row_probe(bool enabled);
+ 
+ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
++    if (strcmp(name, "ggml_metal_router_row_probe") == 0) {
++        return (void *) ggml_metal_router_row_probe;
++    }
++    if (strcmp(name, "ggml_metal_q8_row_probe") == 0) {
++        return (void *) ggml_metal_q8_row_probe;
++    }
+     if (strcmp(name, "ggml_backend_metal_prepare_single_expert") == 0) {
+         return (void *) ggml_backend_metal_prepare_single_expert;
+     }
+--- a/tools/expert-source/inference.cpp
++++ b/tools/expert-source/inference.cpp
+@@ -17,6 +17,7 @@
+ #include <cstring>
+ #include <sstream>
+ #include <cmath>
++#include <string_view>
+ 
+ #if defined(__APPLE__)
+ #include <libproc.h>
+@@ -282,7 +283,13 @@
+ struct mtp_layer_probe {
+     static constexpr std::array names = {"attn_norm-0", "linear_attn_qkv_mixed-0",
+         "beta-0", "beta_sigmoid-0", "a_softplus-0", "conv_output_raw-0",
+-        "linear_attn_out-0", "ffn_moe_out-0", "l_out-0", "l_out-1", "result_output"};
++        "linear_attn_out-0", "attn_residual-0", "attn_post_norm-0",
++        "ffn_moe_logits-0", "ffn_moe_probs-0", "ffn_moe_topk-0", "ffn_moe_weights-0",
++        "ffn_moe_weights_sum-0", "ffn_moe_weights_sum_clamped-0", "ffn_moe_weights_norm-0",
++        "ffn_moe_weights_scaled-0", "ffn_moe_gate-0", "ffn_moe_up-0", "ffn_moe_swiglu-0",
++        "ffn_moe_down-0", "ffn_moe_weighted-0", "ffn_moe_out-0",
++        "ffn_up-0", "ffn_gate-0", "ffn_swiglu-0", "ffn_shexp-0", "shared_expert_gate-0",
++        "shared_expert_gate_sigmoid-0", "ffn_shexp_gated-0", "ffn_out-0", "l_out-0", "l_out-1", "result_output"};
+     bool active = false;
+     json rows = json::array();
+     std::array<float, 1 << 16> scratch;
+@@ -295,17 +302,22 @@
+             return !ask;
+         }
+         if (ask) { return true; }
+-        if (tensor->type != GGML_TYPE_F32 || tensor->nb[0] != sizeof(float) ||
+-                tensor->nb[1] != tensor->ne[0] * sizeof(float)) {
++        if ((tensor->type != GGML_TYPE_F32 && tensor->type != GGML_TYPE_I32) ||
++                tensor->nb[0] != sizeof(float)) {
+             return true;
+         }
+-        // Beta has a head dimension before the token dimension.
+-        const bool token_axis_2 = std::strncmp(tensor->name, "beta", 4) == 0;
+-        const size_t count = tensor->ne[0] * (token_axis_2 ? tensor->ne[1] : 1);
+-        if (count > self.scratch.size() || (token_axis_2 && tensor->nb[2] != count * sizeof(float))) {
+-            return true;
++        const std::string_view name(tensor->name);
++        const bool token_axis_2 = name.substr(0, 4) == "beta" ||
++            name == "ffn_moe_weights-0" || name == "ffn_moe_weights_scaled-0" ||
++            name == "ffn_moe_gate-0" || name == "ffn_moe_up-0" ||
++            name == "ffn_moe_swiglu-0" || name == "ffn_moe_down-0" || name == "ffn_moe_weighted-0";
++        const size_t slots = token_axis_2 ? tensor->ne[1] : 1;
++        const size_t count = tensor->ne[0] * slots;
++        if (count > self.scratch.size()) { return true; }
++        for (size_t slot = 0; slot < slots; ++slot) {
++            ggml_backend_tensor_get(tensor, self.scratch.data() + slot * tensor->ne[0],
++                slot * tensor->nb[1], tensor->ne[0] * sizeof(float));
+         }
+-        ggml_backend_tensor_get(tensor, self.scratch.data(), 0, count * sizeof(float));
+         self.rows.push_back({{"name", tensor->name}, {"count", count},
+             {"hash", float_digest(self.scratch.data(), count)},
+             {"shape", {tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]}},
+@@ -314,9 +326,32 @@
+     }
+ };
+ 
++struct mtp_hidden_tail {
++    size_t width;
++    std::vector<float> rows;
++    llama_pos last = -1;
++
++    void append(llama_context * target, int output, llama_pos position) {
++        const float * hidden = llama_get_embeddings_nextn_ith(target, output);
++        if (!hidden || (last >= 0 && position != last + 1)) {
++            throw std::runtime_error("missing or noncontiguous committed hidden row");
++        }
++        std::memcpy(rows.data() + (position % 3) * width, hidden, width * sizeof(float));
++        last = position;
++    }
++
++    const float * at(llama_pos position) const {
++        if (position < 0 || position > last || last - position >= 3) {
++            throw std::runtime_error("draft catch-up hidden row is outside the retained tail");
++        }
++        return rows.data() + (position % 3) * width;
++    }
++};
++
+ static json probe_mtp(const llama_model & model, llama_context * target, llama_batch_ext * target_batch,
+         llama_context * draft, const std::vector<llama_token> & prompt, llama_token seed, size_t vocab_size,
+-        bool try_batch_commit, mtp_layer_probe * layers) {
++        bool try_batch_commit, mtp_layer_probe * layers, int (*q8_probe)(bool), int (*router_probe)(bool),
++        bool retain_draft_prefix = false, mtp_hidden_tail * tail = nullptr) {
+     const size_t width = llama_model_n_embd_out(&model);
+     const llama_pos pos = prompt.size();
+     auto ledger = model.memory_contract->ledger;
+@@ -339,26 +374,35 @@
+ 
+     // Capturing every hidden row changes the graph shape. Replay the prompt
+     // speculatively and keep the original target state for verification.
+-    llama_memory_clear(llama_get_memory(target), true);
+-    llama_set_embeddings_nextn(target, true, false);
+-    set_batch(target_batch, prompt, 0);
+-    if (llama_process(target, LLAMA_PROCESS_TYPE_DECODE, target_batch) != 0) {
+-        throw std::runtime_error("target hidden-state replay failed");
++    const bool replay = !tail || tail->last < 0;
++    if (replay) {
++        llama_memory_clear(llama_get_memory(target), true);
++        llama_set_embeddings_nextn(target, true, false);
++        set_batch(target_batch, prompt, 0);
++        if (llama_process(target, LLAMA_PROCESS_TYPE_DECODE, target_batch) != 0) {
++            throw std::runtime_error("target hidden-state replay failed");
++        }
++        if (tail) { tail->append(target, pos - 1, pos - 1); }
+     }
+ 
+     // Batch state rows are copied by the batch API. Keep headroom for both
+     // vector growth and the zero start row during draft prefill.
+-    auto row_ticket = reserve_probe(model, target, (4 * prompt.size() + 1) * width * sizeof(float));
++    const auto draft_prefix = retain_draft_prefix ? llama_memory_seq_pos_max(llama_get_memory(draft), 0) + 1 : 0;
++    if (draft_prefix < 0 || draft_prefix >= pos) {
++        throw std::runtime_error("draft prefix does not precede the current committed position");
++    }
++    auto row_ticket = reserve_probe(model, target, (4 * (pos - draft_prefix) + 1) * width * sizeof(float));
+     std::unique_ptr<llama_batch_ext, decltype(&llama_batch_ext_free)> batch(llama_batch_ext_init(draft), llama_batch_ext_free);
+     std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> greedy(llama_sampler_init_greedy(), llama_sampler_free);
+     std::vector<float> zero(width);
+     row_ticket.commit();
+-    const float * rows = llama_get_embeddings_nextn(target);
+-    if (!rows) { throw std::runtime_error("target nextn rows missing"); }
+-    for (size_t i = 0; i < prompt.size(); ++i) {
+-        add_draft_input(batch.get(), prompt[i], i, i ? rows + (i - 1) * width : zero.data(), width, false);
++    const float * rows = replay ? llama_get_embeddings_nextn(target) : nullptr;
++    if (replay && !rows) { throw std::runtime_error("target nextn rows missing"); }
++    auto hidden_at = [&](llama_pos i) { return replay ? rows + i * width : tail->at(i); };
++    for (size_t i = draft_prefix; i < prompt.size(); ++i) {
++        add_draft_input(batch.get(), prompt[i], i, i ? hidden_at(i - 1) : zero.data(), width, false);
+     }
+-    const float * hidden = rows + (prompt.size() - 1) * width;
++    const float * hidden = hidden_at(pos - 1);
+     if (!std::all_of(hidden, hidden + width, [](float x) { return std::isfinite(x); }) ||
+             std::all_of(hidden, hidden + width, [](float x) { return x == 0; })) {
+         throw std::runtime_error("invalid MTP seed hidden row");
+@@ -396,21 +440,25 @@
+         throw std::runtime_error("draft rollback changed the repeated proposal");
+     }
+     restore(draft, draft_state, draft_hash);
+-    llama_set_embeddings_nextn(target, false, false);
++    llama_set_embeddings_nextn(target, tail != nullptr, tail != nullptr);
+     restore(target, target_state, target_hash);
+ 
+     if (try_batch_commit) {
+         const auto * vocab = llama_model_get_vocab(&model);
+         json result = {{"seed", seed}, {"proposal", proposal}, {"seed_hidden_hash", hidden_hash},
+-            {"draft_restored_state", draft_hash}, {"batch_committed", false}};
++            {"draft_restored_state", draft_hash}, {"batch_committed", false},
++            {"target_prefix_replayed", replay},
++            {"draft_prefix_reused", draft_prefix}, {"draft_prefix_rows_added", pos - draft_prefix}};
+         if (llama_vocab_is_eog(vocab, proposal)) {
+             result["decision"] = "proposal_is_eog";
+             return result;
+         }
+-        auto logits_ticket = reserve_probe(model, target, 2 * vocab_size * sizeof(float));
++        const size_t hidden_count = tail ? 2 * width : 0;
++        auto logits_ticket = reserve_probe(model, target, (2 * vocab_size + hidden_count) * sizeof(float));
+         std::vector<float> serial_logits(2 * vocab_size);
++        std::vector<float> serial_hidden(hidden_count);
+         logits_ticket.commit();
+-        auto serial_step = [&](llama_token token, llama_pos position, float * output) {
++        auto serial_step = [&](llama_token token, llama_pos position, size_t row) {
+             set_batch(target_batch, {token}, position);
+             if (llama_process(target, LLAMA_PROCESS_TYPE_DECODE, target_batch) != 0 ||
+                     llama_memory_seq_pos_max(llama_get_memory(target), 0) != position) {
+@@ -418,10 +466,15 @@
+             }
+             const auto * logits = llama_get_logits_ith(target, -1);
+             if (!logits) { throw std::runtime_error("serial control logits missing"); }
+-            std::memcpy(output, logits, vocab_size * sizeof(float));
++            std::memcpy(serial_logits.data() + row * vocab_size, logits, vocab_size * sizeof(float));
++            if (tail) {
++                const float * hidden = llama_get_embeddings_nextn_ith(target, -1);
++                if (!hidden) { throw std::runtime_error("serial control hidden row missing"); }
++                std::memcpy(serial_hidden.data() + row * width, hidden, width * sizeof(float));
++            }
+         };
+         if (layers) { layers->active = true; }
+-        serial_step(seed, pos, serial_logits.data());
++        serial_step(seed, pos, 0);
+         if (layers) {
+             layers->active = false;
+             result["serial_layers"] = std::move(layers->rows);
+@@ -434,7 +487,7 @@
+             result["decision"] = "proposal_differs_from_serial";
+             return result;
+         }
+-        serial_step(proposal, pos + 1, serial_logits.data() + vocab_size);
++        serial_step(proposal, pos + 1, 1);
+         const size_t serial_size = llama_state_get_size(target);
+         // Two host copies fit with single-token workspace. Keep the serial
+         // reference on disk for the larger, uninstrumented verifier.
+@@ -455,8 +508,35 @@
+         restore(target, target_state, target_hash);
+         set_batch(target_batch, {seed, proposal}, pos);
+         if (layers) { layers->active = true; }
+-        if (!llama_batch_ext_set_output_logits(target_batch, 0, true) ||
+-                llama_process(target, LLAMA_PROCESS_TYPE_DECODE, target_batch) != 0 ||
++        if (!llama_batch_ext_set_output_logits(target_batch, 0, true)) {
++            throw std::runtime_error("cannot select both verifier outputs");
++        }
++        int status;
++        if (q8_probe) {
++            struct scoped_q8_probe {
++                int (*set)(bool);
++                int (*router)(bool);
++                ~scoped_q8_probe() {
++                    set(false);
++                    if (router) { router(false); }
++                }
++            } scope{q8_probe, router_probe};
++            q8_probe(true);
++            if (router_probe) { router_probe(true); }
++            status = llama_process(target, LLAMA_PROCESS_TYPE_DECODE, target_batch);
++            llama_synchronize(target);
++            const int count = q8_probe(false);
++            if (count <= 0) { throw std::runtime_error("no Q8_0 verifier projections used the row probe"); }
++            result["q8_row_matvec_ops"] = count;
++            if (router_probe) {
++                const int routers = router_probe(false);
++                if (routers <= 0) { throw std::runtime_error("no F32 routers used the row probe"); }
++                result["router_and_shared_gate_row_matvec_ops"] = routers;
++            }
++        } else {
++            status = llama_process(target, LLAMA_PROCESS_TYPE_DECODE, target_batch);
++        }
++        if (status != 0 ||
+                 llama_memory_seq_pos_max(llama_get_memory(target), 0) != pos + 1) {
+             throw std::runtime_error("non-EOG batch verification failed");
+         }
+@@ -503,7 +583,19 @@
+                 result["first_state_difference"] = offset + (mismatch.first - chunk.data());
+             }
+         }
+-        const bool exact = verified_id == proposal && verified_next == serial_next && exact_logits && exact_state;
++        bool exact_hidden = true;
++        if (tail) {
++            result["hidden_rows_equal"] = json::array();
++            for (int row = 0; row < 2; ++row) {
++                const float * actual = llama_get_embeddings_nextn_ith(target, row);
++                const bool equal = actual &&
++                    std::memcmp(actual, serial_hidden.data() + row * width, width * sizeof(float)) == 0;
++                result["hidden_rows_equal"].push_back(equal);
++                exact_hidden &= equal;
++            }
++        }
++        const bool exact = verified_id == proposal && verified_next == serial_next &&
++            exact_logits && exact_state && exact_hidden;
+         const bool commit = exact && !layers;
+         result.update({{"verification_rows", 2}, {"verified_id", verified_id},
+             {"serial_next_id", serial_next}, {"batch_next_id", verified_next},
+@@ -512,7 +604,12 @@
+             {"state_bytes_equal", layers ? json(nullptr) : json(exact_state)},
+             {"batch_committed", commit}, {"decision", layers ? "layer_trace" : commit ? "exact" : "serial_fallback"},
+             {"memory_while_charged", memory_snapshot(target)}});
+-        if (!commit) { restore(target, target_state, target_hash); }
++        if (!commit) {
++            restore(target, target_state, target_hash);
++        } else if (tail) {
++            tail->append(target, 0, pos);
++            tail->append(target, 1, pos + 1);
++        }
+         return result;
+     }
+ 
+@@ -561,8 +658,11 @@
+         int tokens = 8, context = 512, ubatch = 16, repeat = 1, warmup = 0, gpu_layers = 99;
+         size_t store_mib = 0, budget_mib = 0;
+         bool capture_state = false, profile_experts = false, rollback_probe = false, mtp_probe = false;
+-        bool mtp_batch_commit_probe = false;
++        bool mtp_batch_commit_probe = false, mtp_multi_round_probe = false;
++        bool mtp_retain_draft_prefix = false;
++        bool mtp_carry_hidden = false;
+         bool mtp_trace_layers = false;
++        bool mtp_q8_rows = false, mtp_router_rows = false;
+         int read_overlap = -1;
+         int single_map = -1;
+         int route_index = -1;
+@@ -652,7 +752,12 @@
+             else if (arg == "--rollback-probe") { rollback_probe = true; }
+             else if (arg == "--mtp-probe") { mtp_probe = true; }
+             else if (arg == "--mtp-batch-commit-probe") { mtp_probe = mtp_batch_commit_probe = true; }
++            else if (arg == "--mtp-multi-round-probe") { mtp_probe = mtp_batch_commit_probe = mtp_multi_round_probe = true; }
++            else if (arg == "--mtp-retain-draft-prefix") { mtp_retain_draft_prefix = true; }
++            else if (arg == "--mtp-carry-hidden") { mtp_carry_hidden = true; }
+             else if (arg == "--mtp-trace-layers") { mtp_trace_layers = true; }
++            else if (arg == "--mtp-q8-rows") { mtp_q8_rows = true; }
++            else if (arg == "--mtp-router-rows") { mtp_router_rows = true; }
+             else if (arg == "--draft-admission-probe") { draft_admission_path = value(); }
+             else if (arg == "--budget-mib" || arg == "--prefill-budget-mib") {
+                 const int n = std::stoi(value());
+@@ -704,9 +809,24 @@
+                 !gpu_layers || (!mtp_batch_commit_probe && ubatch < 2) || (mtp_batch_commit_probe && tokens < 3))) {
+             throw std::invalid_argument("MTP probe requires a draft GGUF, Metal and a 12 GiB budget");
+         }
++        if (mtp_retain_draft_prefix && !mtp_multi_round_probe) {
++            throw std::invalid_argument("draft prefix reuse requires the multi-round probe");
++        }
++        if (mtp_carry_hidden && !mtp_retain_draft_prefix) {
++            throw std::invalid_argument("MTP hidden carry requires draft prefix reuse");
++        }
++        if (mtp_multi_round_probe && (mtp_trace_layers || !mtp_router_rows || ubatch < 2 || tokens < 5)) {
++            throw std::invalid_argument("multi-round probe requires both matvec overrides and room for two pairs");
++        }
+         if (mtp_trace_layers && (!mtp_batch_commit_probe || ubatch < 2)) {
+             throw std::invalid_argument("MTP layer trace requires a batch commit probe with a multi-row microbatch");
+         }
++        if (mtp_router_rows && !mtp_q8_rows) {
++            throw std::invalid_argument("router row probe requires the Q8_0 row probe");
++        }
++        if (mtp_q8_rows && (!mtp_batch_commit_probe || ubatch < 2)) {
++            throw std::invalid_argument("Q8_0 row probe requires a two-row verification batch");
++        }
+         if (!policy_mode.empty() && policy_mode != "replay" && policy_mode != "system") {
+             throw std::invalid_argument("memory policy must be replay or system");
+         }
+@@ -746,6 +866,18 @@
+         }
+         report["prompt_ids"] = input;
+         auto cp = llama_context_default_params();
++        int (*q8_probe)(bool) = nullptr;
++        if (mtp_q8_rows) {
++            q8_probe = reinterpret_cast<decltype(q8_probe)>(ggml_backend_reg_get_proc_address(
++                ggml_backend_dev_backend_reg(model->devices.front().dev), "ggml_metal_q8_row_probe"));
++            if (!q8_probe) { throw std::runtime_error("Metal Q8_0 row probe is unavailable"); }
++        }
++        int (*router_probe)(bool) = nullptr;
++        if (mtp_router_rows) {
++            router_probe = reinterpret_cast<decltype(router_probe)>(ggml_backend_reg_get_proc_address(
++                ggml_backend_dev_backend_reg(model->devices.front().dev), "ggml_metal_router_row_probe"));
++            if (!router_probe) { throw std::runtime_error("Metal router row probe is unavailable"); }
++        }
+         llama_memory_budget::ticket layer_ticket;
+         std::unique_ptr<mtp_layer_probe> layer_probe;
+         if (mtp_trace_layers) {
+@@ -870,9 +1002,17 @@
+             row["prefill_seconds"] = seconds(start);
+             row["memory_after_prefill"] = memory_snapshot(ctx.get());
+             row["prefill_resize_request_id"] = prefill.request_id;
+-            bool batch_committed = false;
++            int pair_second = -1;
++            llama_memory_budget::ticket tail_ticket;
++            mtp_hidden_tail hidden_tail{size_t(llama_model_n_embd_out(model.get())), {}, -1};
++            if (mtp_carry_hidden) {
++                tail_ticket = reserve_probe(*model, ctx.get(), 3 * hidden_tail.width * sizeof(float));
++                hidden_tail.rows.resize(3 * hidden_tail.width);
++                tail_ticket.commit();
++            }
++            if (mtp_multi_round_probe) { row["mtp_rounds"] = json::array(); }
+             for (int step = 0; step < tokens; ++step) {
+-                const int output_row = batch_committed && step == 1 ? 0 : -1;
++                const int output_row = step == pair_second ? 0 : -1;
+                 if (run >= 0 && logits.is_open()) {
+                     logits.write(reinterpret_cast<const char *>(llama_get_logits_ith(ctx.get(), output_row)),
+                                  llama_vocab_n_tokens(vocab) * sizeof(float));
+@@ -890,10 +1030,24 @@
+                 if (rollback_probe && step == 0) {
+                     row["rollback"] = probe_rollback(*model, ctx.get(), batch.get(), count, token);
+                 }
+-                if (mtp_probe && step == 0) {
++                if (mtp_multi_round_probe && step != pair_second && step + 2 < tokens) {
++                    // The verifier restores draft KV to the prefix used for its proposal.
++                    // Keep that prefix and append only the newly committed tokens.
++                    if (!mtp_retain_draft_prefix || step == 0) {
++                        llama_memory_clear(llama_get_memory(draft.ctx.get()), true);
++                    }
++                    auto prefix = input;
++                    prefix.insert(prefix.end(), committed.begin(), committed.end());
++                    auto round = probe_mtp(*model, ctx.get(), batch.get(), draft.ctx.get(), prefix, token,
++                            llama_vocab_n_tokens(vocab), true, nullptr, q8_probe, router_probe, mtp_retain_draft_prefix,
++                            mtp_carry_hidden ? &hidden_tail : nullptr);
++                    round["step"] = step;
++                    if (round["batch_committed"].get<bool>()) { pair_second = step + 1; }
++                    row["mtp_rounds"].push_back(std::move(round));
++                } else if (mtp_probe && !mtp_multi_round_probe && step == 0) {
+                     row["mtp"] = probe_mtp(*model, ctx.get(), batch.get(), draft.ctx.get(), input, token,
+-                            llama_vocab_n_tokens(vocab), mtp_batch_commit_probe, layer_probe.get());
+-                    if (mtp_batch_commit_probe) { batch_committed = row["mtp"]["batch_committed"].get<bool>(); }
++                            llama_vocab_n_tokens(vocab), mtp_batch_commit_probe, layer_probe.get(), q8_probe, router_probe);
++                    if (mtp_batch_commit_probe && row["mtp"]["batch_committed"].get<bool>()) { pair_second = step + 1; }
+                 }
+                 committed.push_back(token);
+                 llama_sampler_accept(sampler.get(), token);
+@@ -937,14 +1091,17 @@
+                     event["after"] = memory_snapshot(ctx.get());
+                     row["resizes"].push_back(std::move(event));
+                 }
+-                if (step + 1 < tokens && !(batch_committed && step < 2)) {
++                if (step + 1 < tokens && (pair_second < 0 || step > pair_second)) {
+                     set_batch(batch.get(), {token}, count + step);
+                     if (preview.file) { preview.begin_call(count + step); }
+                     if (llama_process(ctx.get(), LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) { throw std::runtime_error("decode failed"); }
++                    if (mtp_carry_hidden && hidden_tail.last >= 0 && step + 2 < tokens) {
++                        hidden_tail.append(ctx.get(), -1, count + step);
++                    }
+                 }
+             }
+             if (rollback_probe && !row.contains("rollback")) { throw std::runtime_error("rollback probe needs a non-EOG token"); }
+-            if (mtp_probe && (!row.contains("mtp") ||
++            if (mtp_probe && !mtp_multi_round_probe && (!row.contains("mtp") ||
+                     (!mtp_batch_commit_probe && !row["mtp"].contains("verify_matches_serial_token")))) {
+                 throw std::runtime_error("MTP probe requires a non-EOG seed and serial verification");
+             }

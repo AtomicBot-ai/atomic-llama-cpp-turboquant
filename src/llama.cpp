@@ -1,4 +1,6 @@
 #include "llama.h"
+#include "llama-atomic.h"
+#include "llama-memory-contract.h"
 
 #include "llama-impl.h"
 #include "llama-version.h"
@@ -16,6 +18,7 @@
 #include "ggml-backend.h"
 #include "gguf.h"
 
+#include <optional>
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
@@ -314,15 +317,31 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
 
 // Returns 0 on success, -1 on error, and -2 on cancellation via llama_progress_callback
 static std::pair<int, llama_model *> llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
-        const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
+        const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params,
+        std::shared_ptr<llama_memory_contract> memory_contract) {
     try {
+        if (params.memory_budget_size) {
+            if (params.expert_streaming_size || params.no_alloc || params.vocab_only ||
+                (params.tensor_buft_overrides && params.tensor_buft_overrides[0].pattern)) {
+                throw std::runtime_error("engine budget cannot combine with expert-only cap, no_alloc, vocab-only or buffer overrides");
+            }
+            memory_contract = std::make_shared<llama_memory_contract>(params.memory_budget_size);
+            params.use_extra_bufts = false;
+        }
+        std::optional<llama_allocation_scope> allocation_scope;
+        if (memory_contract) {
+            allocation_scope.emplace(memory_contract->ledger, llama_memory_category::weights, nullptr, memory_contract->discrete);
+        }
         llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
-            params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides);
+            params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides,
+            params.expert_streaming_size > 0 || params.memory_budget_size > 0 ||
+                (memory_contract && memory_contract->stream_experts));
 
         ml.lazy.mode = params.lazy_mode;
 
         ml.print_info();
         std::unique_ptr<llama_model> model_ptr(llama_model_create(ml, params));
+        model_ptr->memory_contract = memory_contract;
 
         bool ok = llama_prepare_model_devices(params, model_ptr.get());
         if (!ok) {
@@ -383,7 +402,8 @@ static struct llama_model * llama_model_load_from_file_impl(
         const std::string & path_model,
         std::vector<std::string> & splits,
         FILE * file,
-        struct llama_model_params params) {
+        struct llama_model_params params,
+        std::shared_ptr<llama_memory_contract> memory_contract = {}) {
     {
         int n_sources_defined = 0;
         if (metadata != nullptr) {
@@ -425,7 +445,8 @@ static struct llama_model * llama_model_load_from_file_impl(
         };
     }
 
-    const auto [status, model] = llama_model_load(metadata, set_tensor_data, set_tensor_data_ud, path_model, splits, file, params);
+    const auto [status, model] = llama_model_load(metadata, set_tensor_data, set_tensor_data_ud, path_model, splits, file, params,
+        std::move(memory_contract));
     GGML_ASSERT(status <= 0);
     if (status < 0) {
         if (status == -1) {
@@ -461,6 +482,49 @@ struct llama_model * llama_model_load_from_file(
         struct llama_model_params params) {
     std::vector<std::string> splits = {};
     return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path_model, splits, /*file*/ nullptr, params);
+}
+
+llama_model * llama_load_discrete_model(const char * path, llama_model_params params,
+        ggml_backend_dev_t device, size_t host_cap, size_t device_cap, bool stream_experts, bool stream_cpu_layers_on_cpu,
+        bool stream_cuda_boundary_reduction) {
+    try {
+        if (stream_cuda_boundary_reduction && !stream_cpu_layers_on_cpu) {
+            throw std::invalid_argument("CUDA boundary reduction requires expert execution on each layer's device");
+        }
+        if (!path || !path[0] || !device || !host_cap || !device_cap || (stream_cpu_layers_on_cpu && !stream_experts) ||
+                params.n_gpu_layers == 0 || params.memory_budget_size || params.expert_streaming_size ||
+                params.vocab_only || params.no_alloc || params.load_mtp || params.check_tensors ||
+                params.tensor_buft_overrides || params.split_mode != LLAMA_SPLIT_MODE_LAYER ||
+                ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU ||
+                std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "CUDA") != 0) {
+            throw std::invalid_argument("discrete budget requires a file-backed model on one discrete CUDA GPU");
+        }
+        const auto reg = ggml_backend_dev_backend_reg(device);
+        using enable_pool = bool (*)(ggml_backend_t);
+        const auto enable = reinterpret_cast<enable_pool>(
+            ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_enable_observed_pool"));
+        {
+            ggml_backend_ptr probe(enable ? ggml_backend_dev_init(device, nullptr) : nullptr);
+            if (!probe || !enable(probe.get())) {
+                throw std::runtime_error("observed CUDA allocation is unavailable on this device");
+            }
+        }
+        params.load_mode = LLAMA_LOAD_MODE_NONE;
+        params.lazy_mode = LLAMA_LAZY_MODE_OFF;
+        params.use_extra_bufts = false;
+        llama_discrete_buffer_types types {ggml_backend_dev_buffer_type(device), ggml_backend_dev_host_buffer_type(device)};
+        auto contract = std::make_shared<llama_memory_contract>(host_cap, device_cap, types);
+        contract->stream_experts = stream_experts;
+        contract->stream_cpu_layers_on_cpu = stream_cpu_layers_on_cpu;
+        contract->stream_cuda_boundary_reduction = stream_cuda_boundary_reduction;
+        contract->device_list[0] = device;
+        params.devices = contract->device_list;
+        std::vector<std::string> splits;
+        return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path, splits, nullptr, params, std::move(contract));
+    } catch (const std::exception & e) {
+        LLAMA_LOG_ERROR("%s: %s\n", __func__, e.what());
+        return nullptr;
+    }
 }
 
 struct llama_model * llama_model_load_from_splits(

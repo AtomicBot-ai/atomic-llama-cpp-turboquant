@@ -84,6 +84,8 @@ extern "C" {
         void * context;
         size_t size;
         enum ggml_backend_buffer_usage usage;
+        void * allocation_reservation;
+        void (*allocation_release)(void *);
     };
 
     GGML_API ggml_backend_buffer_t ggml_backend_buffer_init(

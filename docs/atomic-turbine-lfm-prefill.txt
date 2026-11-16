@@ -1,0 +1,10 @@
+<|im_start|>user
+Read the following project notes and answer the question at the end.
+
+The engine reads original quantized expert weights from a local GGUF file. The router chooses eight experts for each token. Shared weights and the attention state remain available throughout the request. A cache stores recently used experts, but it must never exceed its assigned capacity.
+An expert buffer remains pinned until its computation finishes. When the cache is full, the engine releases an unused buffer before admitting another read. A failed or partial read must never become a usable expert. The engine processes a large prompt in smaller groups while preserving the original token order.
+The current prototype uses synchronous reads and a separate compute backend. This makes ownership easier to inspect, but it can be slower than keeping the whole model in memory. Future improvements must preserve token outputs and report actual memory release.
+
+Question: Summarize how the cache protects active computations and obeys its memory limit. Answer in one sentence.<|im_end|>
+<|im_start|>assistant
+<think></think>

@@ -1,0 +1,61 @@
+--- a/src/llama-expert-store.cpp
++++ b/src/llama-expert-store.cpp
+@@ -1,3 +1,7 @@
++#include <atomic>
++#include <cstdint>
++static std::atomic<uint64_t> probe_advice_calls {0};
++extern "C" uint64_t probe_advice_count() { return probe_advice_calls.load(); }
+ #include "llama-expert-store.h"
+ 
+ #include "ggml-cpp.h"
+@@ -363,6 +367,7 @@
+ }
+ 
+ void llama_expert_store::advise_expert(const std::string & name, int64_t expert) {
++    ++probe_advice_calls;
+     if (!contains(name, expert)) { pimpl->source->advise_expert(name, expert); }
+ }
+ 
+--- a/tools/expert-source/qwen38-window-compare.cpp
++++ b/tools/expert-source/qwen38-window-compare.cpp
+@@ -20,6 +20,8 @@
+ static void require(bool ok, const char * message) {
+     if (!ok) { throw std::runtime_error(message); }
+ }
++
++extern "C" uint64_t probe_advice_count();
+ 
+ int main(int argc, char ** argv) {
+     try {
+@@ -169,6 +171,20 @@
+         std::ofstream logits(stem + ".f32", std::ios::binary);
+         require(bool(logits), "cannot open logits output");
+         report["ids"] = nlohmann::ordered_json::array();
++        const std::string guard = std::getenv("WINDOW_GUARD") ? std::getenv("WINDOW_GUARD") : "active";
++        if (guard == "disable") { require(llama_prefill_window_set(ctx.get(), false), "disable failed"); }
++        if (guard == "automatic") {
++            llama_memory_policy_config config;
++            config.mode = llama_memory_mode::automatic;
++            config.preferred = size_t(8) << 30;
++            require(llama_memory_policy_configure(ctx.get(), &config, false), "automatic policy failed");
++        }
++        if (guard == "shrink") {
++            require(llama_memory_budget_request(ctx.get(), size_t(7) << 30) && llama_memory_budget_apply(ctx.get()), "shrink failed");
++        }
++        if (guard == "overlap-off") { require(llama_expert_read_overlap_set(ctx.get(), false), "overlap disable failed"); }
++        const uint64_t advice_before = probe_advice_count();
++
+         if (profile_decode) { require(llama_expert_profile_set(ctx.get(), true), "profile enable failed"); }
+         for (int step = 0; step < steps; ++step) {
+             const float * row = llama_get_logits_ith(ctx.get(), -1);
+@@ -179,6 +195,10 @@
+             report["ids"].push_back(token);
+             if (step + 1 < steps) { decode({token}, prefix + step); }
+         }
++        const auto advice_delta = probe_advice_count() - advice_before;
++        require(guard == "active" ? advice_delta > 0 : advice_delta == 0, "unexpected decode advice calls");
++        report["decode_advice_calls"] = advice_delta;
++        report["guard"] = guard;
+         require(llama_state_save_file(ctx.get(), (stem + ".state").c_str(), nullptr, 0), "final state save failed");
+         if (streaming) {
+             llama_budget_data b {};
