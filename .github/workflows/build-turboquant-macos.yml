@@ -74,6 +74,7 @@ jobs:
           sysctl -a
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
             -DBUILD_SHARED_LIBS=OFF \
             -DLLAMA_CURL=OFF \
             -DLLAMA_OPENSSL=OFF \
@@ -92,6 +93,16 @@ jobs:
           echo "---"
           file ./build/bin/llama-server
           ./build/bin/llama-server --version 2>&1 || true
+
+      - name: Verify minimum macOS
+        run: |
+          # dyld refuses a binary whose LC_BUILD_VERSION minos is newer than the running macOS.
+          MINOS=$(otool -l build/bin/llama-server | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
+          echo "llama-server minos: $MINOS"
+          if [ "$MINOS" != "14.0" ]; then
+            echo "ERROR: expected minos 14.0 (CMAKE_OSX_DEPLOYMENT_TARGET), got $MINOS"
+            exit 1
+          fi
 
       - name: Verify static binary
         run: |
