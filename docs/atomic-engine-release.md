@@ -70,8 +70,13 @@ Wide Metal prefill with overlapped expert reads is the automatic path for
 qualified streaming models at fixed budgets with `-c 4096 -b 4096 -ub 8
 -np 1 -ctk bf16 -ctv bf16`. It applies to fresh text batches of at least
 1024 tokens in multiples of 32 and falls back to sequential streaming
-when its workspace does not fit. Use `--no-engine-prefill-window` for
-sequential streaming. Wide and sequential graphs can produce different
+when its workspace does not fit. On the qualified Flash Next profile, a
+fresh prompt longer than eight tokens with one output row also qualifies
+at shorter or unaligned lengths. The graph uses the actual input tokens.
+The [912-token handover measurements](atomic-engine-flash-next-partial-wide-8-16gib.json)
+compare this path with sequential streaming at 8 through 16 GiB.
+Use `--no-engine-prefill-window` for sequential streaming.
+Wide and sequential graphs can produce different
 logits, generated tokens and slot bytes. The
 [wide prefill notes](atomic-engine-prefill-layer-batch.txt) describe
 admission, read staging and numerical checks.

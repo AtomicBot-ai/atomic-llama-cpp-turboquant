@@ -741,7 +741,9 @@ llama_context::llama_context(
         if ((!wide || !std::strcmp(wide, "1")) && prefill_wide_qualified()) {
             budget_control->prefill_window_wide_default = true;
             budget_control->prefill_window.enabled = true;
-            if (model.arch == LLM_ARCH_LFM2MOE && model.hparams.n_layer_dense_lead == 2 &&
+            if (model.arch == LLM_ARCH_QWEN4EXP) {
+                budget_control->partial_wide_min = cparams.n_ubatch + 1;
+            } else if (model.arch == LLM_ARCH_LFM2MOE && model.hparams.n_layer_dense_lead == 2 &&
                     expert_executor->resident_layer(2)) {
                 const char * partial = std::getenv("LLAMA_LFM_PARTIAL_WIDE_PREFILL");
                 if (!partial || !std::strcmp(partial, "1")) {
