@@ -1,0 +1,199 @@
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2,6 +2,10 @@
+ #include "atomic-dflash-depth.h"
+ #include "server-context.h"
+ #include <atomic>
++#if defined(GGML_USE_METAL)
++// Private to this single-slot, statically linked benchmark server.
++extern std::atomic<bool> qwen35_gqa8_benchmark_active;
++#endif
+ #include <thread>
+ #include "base64.hpp"
+ #include "server-chat.h"
+@@ -4860,6 +4864,19 @@
+                  batch.slot_batched->n_remaining() > params_base.speculative.draft.n_max);
+         int64_t verify_us = 0;
+         queue_tasks.yield_to_queue([&]() {
++#if defined(GGML_USE_METAL)
++            static const bool trial_enabled = [] {
++                const char * value = std::getenv("ATOMIC_QWEN35_VERIFY_GQA8");
++                return value && std::string(value) == "1";
++            }();
++            const bool trial_verify = trial_enabled && params_base.n_parallel == 1 &&
++                    params_base.engine_budget == (size_t(24) << 30) && params_base.engine_qwen35_layers == 36 &&
++                    batch.slot_batched && !batch.slot_batched->spec_draft.empty() &&
++                    !batch.tokens[off].is_prompt && has_output;
++            if (trial_verify) {
++                qwen35_gqa8_benchmark_active.store(true);
++            }
++#endif
+             const int64_t verify_start = measure_verify ? ggml_time_us() : 0;
+             if (params_base.engine_budget && batch.tokens[off].is_prompt) {
+                 // Managed mode has one slot. Use the same uncached prefill size
+@@ -4874,6 +4891,11 @@
+             if (ret == 0 && has_output) {
+                 llama_synchronize(ctx_tgt);
+             }
++#if defined(GGML_USE_METAL)
++            if (trial_verify) {
++                qwen35_gqa8_benchmark_active.store(false);
++            }
++#endif
+             if (measure_verify && ret == 0) {
+                 verify_us = ggml_time_us() - verify_start;
+             }
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -12,6 +12,7 @@
+ #include "ggml-metal-fusion.h"
+ #include "ggml-metal-tuning.h"
+ 
++#include <atomic>
+ #include <cassert>
+ #include <algorithm>
+ #include <limits>
+@@ -21,6 +22,8 @@
+ 
+ extern "C" void ggml_metal_encoder_publish_routes(ggml_metal_encoder_t, ggml_metal_buffer_id, void *,
+         void (*)(void *, uint64_t, uint64_t, size_t), void *, uint64_t, size_t);
++
++std::atomic<bool> qwen35_gqa8_benchmark_active{false};
+ 
+ // threadgroups needed to fill the GPU
+ // TODO: dedup
+@@ -4317,7 +4320,28 @@
+             /*.n_kv_max_padded =*/ n_kv_max_padded,
+         };
+ 
+-        auto pipeline = ggml_metal_library_get_pipeline_flash_attn_ext_vec(lib, op, has_mask, has_sinks, has_bias, has_scap, has_kvpad, use_sparse, has_rows, nqptg, cfg.NE, nsg, nwg, use_kv_f16, ns10, ns20);
++        ggml_metal_pipeline_with_params pipeline = {};
++        bool grouped = false;
++        if (qwen35_gqa8_benchmark_active.load() && props_dev->gpu_family == 9 && props_dev->has_bfloat &&
++                props_dev->has_simdgroup_mm && !use_sparse && !has_rows && !has_kvpad && !has_sinks &&
++                !has_bias && !has_scap && has_mask && op->src[1]->type == GGML_TYPE_BF16 &&
++                ne00 == 256 && ne20 == 256 && ne02 == 16 && ne12 == 2 && ne03 == 1 &&
++                ne01 >= 2 && ne01 <= 8 && ne13 == 1 && ne23 == 1 && ne11_attn == 4096 &&
++                ne30 >= 4096 && ne32 == 1 && ne33 == 1 && nb00 == 4 && nb10 == 2 && nb20 == 2 &&
++                nb30 == 2 && nwg == 32 && props_dev->max_theadgroup_memory_size >= 18432) {
++            const char * name = "kernel_flash_attn_ext_vec_bf16_dk256_dv256_gqa8";
++            pipeline = ggml_metal_library_get_pipeline(lib, name);
++            if (!pipeline.pipeline) {
++                pipeline = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
++                if (pipeline.pipeline) {
++                    GGML_LOG_INFO("%s: loaded experimental grouped BF16 verify pipeline\n", __func__);
++                }
++            }
++            grouped = pipeline.pipeline && ggml_metal_pipeline_max_theads_per_threadgroup(pipeline) >= 256;
++        }
++        if (!grouped) {
++            pipeline = ggml_metal_library_get_pipeline_flash_attn_ext_vec(lib, op, has_mask, has_sinks, has_bias, has_scap, has_kvpad, use_sparse, has_rows, nqptg, cfg.NE, nsg, nwg, use_kv_f16, ns10, ns20);
++        }
+ 
+         GGML_ASSERT(nsg*32 <= ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+ 
+@@ -4353,8 +4377,12 @@
+             ggml_metal_encoder_set_buffer(enc, bid_pad, 6);
+             ggml_metal_encoder_set_buffer(enc, bid_tmp, 7);
+ 
+-            ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
+-            ggml_metal_encoder_dispatch_threadgroups(enc, (ne01 + nqptg - 1)/nqptg, (ne02 + nhptg - 1)/nhptg, ne03*nwg, 32, nsg, 1);
++            if (grouped) {
++                ggml_metal_encoder_dispatch_threadgroups(enc, ne01, ne12, nwg, 32, 8, 1);
++            } else {
++                ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
++                ggml_metal_encoder_dispatch_threadgroups(enc, (ne01 + nqptg - 1)/nqptg, (ne02 + nhptg - 1)/nhptg, ne03*nwg, 32, nsg, 1);
++            }
+ 
+             // sync the 2 kernels
+             ggml_metal_op_concurrency_reset(ctx);
+--- a/ggml/src/ggml-metal/kernels/fa_vec_f16.metal
++++ b/ggml/src/ggml-metal/kernels/fa_vec_f16.metal
+@@ -92,6 +92,87 @@
+ template [[host_name("kernel_flash_attn_ext_vec_f16_dk256_dv256_q4_ne4")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES,     half4,      1, dequantize_f16_t4,  half4,       1, dequantize_f16_t4,  256, 256, 4, 4>;
+ #if defined(GGML_METAL_HAS_BF16)
+ template [[host_name("kernel_flash_attn_ext_vec_bf16_dk256_dv256")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES,     bfloat4,    1, dequantize_bf16_t4, bfloat4,     1, dequantize_bf16_t4, 256, 256, 1>;
++
++// One group handles eight query heads sharing a KV head, for one verify row
++// and one 128-token split. The ordinary split reduction consumes its output.
++kernel void kernel_flash_attn_ext_vec_bf16_dk256_dv256_gqa8(
++        constant ggml_metal_kargs_flash_attn_ext_vec & a,
++        device const char * q, device const char * k, device const char * v,
++        device const char * mask, device const char * sinks, device const char * pad,
++        device char * dst, device const char * idx,
++        uint3 g [[threadgroup_position_in_grid]], uint t [[thread_index_in_threadgroup]],
++        ushort lane [[thread_index_in_simdgroup]], ushort sg [[simdgroup_index_in_threadgroup]]) {
++    constexpr ushort D = 256, H = 8, T = 128, splits = 32;
++    threadgroup half queries[H * D];
++    threadgroup float scores[H * T];
++    threadgroup half probabilities[H * T];
++    threadgroup float output[H * D];
++    const uint qrow = g.x, kvhead = g.y, split = g.z;
++    const uint first_head = kvhead * H, first_token = split * T;
++    const ulong row = qrow * a.ne1 + first_head;
++    device const bfloat * keys = (device const bfloat *) (k + kvhead*a.nb12 + first_token*a.nb11);
++    device const bfloat * values = (device const bfloat *) (v + kvhead*a.nb22 + first_token*a.nb21);
++    device const half * masks = (device const half *) (mask + qrow*a.nb31) + first_token;
++    device float * stats = (device float *) dst + a.ne01*a.ne02*D*splits;
++    for (uint h = 0; h < H; ++h) {
++        device const float * source = (device const float *) (q + qrow*a.nb01 + (first_head+h)*a.nb02);
++        queries[h*D+t] = half(source[t]);
++    }
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++
++    for (ushort col = 8*sg; col < T; col += 64) {
++        auto score = make_filled_simdgroup_matrix<float, 8>(0.0f);
++        for (ushort d = 0; d < D; d += 8) {
++            simdgroup_half8x8 query, key;
++            simdgroup_bfloat8x8 raw;
++            simdgroup_load(query, queries + d, D);
++            simdgroup_load(raw, keys + col*(a.nb11/2) + d, a.nb11/2, 0, true);
++            key.thread_elements()[0] = half(raw.thread_elements()[0]);
++            key.thread_elements()[1] = half(raw.thread_elements()[1]);
++            simdgroup_multiply_accumulate(score, query, key, score);
++        }
++        simdgroup_store(score, scores + col, T);
++    }
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    float peak = -FLT_MAX;
++    for (ushort i = lane; i < T; i += 32) {
++        const float s = fma(scores[sg*T+i], a.scale, float(masks[i]));
++        scores[sg*T+i] = s;
++        peak = max(peak, s);
++    }
++    peak = simd_max(peak);
++    float total = 0;
++    for (ushort i = lane; i < T; i += 32) {
++        const float p = exp(scores[sg*T+i] - peak);
++        total += p;
++        probabilities[sg*T+i] = half(p);
++    }
++    total = simd_sum(total);
++    if (lane == 0) {
++        stats[(row+sg)*2*splits + 2*split] = total;
++        stats[(row+sg)*2*splits + 2*split+1] = peak;
++    }
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++
++    for (ushort col = 8*sg; col < D; col += 64) {
++        auto result = make_filled_simdgroup_matrix<float, 8>(0.0f);
++        for (ushort i = 0; i < T; i += 8) {
++            simdgroup_half8x8 p, value;
++            simdgroup_bfloat8x8 raw;
++            simdgroup_load(p, probabilities + i, T);
++            simdgroup_load(raw, values + i*(a.nb21/2) + col, a.nb21/2);
++            value.thread_elements()[0] = half(raw.thread_elements()[0]);
++            value.thread_elements()[1] = half(raw.thread_elements()[1]);
++            simdgroup_multiply_accumulate(result, p, value, result);
++        }
++        simdgroup_store(result, output + col, D);
++    }
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    for (ushort i = t; i < H*D/4; i += 256) {
++        ((device float4 *) dst)[((row+i/(D/4))*(D/4) + i%(D/4))*splits + split] =
++                ((threadgroup float4 *) output)[i];
++    }
++}
+ #endif
+ template [[host_name("kernel_flash_attn_ext_vec_f16_dk320_dv256")]]  kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES,     half4,      1, dequantize_f16_t4,  half4,       1, dequantize_f16_t4,  320, 256, 2>;
+ template [[host_name("kernel_flash_attn_ext_vec_f16_dk320_dv256_q1_ne4")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES,     half4,      1, dequantize_f16_t4,  half4,       1, dequantize_f16_t4,  320, 256, 4, 1>;

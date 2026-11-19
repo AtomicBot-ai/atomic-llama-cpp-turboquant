@@ -1,3 +1,4 @@
+#include "llama-expert-executor.h"
 #include "models.h"
 #include "llama-memory-recurrent.h"
 
@@ -511,6 +512,9 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, c
         ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
         cb(ffn_shexp, "ffn_shexp_gated", il);
 
+        if (published_moe_for_shared && published_moe_for_shared == model.layers[il].ffn_up_exps) {
+            ggml_build_forward_expand(gf, ffn_shexp);
+        }
         cur = ggml_add(ctx0, moe_out, ffn_shexp);
         cb(cur, "ffn_out", il);
     } else {

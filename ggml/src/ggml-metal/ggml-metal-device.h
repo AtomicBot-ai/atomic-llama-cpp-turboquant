@@ -11,6 +11,8 @@ struct ggml_metal_buffer_id {
     size_t offs;
 };
 
+enum { GGML_METAL_EXPERT_ADDRESS_LIMIT = 64 };
+
 typedef struct ggml_metal_device * ggml_metal_device_t;
 
 //

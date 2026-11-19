@@ -8,3 +8,5 @@ inline bool common_atomic_budget_enabled(const common_params & params) {
 }
 void common_atomic_discrete_validate(const common_params & params);
 llama_model * common_atomic_discrete_load(const common_params & params, llama_model_params mparams);
+void common_atomic_select_qwen35_profile(common_params & params);
+bool common_atomic_dflash2_enabled(const common_params & params);

@@ -1,0 +1,1038 @@
+diff --git a/docs/atomic-engine-release.md b/docs/atomic-engine-release.md
+--- a/docs/atomic-engine-release.md
++++ b/docs/atomic-engine-release.md
+@@ -218,7 +218,7 @@
+ 
+ The wide prefill graph writes the selected target layer inputs to the
+ existing device feature buffer. The draft reads these rows to seed its
+-KV cache. The draft weights, feature buffer, target rollback snapshots
++KV cache. The draft weights, feature buffer, target rollback state
+ and up to 128 MiB of draft slot-file staging share the engine budget.
+ For a four-worker wide prompt, the engine first tries one 320 MiB Metal
+ scratch buffer for layer-local temporaries across those workers. It
+@@ -227,6 +227,21 @@
+ engine retries with private worker scratch and the usual bank admission.
+ Set `LLAMA_EXPERIMENTAL_PREFILL_DFLASH2_SHARED_SCRATCH=0` to select that
+ control directly.
++
++The 24 GiB Qwen3.6-35B-A3B profile with 36 direct layers and draft depth six
++uses compact Gated Delta Net replay by default. The cache retains the
++committed state and inputs of the last draft-sized block. Verification
++replays the accepted prefix. Longer prefill batches use a separate Metal
++kernel that stores only the final state.
++
++Set `LLAMA_GDN_REPLAY=1` to enable it on other budget-managed Qwen profiles
++with a single Metal sequence and compatible FP32 GDN rollback geometry.
++Ornith is excluded. Set `LLAMA_GDN_REPLAY=0` for a snapshot control. The
++layout is selected at context creation and lasts across live budget changes.
++Slot files retain the existing state format. The
++[replay rollout measurements](atomic-engine-qwen-gdn-replay-rollout.json)
++record stable TTFT and decode at 24 GiB and lower decode throughput with
++replay at 12 GiB.
+ 
+ An unadmitted wide graph falls back to sequential prefill. Batched
+ verification can change target logits and greedy tokens relative to
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -440,6 +440,8 @@
+     }
+ 
+     switch (op->op) {
++        case GGML_OP_GATED_DELTA_NET:
++            return !op->src[6] && !op->src[7];
+         case GGML_OP_CPY:
+         case GGML_OP_SET_ROWS:
+             return
+diff --git a/ggml/src/ggml-metal/CMakeLists.txt b/ggml/src/ggml-metal/CMakeLists.txt
+--- a/ggml/src/ggml-metal/CMakeLists.txt
++++ b/ggml/src/ggml-metal/CMakeLists.txt
+@@ -67,6 +67,7 @@
+     kernels/ssm.metal
+     kernels/wkv.metal
+     kernels/gated_delta_net.metal
++    kernels/gated_delta_net_replay.metal
+     kernels/solve_tri.metal
+     kernels/rope.metal
+     kernels/conv.metal
+diff --git a/ggml/src/ggml-metal/ggml-metal-context.h b/ggml/src/ggml-metal/ggml-metal-context.h
+--- a/ggml/src/ggml-metal/ggml-metal-context.h
++++ b/ggml/src/ggml-metal/ggml-metal-context.h
+@@ -33,6 +33,10 @@
+ bool             ggml_metal_wait_graph_prefix(ggml_metal_t ctx);
+ void             ggml_metal_graph_optimize(ggml_metal_t ctx, struct ggml_cgraph * gf);
+ 
++bool ggml_metal_gdn_replay_export(ggml_metal_device_t dev, const struct ggml_tensor * state,
++        const struct ggml_tensor * history, int heads, int key_heads, int accepted, int bank,
++        struct ggml_tensor * dst);
++
+ void ggml_metal_event_record(ggml_metal_t ctx, ggml_metal_event_t ev);
+ void ggml_metal_event_wait  (ggml_metal_t ctx, ggml_metal_event_t ev);
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal-context.m b/ggml/src/ggml-metal/ggml-metal-context.m
+--- a/ggml/src/ggml-metal/ggml-metal-context.m
++++ b/ggml/src/ggml-metal/ggml-metal-context.m
+@@ -340,6 +340,50 @@
+     return ggml_metal_buffer_get_id(buffer->context, t);
+ }
+ 
++bool ggml_metal_gdn_replay_export(ggml_metal_device_t dev, const struct ggml_tensor * state,
++        const struct ggml_tensor * history, int heads, int key_heads, int accepted, int bank,
++        struct ggml_tensor * dst) {
++    @autoreleasepool {
++        const int row_size = 128 * (heads + key_heads) + 2 * heads;
++        const int history_rows = history->ne[0] / row_size;
++        if (accepted < 1 || accepted > history_rows || bank < 0 || bank > 1) {
++            return false;
++        }
++
++        ggml_metal_library_t lib = ggml_metal_device_get_library(dev);
++        const char * name = "kernel_gated_delta_net_replay_export";
++        struct ggml_metal_pipeline_with_params pipeline = ggml_metal_library_get_pipeline(lib, name);
++        if (!pipeline.pipeline) {
++            pipeline = ggml_metal_library_compile_pipeline(lib, name, name, NULL);
++        }
++        if (!pipeline.pipeline) {
++            return false;
++        }
++
++        id<MTLCommandQueue> queue = ggml_metal_device_get_queue(dev);
++        id<MTLCommandBuffer> cmd = [queue commandBuffer];
++        if (!cmd) {
++            return false;
++        }
++        ggml_metal_encoder_t enc = ggml_metal_encoder_init(cmd, false);
++        if (!enc) {
++            return false;
++        }
++        ggml_metal_gdn_replay_export_args args = {{heads, key_heads, history_rows}, accepted, bank};
++        ggml_metal_encoder_set_pipeline(enc, pipeline);
++        ggml_metal_encoder_set_bytes(enc, &args, sizeof(args), 0);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(state), 1);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(history), 2);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(dst), 3);
++        ggml_metal_encoder_dispatch_threadgroups(enc, 32, heads, 1, 32, 4, 1);
++        ggml_metal_encoder_end_encoding(enc);
++        ggml_metal_encoder_free(enc);
++        [cmd commit];
++        [cmd waitUntilCompleted];
++        return cmd.status == MTLCommandBufferStatusCompleted;
++    }
++}
++
+ void ggml_metal_set_tensor_async(ggml_metal_t ctx, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+     @autoreleasepool {
+         // wrap the source data into a Metal buffer
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -139,6 +139,7 @@
+     X(SSM,             ssm)            \
+     X(WKV,             wkv)            \
+     X(GATED_DELTA_NET, gated_delta_net)\
++    X(GATED_DELTA_NET_REPLAY, gated_delta_net_replay) \
+     X(SOLVE_TRI,       solve_tri)      \
+     X(ROPE,            rope)           \
+     X(CONV,            conv)           \
+@@ -1918,6 +1919,10 @@
+         case GGML_OP_RWKV_WKV7:
+             return true;
+         case GGML_OP_GATED_DELTA_NET:
++            if (op->src[6] && op->src[7]) {
++                return has_simdgroup_reduction && op->src[2]->ne[0] == 128 &&
++                    op->src[2]->ne[3] == 1 && op->src[3]->ne[0] == 1;
++            }
+             return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
+         case GGML_OP_SOLVE_TRI:
+             return has_simdgroup_reduction && op->src[0]->type == GGML_TYPE_F32;
+diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -1029,6 +1029,18 @@
+ } ggml_metal_kargs_gated_delta_net;
+ 
+ typedef struct {
++    int32_t heads;
++    int32_t key_heads;
++    int32_t history_rows;
++} ggml_metal_gdn_replay_layout;
++
++typedef struct {
++    ggml_metal_gdn_replay_layout layout;
++    int32_t accepted;
++    int32_t bank;
++} ggml_metal_gdn_replay_export_args;
++
++typedef struct {
+     int32_t  ne00;
+     int32_t  ne01;
+     int32_t  ne02;
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2094,7 +2094,22 @@
+     GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
+     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
+ 
+-    auto pipeline = ggml_metal_library_get_pipeline_gated_delta_net(lib, op);
++    const bool replay = op->src[6] && op->src[7];
++    ggml_metal_gdn_replay_layout replay_layout = {};
++    ggml_metal_pipeline_with_params pipeline;
++    if (replay) {
++        const int32_t input_width = 128 * (ne11 + ne21) + 2 * ne21;
++        replay_layout = {ne21, ne11, int32_t(op->src[7]->ne[0]/input_width)};
++        const char * name = ne22 <= replay_layout.history_rows ?
++            "kernel_gated_delta_net_replay" : "kernel_gated_delta_net_replay_prefill";
++        pipeline = ggml_metal_library_get_pipeline(lib, name);
++        if (!pipeline.pipeline) {
++            pipeline = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
++        }
++        pipeline.nsg = 4;
++    } else {
++        pipeline = ggml_metal_library_get_pipeline_gated_delta_net(lib, op);
++    }
+ 
+     // when fused with the trailing cache cpy, the snapshots are written straight into the
+     // recurrent cache and the cpy is skipped (see GGML_METAL_FUSION_GDN_CACHE)
+@@ -2102,7 +2117,7 @@
+     uint64_t nb_out = 0;
+     int n_fuse = 1;
+ 
+-    if (use_fusion) {
++    if (use_fusion && !replay) {
+         int n = 1;
+         const ggml_metal_fusion * fusion = ctx->can_fuse(idx, GGML_METAL_FUSION_FULL, &n);
+ 
+@@ -2172,6 +2187,12 @@
+     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[5]), ida++); // state
+     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++); // dst (attn)
+     ggml_metal_encoder_set_buffer  (enc, bid_out,                              ida++); // state_out
++
++    if (replay) {
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[6]), ida++);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[7]), ida++);
++        ggml_metal_encoder_set_bytes(enc, &replay_layout, sizeof(replay_layout), ida++);
++    }
+ 
+     const int nsg = pipeline.nsg;
+ 
+diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -1082,6 +1082,23 @@
+     ggml_backend_metal_route_attach, ggml_metal_route_read,
+ };
+ 
++static bool ggml_backend_metal_gdn_replay_supported(ggml_backend_dev_t device) {
++    auto dev = static_cast<ggml_metal_device_t>(device->context);
++    return ggml_metal_device_get_props(dev)->has_simdgroup_reduction;
++}
++
++static bool ggml_backend_metal_gdn_replay_export(ggml_backend_dev_t device,
++        const ggml_tensor * state, const ggml_tensor * history, int heads, int key_heads,
++        int accepted, int bank, ggml_tensor * dst) {
++    if (!ggml_backend_buffer_is_metal(state->buffer) ||
++        !ggml_backend_buffer_is_metal(history->buffer) ||
++        !ggml_backend_buffer_is_metal(dst->buffer) || ggml_nbytes(state) != ggml_nbytes(dst)) {
++        return false;
++    }
++    return ggml_metal_gdn_replay_export(static_cast<ggml_metal_device_t>(device->context),
++            state, history, heads, key_heads, accepted, bank, dst);
++}
++
+ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+     if (strcmp(name, "ggml_backend_metal_window_append") == 0) {
+         return (void *) +[](ggml_backend_t backend, ggml_cgraph * graph) {
+@@ -1107,6 +1124,12 @@
+     }
+     if (strcmp(name, "ggml_backend_metal_prepare_single_expert") == 0) {
+         return (void *) ggml_backend_metal_prepare_single_expert;
++    }
++    if (strcmp(name, "ggml_backend_metal_gdn_replay_supported") == 0) {
++        return (void *) ggml_backend_metal_gdn_replay_supported;
++    }
++    if (strcmp(name, "ggml_backend_metal_gdn_replay_export") == 0) {
++        return (void *) ggml_backend_metal_gdn_replay_export;
+     }
+     if (strcmp(name, "ggml_backend_metal_buffer_get_host_base") == 0) {
+         return (void *) ggml_backend_metal_buffer_get_host_base;
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -11,6 +11,8 @@
+ #include "llama-batch.h"
+ #include "llama-io.h"
+ #include "llama-memory.h"
++#include "llama-memory-hybrid.h"
++#include "llama-memory-hybrid-iswa.h"
+ #include "llama-mmap.h"
+ #include "llama-model.h"
+ #include "llama-moe-cache.h"
+@@ -2594,6 +2596,20 @@
+         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status, uncached_prompt_tokens == 0);
+ 
+         if (!res) {
++            if (model.memory_contract && cparams.n_rs_seq > 0) {
++                const auto * hybrid = dynamic_cast<const llama_memory_hybrid_context *>(mctx.get());
++                const auto * iswa = dynamic_cast<const llama_memory_hybrid_iswa_context *>(mctx.get());
++                const auto * recurrent = hybrid ? hybrid->get_recr() : iswa ? iswa->get_recr() : nullptr;
++                if (recurrent && recurrent->has_gdn_replay()) {
++                    // The failed graph may have consumed part of the retained block.
++                    // Start the next request from an empty context.
++                    ggml_backend_sched_synchronize(sched.get());
++                    memory->clear(false);
++                    LLAMA_LOG_ERROR("%s: cleared invalid compact GDN state after a failed microbatch\n", __func__);
++                    return -3;
++                }
++            }
++
+             // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
+             llama_pos pos_min[LLAMA_MAX_SEQ];
+             for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
+@@ -3531,6 +3547,11 @@
+ // state save/load
+ //
+ 
++void llama_io_write_i::write_generated_tensor(ggml_tensor * scratch, tensor_generator generate) {
++    generate(scratch);
++    write_tensor(scratch, 0, ggml_nbytes(scratch));
++}
++
+ class llama_io_write_dummy : public llama_io_write_i {
+ public:
+     llama_io_write_dummy(bool skip_tensors) : skip_tensors(skip_tensors) {}
+@@ -3545,6 +3566,10 @@
+         }
+ 
+         size_written += size;
++    }
++
++    void write_generated_tensor(ggml_tensor * scratch, tensor_generator) override {
++        write_tensor(scratch, 0, ggml_nbytes(scratch));
+     }
+ 
+     size_t n_bytes() override {
+@@ -3610,6 +3635,18 @@
+         buf_size -= size;
+     }
+ 
++    void write_generated_tensor(ggml_tensor * scratch, tensor_generator generate) override {
++        const size_t size = ggml_nbytes(scratch);
++        if (size > buf_size) {
++            throw std::runtime_error("unexpectedly reached end of buffer");
++        }
++        generate(scratch);
++        ggml_backend_tensor_get(scratch, ptr, 0, size);
++        ptr += size;
++        size_written += size;
++        buf_size -= size;
++    }
++
+     size_t n_bytes() override {
+         return size_written;
+     }
+@@ -3758,14 +3795,21 @@
+     llama_io_write_device(uint8_t * p, size_t len, llama_memory_buffers & mbufs) : ptr(p), buf_size(len), mbufs(mbufs)  {
+     }
+ 
+-    ~llama_io_write_device() {
++    void finish() {
+         llama_memory_buffers mbufs_new;
+-
+-        for (const auto & winfo : winfos) {
++        std::map<ggml_backend_buffer_type_t, std::vector<const tensor_generator *>> generators_by_buft;
++
++        for (size_t i = 0, next = 0; i < winfos.size(); ++i) {
++            const auto & winfo = winfos[i];
+             auto * buft = ggml_backend_buffer_get_type(winfo.tensor->buffer);
+ 
+             mbufs_new[buft].n_tensors++;
+             mbufs_new[buft].total_size += winfo.size;
++            if (!generators.empty()) {
++                auto & per_buffer = generators_by_buft[buft];
++                per_buffer.push_back(next < generators.size() && generators[next].first == i
++                        ? &generators[next++].second : nullptr);
++            }
+         }
+ 
+         for (auto & [buft, mbuf] : mbufs_new) {
+@@ -3824,6 +3868,9 @@
+                     mbuf_cur = std::move(mbuf);
+ 
+                     mbuf_cur.buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(mbuf_cur.ctx.get(), buft));
++                    if (!mbuf_cur.buf) {
++                        throw std::runtime_error("failed to allocate device state buffer");
++                    }
+ 
+                     LLAMA_LOG_INFO("%s: allocated '%s' buffer %.3f MiB\n", __func__, ggml_backend_buft_name(buft), mbuf.total_size/1024.0/1024.0);
+                 } else {
+@@ -3845,9 +3892,25 @@
+                 }
+             }
+ 
+-            std::vector<const ggml_tensor *> srcs(mbuf_cur.org.begin(), mbuf_cur.org.end());
+-            std::vector<ggml_tensor *> dsts(mbuf_cur.cpy.begin(), mbuf_cur.cpy.end());
+-            ggml_backend_tensor_copy_n(srcs.data(), dsts.data(), mbuf_cur.org.size());
++            if (generators.empty()) {
++                std::vector<const ggml_tensor *> srcs(mbuf_cur.org.begin(), mbuf_cur.org.end());
++                ggml_backend_tensor_copy_n(srcs.data(), mbuf_cur.cpy.data(), srcs.size());
++            } else {
++                std::vector<const ggml_tensor *> srcs;
++                std::vector<ggml_tensor *> dsts;
++                const auto & per_buffer = generators_by_buft.at(buft);
++                for (size_t i = 0; i < per_buffer.size(); ++i) {
++                    if (per_buffer[i]) {
++                        (*per_buffer[i])(mbuf_cur.cpy[i]);
++                    } else {
++                        srcs.push_back(mbuf_cur.org[i]);
++                        dsts.push_back(mbuf_cur.cpy[i]);
++                    }
++                }
++                if (!srcs.empty()) {
++                    ggml_backend_tensor_copy_n(srcs.data(), dsts.data(), srcs.size());
++                }
++            }
+         }
+     }
+ 
+@@ -3862,8 +3925,13 @@
+     }
+ 
+     void write_tensor(ggml_tensor * tensor, size_t offset, size_t size) override {
+-        // save the write for later during destruction
++        // Save the write for the device copy in finish().
+         winfos.push_back({tensor, ptr, size, offset});
++    }
++
++    void write_generated_tensor(ggml_tensor * scratch, tensor_generator generate) override {
++        generators.emplace_back(winfos.size(), std::move(generate));
++        write_tensor(scratch, 0, ggml_nbytes(scratch));
+     }
+ 
+     size_t n_bytes() override {
+@@ -3882,6 +3950,7 @@
+         size_t offset;
+     };
+     std::vector<write_info> winfos;
++    std::vector<std::pair<size_t, tensor_generator>> generators;
+ 
+     llama_memory_buffers & mbufs;
+ };
+@@ -4128,7 +4197,11 @@
+         io->write(&io_magic, sizeof(io_magic));
+         io->write(&seq_id, sizeof(seq_id));
+ 
+-        return state_seq_write_data(*io, seq_id, flags);
++        const size_t written = state_seq_write_data(*io, seq_id, flags);
++        if (flags & LLAMA_STATE_SEQ_FLAGS_ON_DEVICE) {
++            static_cast<llama_io_write_device &>(*io).finish();
++        }
++        return written;
+     } catch (const std::exception & err) {
+         LLAMA_LOG_ERROR("%s: error saving state: %s\n", __func__, err.what());
+         return 0;
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -495,9 +495,17 @@
+     }
+ }
+ 
++void llm_graph_input_rs::set_gdn_replay(const llama_memory_recurrent_context * current) const {
++    if (gdn_replay) {
++        const auto & info = current->get_gdn_replay_info();
++        ggml_backend_tensor_set(gdn_replay, info.data(), 0, info.size() * sizeof(int32_t));
++    }
++}
++
+ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
+     GGML_UNUSED(ubatch);
+ 
++    set_gdn_replay(mctx);
+     const int64_t n_rs = mctx->get_n_rs();
+ 
+     if (s_copy) {
+@@ -1212,6 +1220,7 @@
+     // kv_rows and the mask stay unallocated if all attention layers have their own (e.g. qwen4exp QSA)
+     mctx->get_attn()->set_input_attn_mask(inp_attn->self_attn_mask, ubatch, cparams.causal_attn);
+ 
++    inp_rs->set_gdn_replay(mctx->get_recr());
+     const int64_t n_rs = mctx->get_recr()->get_n_rs();
+ 
+     if (inp_rs->s_copy) {
+@@ -1258,6 +1267,7 @@
+         mctx->get_attn()->set_input_attn_mask(inp_attn->self_attn_mask, ubatch, cparams.causal_attn);
+     }
+ 
++    inp_rs->set_gdn_replay(mctx->get_recr());
+     const int64_t n_rs = mctx->get_recr()->get_n_rs();
+ 
+     if (inp_rs->s_copy) {
+@@ -1315,6 +1325,7 @@
+         attn_ctx->get_swa()->set_input_attn_mask(inp_attn->self_attn_mask_swa, ubatch, cparams.causal_attn);
+     }
+ 
++    inp_rs->set_gdn_replay(mctx->get_recr());
+     const int64_t n_rs = mctx->get_recr()->get_n_rs();
+ 
+     if (inp_rs->s_copy) {
+@@ -4125,6 +4136,11 @@
+     inp->s_copy = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_rs);
+     ggml_set_input(inp->s_copy);
+     ggml_set_name(inp->s_copy, "rs_s_copy");
++    if (mctx_cur->has_gdn_replay()) {
++        inp->gdn_replay = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 3);
++        ggml_set_name(inp->gdn_replay, "rs_gdn_replay");
++        ggml_set_input(inp->gdn_replay);
++    }
+ 
+     inp->s_copy_main = ggml_view_1d(ctx0, inp->s_copy, n_seqs, 0);
+     inp->s_copy_tail = ggml_view_1d(ctx0, inp->s_copy, n_rs - 1, inp->s_copy->nb[0]);
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -304,6 +304,8 @@
+     bool can_reuse(const llm_graph_params & params) override;
+ 
+     ggml_tensor * s_copy;  // I32 [n_rs]
++    ggml_tensor * gdn_replay = nullptr; // I32 [accepted, bank, reset]
++    void set_gdn_replay(const llama_memory_recurrent_context * current) const;
+ 
+     // views of s_copy, computed once per graph
+     // and shared across layers which use build_rs
+diff --git a/src/llama-io.h b/src/llama-io.h
+--- a/src/llama-io.h
++++ b/src/llama-io.h
+@@ -2,6 +2,7 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <functional>
+ #include <string>
+ 
+ struct ggml_tensor;
+@@ -13,6 +14,8 @@
+ 
+     virtual void write(const void * src, size_t size) = 0;
+     virtual void write_tensor(ggml_tensor * tensor, size_t offset, size_t size) = 0;
++    using tensor_generator = std::function<void(ggml_tensor *)>;
++    virtual void write_generated_tensor(ggml_tensor * scratch, tensor_generator generate);
+ 
+     // bytes written so far
+     virtual size_t n_bytes() = 0;
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -5,6 +5,10 @@
+ #include "llama-io.h"
+ #include "llama-batch.h"
+ #include "llama-model.h"
++#include "llama-memory-contract.h"
++
++#include <cctype>
++#include <cstdlib>
+ 
+ #include <algorithm>
+ #include <cassert>
+@@ -16,6 +20,43 @@
+ //
+ // llama_memory_recurrent
+ //
++
++namespace {
++bool gdn_replay_model(const llama_model & model, uint32_t n_rs_seq) {
++    const char * option = std::getenv("LLAMA_GDN_REPLAY");
++    if (option) {
++        if (std::strcmp(option, "1") != 0) {
++            return false;
++        }
++    } else {
++        // Only the measured 24 GiB BF16 draft profile keeps decode throughput.
++        const auto & contract = *model.memory_contract;
++        if (contract.qwen35_profile_layers != 36 || n_rs_seq != 6 ||
++            contract.ledger->snapshot(llama_memory_domain::host).requested != (size_t{24} << 30)) {
++            return false;
++        }
++    }
++    if (model.arch != LLM_ARCH_QWEN35 && model.arch != LLM_ARCH_QWEN35MOE && model.arch != LLM_ARCH_QWEN4EXP) {
++        return false;
++    }
++    // Some Ornith GGUFs carry a generic name and identify their publisher
++    // only through a provenance URL.
++    for (const char * key : {"general.name", "general.basename", "general.finetune",
++                             "general.license.link", "general.source.url", "general.source.repo_url",
++                             "general.repo_url"}) {
++        const auto it = model.gguf_kv.find(key);
++        if (it != model.gguf_kv.end()) {
++            std::string name = it->second;
++            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
++            if (name.find("ornith") != std::string::npos) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++} // namespace
++
+ 
+ llama_memory_recurrent::llama_memory_recurrent(
+         const llama_model & model,
+@@ -29,6 +70,46 @@
+     const layer_filter_cb & filter) : hparams(model.hparams), n_seq_max(n_seq_max), ctxs_bufs(no_alloc) {
+     const int32_t n_layer = hparams.n_layer();
+ 
++    const int64_t heads = hparams.ssm_dt_rank;
++    const int64_t key_heads = hparams.ssm_n_group;
++    const int64_t history_width = 128 * (key_heads + heads) + 2 * heads;
++    const int64_t history_rows = int64_t(n_rs_seq) + 1;
++    if (model.memory_contract && offload && mem_size == 1 && n_seq_max == 1 &&
++        n_rs_seq > 0 && type_s == GGML_TYPE_F32 &&
++        hparams.ssm_d_state == 128 && heads > 0 && key_heads > 0 && heads % key_heads == 0 &&
++        hparams.ssm_d_inner == 128 * heads && 2 * history_width * history_rows < int64_t(n_rs_seq) * hparams.n_embd_s() &&
++        gdn_replay_model(model, n_rs_seq)) {
++        ggml_backend_dev_t dev = nullptr;
++        int recurrent_layers = 0;
++        for (int32_t il = 0; il < n_layer; ++il) {
++            if (filter && !filter(il)) {
++                continue;
++            }
++            const auto layer_dev = model.dev_layer(il);
++            if (!layer_dev || (dev && layer_dev != dev)) {
++                dev = nullptr;
++                break;
++            }
++            dev = layer_dev;
++            ++recurrent_layers;
++        }
++        if (dev && int64_t(recurrent_layers) *
++                    (int64_t(n_rs_seq) * hparams.n_embd_s() - 2 * history_width * history_rows) > hparams.n_embd_s()) {
++            const auto reg = ggml_backend_dev_backend_reg(dev);
++            using supports_fn = bool (*)(ggml_backend_dev_t);
++            const auto supports = reinterpret_cast<supports_fn>(
++                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_gdn_replay_supported"));
++            const auto export_state = reinterpret_cast<gdn_replay_cache::export_fn>(
++                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_gdn_replay_export"));
++            if (supports && export_state && supports(dev)) {
++                replay = std::make_unique<gdn_replay_cache>();
++                replay->device = dev;
++                replay->export_state = export_state;
++                replay->histories.resize(n_layer);
++            }
++        }
++    }
++
+     head = 0;
+     size = mem_size;
+     used = 0;
+@@ -53,7 +134,7 @@
+         if (it == ctx_map.end()) {
+             ggml_init_params params = {
+                 // r and s per layer, plus the separate PLE conv row where the model has one
+-                /*.mem_size   =*/ size_t((hparams.ple_conv_state() > 0 ? 3u : 2u)*n_layer*ggml_tensor_overhead()),
++                /*.mem_size   =*/ size_t(((hparams.ple_conv_state() > 0 ? 3u : 2u)*n_layer + (replay ? n_layer + 1u : 0u))*ggml_tensor_overhead()),
+                 /*.mem_buffer =*/ NULL,
+                 /*.no_alloc   =*/ true,
+             };
+@@ -101,11 +182,20 @@
+ 
+         const uint32_t n_rows = mem_size * (1 + n_rs_seq);
+         ggml_tensor * r = ggml_new_tensor_2d(ctx, type_r, hparams.n_embd_r(), n_rows);
+-        ggml_tensor * s = ggml_new_tensor_2d(ctx, type_s, hparams.n_embd_s(), n_rows);
++        ggml_tensor * s = ggml_new_tensor_2d(ctx, type_s, hparams.n_embd_s(), replay ? 1 : n_rows);
+         ggml_format_name(r, "cache_r_l%d", i);
+         ggml_format_name(s, "cache_s_l%d", i);
+         r_l[i] = r;
+         s_l[i] = s;
++        if (replay) {
++            auto * history = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, history_width * history_rows, 2);
++            ggml_format_name(history, "cache_gdn_history_l%d", i);
++            replay->histories[i] = history;
++            if (!replay->export_row) {
++                replay->export_row = ggml_dup_tensor(ctx, s);
++                ggml_set_name(replay->export_row, "cache_gdn_export");
++            }
++        }
+ 
+         // the PLE history needs its own row: Meta must mirror it while the delta-net conv state next door stays split
+         if (hparams.ple_conv_state() > 0 && hparams.is_ple(i)) {
+@@ -113,6 +203,10 @@
+             ggml_format_name(p, "cache_ple_r_l%d", i);
+             p_l[i] = p;
+         }
++    }
++
++    if (replay) {
++        LLAMA_LOG_INFO("%s: compact Metal GDN replay enabled (%u draft rows)\n", __func__, n_rs_seq);
+     }
+ 
+     // allocate the tensors and initialize the buffers to avoid NaNs in the padding
+@@ -161,6 +255,10 @@
+     }
+ 
+     std::fill(rs_idx.begin(), rs_idx.end(), 0);
++    if (replay) {
++        replay->pending = 0;
++        replay->bank = 0;
++    }
+ }
+ 
+ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+@@ -890,6 +988,10 @@
+     if (n_rs_seq != 0) {
+         set_rs_idx(seq_id, 0);
+     }
++    if (replay) {
++        replay->pending = 0;
++        replay->bank = 0;
++    }
+ }
+ 
+ void llama_memory_recurrent::state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id) const {
+@@ -964,6 +1066,24 @@
+             // Write row size of S tensor
+             const uint64_t s_size_row = ggml_row_size(s_l[il]->type, hparams.n_embd_s());
+             io.write(&s_size_row, sizeof(s_size_row));
++
++            if (replay && !cell_ranges.empty()) {
++                GGML_ASSERT(cell_ranges.size() == 1 && cell_ranges.front().second - cell_ranges.front().first == 1);
++                GGML_ASSERT(rs_idx[0] <= replay->pending);
++                const int accepted = replay->pending - rs_idx[0];
++                if (accepted > 0) {
++                    const int bank = replay->bank;
++                    io.write_generated_tensor(replay->export_row, [this, il, accepted, bank](ggml_tensor * dst) {
++                        if (!replay->export_state(replay->device, s_l[il], replay->histories[il],
++                                    hparams.ssm_dt_rank, hparams.ssm_n_group, accepted, bank, dst)) {
++                            throw std::runtime_error("failed to materialize the recurrent GDN state");
++                        }
++                    });
++                } else {
++                    io.write_tensor(s_l[il], 0, s_size_row);
++                }
++                continue;
++            }
+ 
+             // Write each logical cell row range. With pending recurrent rollback,
+             // the logical current state may live in a rollback snapshot plane.
+@@ -1317,7 +1437,21 @@
+         return true;
+     }
+ 
+-    mem->find_slot(ubatches[i_next]);
++    const auto & ubatch = ubatches[i_next];
++    if (!mem->replay) {
++        mem->find_slot(ubatch);
++        return true;
++    }
++
++    const bool reset = mem->cells[0].is_empty();
++    const uint32_t pending = reset ? 0 : mem->replay->pending;
++    const uint32_t rollback = reset ? 0 : mem->rs_idx[0];
++    if (rollback > pending || !mem->find_slot(ubatch)) {
++        return false;
++    }
++    replay_info = {int32_t(pending - rollback), mem->replay->bank, reset};
++    mem->replay->pending = ubatch.n_seq_tokens <= mem->n_rs_seq + 1 ? ubatch.n_seq_tokens : 0;
++    mem->replay->bank = 1 - mem->replay->bank;
+ 
+     return true;
+ }
+@@ -1358,6 +1492,14 @@
+ 
+ ggml_tensor * llama_memory_recurrent_context::get_p_l(int32_t il) const {
+     return mem->p_l[il];
++}
++
++bool llama_memory_recurrent_context::has_gdn_replay() const {
++    return bool(mem->replay);
++}
++
++ggml_tensor * llama_memory_recurrent_context::get_gdn_history(int32_t il) const {
++    return mem->replay ? mem->replay->histories[il] : nullptr;
+ }
+ 
+ int32_t llama_memory_recurrent_context::s_copy(int i) const {
+diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -4,6 +4,7 @@
+ #include "llama-graph.h"
+ #include "llama-memory.h"
+ 
++#include <array>
+ #include <map>
+ #include <set>
+ #include <vector>
+@@ -120,6 +121,21 @@
+     std::vector<ggml_tensor *> p_l;
+ 
+ private:
++    friend class llama_memory_recurrent_context;
++
++    // Compact GDN keeps the committed state before the pending block. The two
++    // input banks alternate so every layer reads a bank it cannot overwrite.
++    struct gdn_replay_cache {
++        using export_fn = bool (*)(ggml_backend_dev_t, const ggml_tensor *, const ggml_tensor *,
++                                   int, int, int, int, ggml_tensor *);
++        ggml_backend_dev_t device = nullptr;
++        export_fn export_state = nullptr;
++        std::vector<ggml_tensor *> histories;
++        ggml_tensor * export_row = nullptr;
++        uint32_t pending = 0;
++        int32_t bank = 0;
++    };
++    std::unique_ptr<gdn_replay_cache> replay;
+     //const llama_model & model;
+     const llama_hparams & hparams;
+ 
+@@ -187,12 +203,17 @@
+ 
+     int32_t s_copy(int i) const;
+ 
++    bool has_gdn_replay() const;
++    ggml_tensor * get_gdn_history(int32_t il) const;
++    const std::array<int32_t, 3> & get_gdn_replay_info() const { return replay_info; }
++
+ private:
+     const llama_memory_status status;
+ 
+     llama_memory_recurrent * mem;
+ 
+     size_t i_next = 0;
++    std::array<int32_t, 3> replay_info = {0, 0, 1};
+ 
+     std::vector<llama_ubatch> ubatches;
+ 
+diff --git a/src/models/delta-net-base.cpp b/src/models/delta-net-base.cpp
+--- a/src/models/delta-net-base.cpp
++++ b/src/models/delta-net-base.cpp
+@@ -95,6 +95,23 @@
+     const int64_t n_seqs       = s->ne[3];
+     const int64_t n_seq_tokens = q->ne[2];
+ 
++    if (inp->gdn_replay) {
++        auto * history = mctx_cur->get_gdn_history(il);
++        GGML_ASSERT(history && S_v == 128 && n_seqs == 1 && g->ne[0] == 1);
++        // The private Metal op reads and updates these two admitted cache
++        // tensors. No trailing snapshot copy consumes the result state.
++        ggml_tensor * result = ggml_gated_delta_net(ctx0, q, k, v, g, b, s, 1);
++        result->src[6] = inp->gdn_replay;
++        result->src[7] = history;
++        // The compact kernel returns only the attention rows. GDN reads
++        // those rows from the beginning of its ordinary result layout.
++        auto * output = ggml_view_4d(ctx0, result, S_v, H_v, n_seq_tokens, n_seqs,
++                ggml_row_size(result->type, S_v), ggml_row_size(result->type, S_v * H_v),
++                ggml_row_size(result->type, S_v * H_v * n_seq_tokens), 0);
++        cb(output, "attn_output", il);
++        return output;
++    }
++
+     const bool keep = cparams.n_rs_seq > 0;
+ 
+     if (!keep) {
+diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
+--- a/src/models/qwen35.cpp
++++ b/src/models/qwen35.cpp
+@@ -418,7 +418,8 @@
+ 
+     ggml_tensor * conv_input = build_conv_state(inp, conv_states_all, qkv_mixed, conv_kernel_size, conv_channels, il);
+ 
+-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
++    ggml_tensor * state = inp->gdn_replay ? ssm_states_all :
++            build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
+     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
+     cb(state, "state_predelta", il);
+ 
+diff --git a/src/models/qwen35moe.cpp b/src/models/qwen35moe.cpp
+--- a/src/models/qwen35moe.cpp
++++ b/src/models/qwen35moe.cpp
+@@ -394,7 +394,8 @@
+ 
+     ggml_tensor * conv_input = build_conv_state(inp, conv_states_all, qkv_mixed, conv_kernel_size, conv_channels, il);
+ 
+-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
++    ggml_tensor * state = inp->gdn_replay ? ssm_states_all :
++            build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
+     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
+     cb(state, "state_predelta", il);
+ 
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -1174,7 +1174,8 @@
+     ggml_tensor * conv_input = build_conv_state_at(inp, conv_states_all, qkv_mixed,
+             conv_kernel_size - 1, conv_channels, il);
+ 
+-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
++    ggml_tensor * state = inp->gdn_replay ? ssm_states_all :
++            build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
+     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
+     cb(state, "state_predelta", il);
+ 
+diff --git a/ggml/src/ggml-metal/kernels/gated_delta_net_replay.metal b/ggml/src/ggml-metal/kernels/gated_delta_net_replay.metal
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-metal/kernels/gated_delta_net_replay.metal
+@@ -0,0 +1,162 @@
++#include "common.h"
++
++// Recurrence from gated_delta_net.metal at 31953bcf7. Keep the FP32
++// accumulation and SIMD reduction order in sync with the scalar-gate path.
++// Each SIMD group owns one row of an FP32 128 x 128 state matrix.
++static inline void gdn_replay_prefix(
++        thread float (&state)[4],
++        device const float * history,
++        constant ggml_metal_gdn_replay_layout & layout,
++        int accepted, uint lane, uint row, uint head) {
++    const uint value_offset = 128 * layout.key_heads;
++    const uint gate_offset = value_offset + 128 * layout.heads;
++    const uint beta_offset = gate_offset + layout.heads;
++    const uint row_size = beta_offset + layout.heads;
++    for (int t = 0; t < accepted; ++t) {
++        device const float * input = history + t * row_size;
++        device const float * key = input + (head % layout.key_heads) * 128;
++        const float gate = exp(input[gate_offset + head]);
++        float s_k = 0.0f;
++        FOR_UNROLL (short j = 0; j < 4; ++j) {
++            const uint is = lane * 4 + j;
++            state[j] *= gate;
++            s_k += state[j]*key[is];
++        }
++        s_k = simd_sum(s_k);
++        const float d = (input[value_offset + head * 128 + row] - s_k) * input[beta_offset + head];
++        FOR_UNROLL (short j = 0; j < 4; ++j) {
++            state[j] += key[lane * 4 + j]*d;
++        }
++    }
++}
++
++template<bool RETAIN>
++kernel void kernel_gated_delta_net_replay_impl(
++        constant ggml_metal_kargs_gated_delta_net & args [[buffer(0)]],
++        device const char * q [[buffer(1)]],
++        device const char * k [[buffer(2)]],
++        device const char * v [[buffer(3)]],
++        device const float * g [[buffer(4)]],
++        device const float * beta [[buffer(5)]],
++        device float * state [[buffer(6)]],
++        device float * output [[buffer(7)]],
++        device const int * replay [[buffer(9)]],
++        device float * history [[buffer(10)]],
++        constant ggml_metal_gdn_replay_layout & layout [[buffer(11)]],
++        uint3 group [[threadgroup_position_in_grid]],
++        uint3 thread_id [[thread_position_in_threadgroup]]) {
++    const uint lane = thread_id.x;
++    const uint row = group.x * 4 + thread_id.y;
++    const uint head = group.y;
++    const uint q_head = head % args.ne01;
++    const uint k_head = head % layout.key_heads;
++    const uint value_offset = 128 * layout.key_heads;
++    const uint gate_offset = value_offset + 128 * layout.heads;
++    const uint beta_offset = gate_offset + layout.heads;
++    const uint row_size = beta_offset + layout.heads;
++    const uint bank_size = layout.history_rows * row_size;
++    state += (head * 128 + row) * 128;
++
++    float ls[4];
++    FOR_UNROLL (short j = 0; j < 4; ++j) {
++        ls[j] = replay[2] ? 0.0f : state[lane * 4 + j];
++    }
++    gdn_replay_prefix(ls, history + replay[1] * bank_size, layout, replay[0], lane, row, head);
++
++    // A short block leaves the accepted starting state and its provisional
++    // inputs. Long prompt batches leave only their final state.
++    if (RETAIN) {
++        FOR_UNROLL (short j = 0; j < 4; ++j) {
++            state[lane * 4 + j] = ls[j];
++        }
++    }
++
++    device const float * q_ptr = (device const float *)(q + q_head * args.nb01);
++    device const float * k_ptr = (device const float *)(k + k_head * args.nb11);
++    device const float * v_ptr = (device const float *)(v + head * args.nb21);
++    device float * next = history + (1 - replay[1]) * bank_size;
++    device const float * g_ptr = g + head;
++    device const float * b_ptr = beta + head;
++    device float * out = output + head * 128 + row;
++    const float scale = 1.0f / sqrt(128.0f);
++
++    for (int t = 0; t < args.ne22; ++t) {
++        const float g_input = *g_ptr;
++        const float b_input = *b_ptr;
++        const float gate = exp(g_input);
++        float s_k = 0.0f;
++        FOR_UNROLL (short j = 0; j < 4; ++j) {
++            const uint is = lane * 4 + j;
++            ls[j] *= gate;
++            s_k += ls[j]*k_ptr[is];
++        }
++        s_k = simd_sum(s_k);
++        const float d = (v_ptr[row] - s_k)*b_input;
++        float y = 0.0f;
++        FOR_UNROLL (short j = 0; j < 4; ++j) {
++            const uint is = lane * 4 + j;
++            ls[j] += k_ptr[is]*d;
++            y += ls[j]*q_ptr[is];
++        }
++        y = simd_sum(y);
++        if (lane == 0) {
++            out[t * layout.heads * 128] = y*scale;
++        }
++
++        if (RETAIN) {
++            device float * input = next + t * row_size;
++            if (row == 0 && head < uint(layout.key_heads)) {
++                FOR_UNROLL (short j = 0; j < 4; ++j) {
++                    const uint is = lane * 4 + j;
++                    input[head * 128 + is] = k_ptr[is];
++                }
++            }
++            if (lane == 0) {
++                input[value_offset + head * 128 + row] = v_ptr[row];
++                if (row == 0) {
++                    input[gate_offset + head] = g_input;
++                    input[beta_offset + head] = b_input;
++                }
++            }
++        }
++        q_ptr += args.ns02;
++        k_ptr += args.ns12;
++        v_ptr += args.ns22;
++        g_ptr += layout.heads;
++        b_ptr += layout.heads;
++    }
++    if (!RETAIN) {
++        FOR_UNROLL (short j = 0; j < 4; ++j) {
++            state[lane * 4 + j] = ls[j];
++        }
++    }
++}
++
++typedef decltype(kernel_gated_delta_net_replay_impl<true>) kernel_gated_delta_net_replay_t;
++template [[host_name("kernel_gated_delta_net_replay")]] kernel kernel_gated_delta_net_replay_t kernel_gated_delta_net_replay_impl<true>;
++template [[host_name("kernel_gated_delta_net_replay_prefill")]] kernel kernel_gated_delta_net_replay_t kernel_gated_delta_net_replay_impl<false>;
++
++// Serialize the logical state without consuming the live rollback history.
++kernel void kernel_gated_delta_net_replay_export(
++        constant ggml_metal_gdn_replay_export_args & args [[buffer(0)]],
++        device const float * state [[buffer(1)]],
++        device const float * history [[buffer(2)]],
++        device float * dst [[buffer(3)]],
++        uint3 group [[threadgroup_position_in_grid]],
++        uint3 thread_id [[thread_position_in_threadgroup]]) {
++    const uint lane = thread_id.x;
++    const uint row = group.x * 4 + thread_id.y;
++    const uint head = group.y;
++    const uint row_size = 128 * (args.layout.heads + args.layout.key_heads) + 2 * args.layout.heads;
++    const uint offset = (head * 128 + row) * 128 + lane * 4;
++
++    float ls[4];
++    FOR_UNROLL (short j = 0; j < 4; ++j) {
++        ls[j] = state[offset + j];
++    }
++    gdn_replay_prefix(ls, history + args.bank * args.layout.history_rows * row_size,
++                      args.layout, args.accepted, lane, row, head);
++    FOR_UNROLL (short j = 0; j < 4; ++j) {
++        dst[offset + j] = ls[j];
++    }
++}

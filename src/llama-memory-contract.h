@@ -31,6 +31,14 @@ private:
     ggml_backend_buffer_t buffer = nullptr;
 };
 
+// Optional size-aware reclamation receives the full rounded reservation, not
+// a stale shortfall. Its owner outlives the scope. A refusal must not fall through
+// to destructive legacy reclamation; admission is retried against the ledger.
+struct llama_memory_reclaimer {
+    void (*reclaim)(void *, llama_memory_domain, size_t) = nullptr;
+    void * user = nullptr;
+};
+
 // Installs admission only on this thread. Resource tickets outlive the scope.
 // An empty scope suppresses interception for already-admitted expert buffers.
 class llama_allocation_scope {
@@ -38,7 +46,8 @@ public:
     llama_allocation_scope(std::shared_ptr<llama_memory_budget> budget = {},
                            llama_memory_category category = llama_memory_category::runtime,
                            std::function<void()> reclaim = {},
-                           llama_discrete_buffer_types discrete = {});
+                           llama_discrete_buffer_types discrete = {},
+                           llama_memory_reclaimer sized_reclaim = {});
     ~llama_allocation_scope();
     llama_allocation_scope(const llama_allocation_scope &) = delete;
     llama_allocation_scope & operator=(const llama_allocation_scope &) = delete;
@@ -47,6 +56,7 @@ private:
     llama_memory_category category;
     std::function<void()> reclaim;
     llama_discrete_buffer_types discrete;
+    llama_memory_reclaimer sized_reclaim;
     ggml_backend_alloc_observer previous;
     static void * reserve(ggml_backend_buffer_type_t buft, size_t size, void * user) noexcept;
     static bool commit(void * reservation, size_t actual) noexcept;
@@ -58,6 +68,9 @@ private:
 struct llama_memory_contract : std::enable_shared_from_this<llama_memory_contract> {
     static constexpr size_t runtime_envelope = size_t(2) * 1024 * 1024 * 1024;
     explicit llama_memory_contract(size_t cap);
+    // A dense auxiliary model uses the same ledger and runtime envelope, with
+    // an independent context claim and no streamed-weight policy.
+    explicit llama_memory_contract(std::shared_ptr<llama_memory_budget> shared) : ledger(std::move(shared)) {}
     llama_memory_contract(size_t host_cap, size_t device_cap, llama_discrete_buffer_types types);
     std::shared_ptr<void> claim_context();
     std::shared_ptr<llama_memory_budget> ledger;
@@ -66,7 +79,13 @@ struct llama_memory_contract : std::enable_shared_from_this<llama_memory_contrac
     bool stream_experts = false;
     bool stream_cpu_layers_on_cpu = false;
     bool stream_cuda_boundary_reduction = false;
+    bool dflash2_target = false;
+    uint32_t qwen35_profile_layers = 0;
+    bool qwen35_fast_prefill_default = false;
+    bool qwen35_resident_verify = false;
+    bool qwen35_grouped_attention = false;
     llama_memory_budget::ticket runtime;
+    llama_memory_budget::ticket draft_slot_staging;
     std::atomic<bool> context_claimed {false};
 };
 

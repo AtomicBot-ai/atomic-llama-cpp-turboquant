@@ -1,0 +1,34 @@
+Atomic Engine long-prompt speedup
+
+1. Admit layer-major prefill at more memory budgets.
+   Start with the existing Qwen4Exp Metal window: eight consecutive
+   microbatches of eight tokens, with the same graph and arithmetic per
+   microbatch. Lift the exact 8 GiB check while retaining that proven
+   profile as the initial floor. Tie file-cache advice to the budget
+   that admitted the window. To support smaller windows and lower caps,
+   admit scheduler, graph and expert working storage before mutating
+   prompt state. Resize at the synchronized window boundary.
+   Compare window off/on at 12 GiB with the shared 3617-token prompt.
+   Record first-token latency, decode rate, read bytes and peak budget.
+   Verify exact logits and slot state and a sequential fallback below
+   the admitted floor. Qualify the separate 246-token, context-1024
+   workload before evaluating window scheduling there.
+
+2. Read an expert's weight matrices together.
+   Prototype an opt-in disk copy that places the original gate, up and
+   down slices together for each expert. Bind it to the source shards
+   and verify byte integrity. Make one bounded read when the exact
+   projections need the slices, and reuse them across the projections.
+   Account for staging and keep the original GGUF reader available.
+   Compare with the same window and budget. Record disk space, read
+   count, read bytes and end-to-end time. Require exact logits and state.
+
+3. Overlap known-route reads with Metal compute.
+   Queue misses after routing and let Metal process ready expert work
+   while the next group is read into a second admitted staging buffer.
+   Bound in-flight bytes and retain leases until GPU completion.
+   Preserve the route reduction order, cancellation and resize behavior.
+   Compare serial and overlapped runs at the same budget and file-cache
+   conditions. Check for exact outputs and a first-token latency gain.
+   Measure speculative decoding separately with drafting off/on before
+   attributing a decode gain to the I/O pipeline.

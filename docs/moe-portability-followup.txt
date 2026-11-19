@@ -1,0 +1,129 @@
+MoE Portability
+Status: Metal implementation and targeted qualification; full acceptance pending.
+
+Scope and configuration
+LLAMA_MOE_STREAMING=auto is the default inside file-backed expert streaming on
+Metal for qwen4exp, qwen35moe and lfm2moe. LLAMA_MOE_STREAMING=off retains the
+ordinary streaming executor and overrides the experimental combined-MoE flags.
+The setting is read when the streaming executor is created; it is not a live
+per-request switch. No public llama model/context structure or ABI was changed.
+Ordinary non-streaming loading and CPU/CUDA execution retain their existing paths.
+Explicit auto/off overrides legacy experimental flags. When the unified setting
+is absent, explicit LLAMA_EXPERIMENTAL_METAL_MOE settings retain their old opt-in
+configuration for compatibility; otherwise the default is automatic.
+
+The five local qualification models are Flash-Next, Qwen 35B, Ornith 35B,
+Ornith 122B and LFM 24B. Selection uses architecture, tensor geometry, quantization
+and backend capabilities, never filenames. This is not a claim that every MoE
+architecture or arbitrary quantization is supported.
+
+Execution
+The automatic path combines compact size-class buffers, bounded buffer reuse,
+size-aware eviction, resident-first overlap, four shared priority readers and
+address-batched FP32 Metal operations. Demand jobs cover individual up/gate/down
+slices; a group is published only after all its required slices validate.
+The ready threshold is four, clamped to the remaining group; partial final groups
+cannot deadlock. The existing FP32 vector arithmetic is unchanged. Router logits,
+expert selection, shared experts, route weighting and reduction stay in the outer
+graph, including LFM's expert-selection bias.
+
+Each layer is qualified independently. Unsupported geometry, activation, fused
+weights, modifiers or backend operations retain the existing graph/executor.
+The combined callback handles at most eight token rows, 32 routes per row and
+128 registered layers; outside those limits the original path remains available.
+The maximum admitted combined width is 8192. These are capability bounds, not
+model-specific performance tuning.
+
+Prediction is separate from expert execution. Only qwen4exp has the qualified
+early next-router prediction. It uses the current FFN input, all verify rows and
+the existing CPU MoE handoff, with at most eight missing candidates. Other
+architectures use the shared demand queue without speculative prediction.
+Later predictor checkpoints are not enabled by auto. DFlash2 still requires its
+explicit compatible target/draft configuration; it is not required for streaming
+acceleration. Existing prefill-window geometry and budget qualification remain.
+Automatic Qwen4Exp execution can switch to the existing per-projection executor
+inside a qualified layer-major prefill window. Combined MoE and prediction graph
+capabilities are suppressed for the entire window; pending predictions and the
+private Metal backend drain at entry. The combined workspace and descriptors stay
+allocated and charged, so cached decode graphs remain valid when the window ends.
+Legacy experimental combined-MoE configurations keep their previous restriction.
+This is phase coexistence, not concurrent use of one combined workspace by window
+workers. Unsupported windows still fall back to ordinary processing.
+
+Memory and lifecycle
+Optional combined workspaces and readers are admitted only after mandatory model,
+context and graph allocation. Every payload buffer, arena, reader stack and demand
+task batch has a shared-ledger reservation; ordinary C++ control overhead remains
+covered by the existing runtime envelope. Reader stacks are 256 KiB plus 16 KiB
+guards per worker. The reuse pool has at most 256 buffers and 256 MiB, with a
+16 MiB per-buffer ceiling; every retained buffer remains charged and reclaimable.
+
+The predictor tries eight candidates, then four, then disables itself if its two
+staging generations do not fit. Group width depends on available admitted memory.
+If overlap cannot fit, execution becomes sequential; failure to allocate optional
+acceleration preserves ordinary streaming rather than raising its minimum.
+
+At a synchronized automatic-mode resize, the context invalidates cached graphs
+before releasing executor descriptors. Readers drain and GPU work completes
+before buffers and reservations are released. A growth can admit acceleration
+again; an insufficient budget reports a fallback reason. Requests below the
+ordinary model/context/executor working set are rejected. Internal executor users
+must discard previously built graphs before automatic-mode resize.
+
+Backend boundary and upstream maintenance
+The private proc-address capability ggml_backend_metal_expert_addresses_v1 accepts
+an indexed-matmul node and a shared Metal I64 table of leased expert tensor
+pointers. The backend validates the table and owns the op marker, resolves GPU
+addresses, and declares each referenced resource as read-only to Metal. All
+leases and the table survive until GPU completion; weights are not packed or
+copied into a new expert batch.
+
+The address routing shader wrapper was copied from kernel_mul_mv_id at upstream
+3f8c243108faca78efb5433e0a2e70850e8f7a70. Track route indexing, launch geometry,
+split-K and argument layout during upstream updates. Arithmetic functions are
+shared, not copied. The ordinary Metal indexed-matmul encoder has one marker
+branch to select the wrapper; no workers, speculative reads, address tables or
+prediction nodes are created by the disabled streaming feature.
+
+Qualification and limits
+Targeted executor checks cover cold/hot cache, exact FP32 results, mixed Q4_K /
+Q5_K / Q6_K projections, queued reads, incomplete groups, shrink/grow, source
+failure and lease cleanup. Separate prefetch checks cover four/eight candidates,
+demand priority, cancellation, exact copied bytes and joined resource release.
+Whole-request pairs compare all output logits and IDs, saved slots and restore /
+resave. The Flash-Next reference additionally checks natural DFlash2 rollback.
+
+Performance measurements are sequential, with fixed texts, warmup and no prefix
+reuse. A model-specific prompt is identical within its on/off pair; no confidence
+threshold or parameter is fitted to those texts. Timings include the complete
+request path; replay numbers are not substituted for request throughput. Logical
+expert reads and physical process I/O must be reported separately.
+
+The 8/12/18/24 GiB cross-product is a separate acceptance run requiring explicit
+operator approval. Passing the focused 18 GiB model checks and boundary tests does
+not establish performance at every budget, context size or model. No full suite
+or aggregate verification is implied by this document.
+
+Measured evidence (2026-11-16, M4 Max)
+At 18 GiB, context 1024, 246 input / 64 output tokens, the targeted off -> auto
+pairs measured Qwen 35B 10.55 -> 33.82 tokens/s, Ornith 35B 8.84 -> 29.73,
+LFM 24B 29.09 -> 53.66, and Ornith 122B 2.18 -> 4.20. All four pairs had exact
+output IDs, all 64 logits rows, saved slots and restore/resave. These are single
+pairs with warmup; the filesystem cache was not reset. They are not universal
+speedup estimates. The texts were fixed before the comparisons.
+
+The imported Flash-Next/DFlash2 baseline measured 19.51 tokens/s. Automatic-mode
+checks measured 19.25 and 18.88 tokens/s, with identical logits, slot bytes and
+seven natural rollback events covering fourteen rejected positions. The latter
+check used the final demand-metadata admission ordering.
+
+A separate Qwen 35B live-context check changed 18 -> 8 -> 12 -> 24 GiB during
+16-token generation and rejected a 1 MiB request. All logits, generated IDs and
+serialized state matched the fixed-budget control. This tests resize correctness,
+not throughput at all four limits. Unit checks also cover automatic candidate
+capacity transitions 8 -> 4 -> 0 -> 8 and fallback at the ordinary working-set floor.
+
+The four cross-model performance pairs preceded the final change to reserve demand
+batch metadata before allocating it, with a 4 KiB allocator allowance. Subsequent
+queue/resize/Flash checks passed; the kernels and scheduling policy were unchanged.
+Full five-model/four-budget acceptance on the final revision remains unrun.

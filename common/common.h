@@ -340,6 +340,7 @@ struct common_params_model {
 
 // draft-model-based speculative decoding parameters
 struct common_params_speculative_draft {
+    bool n_max_explicit = false;
     int32_t n_max = 3; // maximum number of tokens to draft during speculative decoding
     int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
 
@@ -349,6 +350,7 @@ struct common_params_speculative_draft {
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
     bool probabilistic = false; // sample the draft and verify by rejection, instead of argmax and match
+    bool atomic_adaptive_dflash = false; // budgeted DFlash2 verification depth for greedy requests
 
     common_params_model mparams;
 
@@ -613,7 +615,9 @@ struct common_params {
     size_t engine_ram_budget = 0;  // separate RAM/VRAM caps opt into CUDA expert streaming
     size_t engine_vram_budget = 0;
     std::string engine_prefix_checkpoints; // private disk workspace for the Qwen4Exp CUDA server
-    bool engine_prefill_window = false; // opt-in Qwen4Exp/Metal layer windows
+    bool engine_prefill_window = false; // allow legacy Metal windows in addition to automatic wide prefill
+    bool engine_prefill_window_disabled = false;
+    int engine_qwen35_layers = 0; // selected fixed-budget Metal server profile
     bool engine_memory_auto = false;
     size_t engine_memory_min = 0;
     size_t engine_memory_reserve = size_t(1024) * 1024 * 1024;

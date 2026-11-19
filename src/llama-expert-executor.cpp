@@ -1,6 +1,9 @@
+#include "llama-expert-acceleration.h"
+#include "llama-lfm-resident.h"
 #include "llama-expert-executor.h"
 #include "llama-expert-preview-dot.h"
 #include "llama-expert-route-index.h"
+#include "llama-expert-moe.h"
 #include "llama-memory-contract.h"
 
 #include "ggml-cpp.h"
@@ -11,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -50,6 +54,8 @@ struct llama_expert_executor::impl {
     llama_expert_profile_data profile_data;
     llama_expert_profile_data * profile = nullptr;
     std::unique_ptr<llama_expert_store> store;
+    llama_memory_budget::ticket moe_charge;
+    std::unique_ptr<llama_expert_moe> moe;
     ggml_backend_ptr cpu_backend;
     std::unique_ptr<llama_expert_store> cpu_store;
     std::map<const ggml_tensor *, projection> projections;
@@ -88,11 +94,13 @@ struct llama_expert_executor::impl {
     size_t minimum = 0;
     size_t fixed_workspace = 0;
     size_t workspace_groups = 1, max_expert_payload = 0, max_expert_allocation = 0;
+    size_t full_expert_storage = 0;
     llama_discrete_buffer_types discrete;
     bool metal = false;
     bool qwen_cuda = false;
     bool read_overlap = false;
     bool vector_read_overlap = false;
+    bool parallel_window_reads = false;
     bool single_expert_map = false;
     using prepare_map_t = bool (*)(ggml_tensor *);
     prepare_map_t prepare_map = nullptr;
@@ -126,7 +134,24 @@ struct llama_expert_executor::impl {
     llama_memory_budget::ticket preview_charge;
     std::unique_ptr<preview_state> preview;
     bool tracing = false, class_policy = false;
-    bool layer_window = false, window_decode_advice = false;
+    bool selective_reclaim = false;
+    bool automatic_acceleration = false;
+    bool dflash_verify = false;
+    bool profile_overlap = false;
+    std::unique_ptr<llama_lfm_resident> lfm_resident;
+    std::shared_ptr<llama_expert_source> acceleration_source;
+    size_t acceleration_width = 0;
+    uint64_t retired_moe_calls = 0, retired_pipeline_groups = 0, retired_resident_groups = 0;
+    bool layer_window = false;
+    bool fused_window_moe = false;
+    using window_addresses_t = bool (*)(ggml_tensor *, ggml_tensor *);
+    window_addresses_t window_addresses = nullptr;
+    llama_memory_budget::ticket cross_window_charge;
+    std::unique_ptr<float[]> cross_window_input, cross_window_output;
+    std::unique_ptr<int32_t[]> cross_window_ids;
+    size_t cross_window_width = 0, cross_window_routes = 0;
+    const ggml_tensor * cross_window_ready = nullptr;
+    size_t window_advice_budget = 0;
     bool policy_override = false;
     std::atomic<bool> failed {false};
     char failure[512] {};
@@ -153,6 +178,19 @@ struct llama_expert_executor::impl {
         // Qwen4Exp is qualified for vector batches; LFM and Qwen3.5 use
         // matrix waves. Both retain the same budget and lease checks.
         vector_read_overlap = metal && source->architecture() == "qwen4exp";
+        const bool requested_acceleration = metal && !discrete.device && llama_expert_acceleration_requested();
+        // Explicit auto/off takes precedence; an absent unified setting preserves legacy opt-ins.
+        automatic_acceleration = requested_acceleration && (std::getenv("LLAMA_MOE_STREAMING") ||
+            !std::getenv("LLAMA_EXPERIMENTAL_METAL_MOE")) &&
+            !source->packed_stride() && (source->architecture() == "qwen4exp" ||
+                source->architecture() == "qwen35moe" || source->architecture() == "lfm2moe");
+        if (automatic_acceleration) { acceleration_source = source; }
+        const char * reclaim_mode = std::getenv("LLAMA_EXPERIMENTAL_EXPERT_RECLAIM");
+        selective_reclaim = automatic_acceleration || (!llama_expert_acceleration_off() && vector_read_overlap && reclaim_mode && std::strcmp(reclaim_mode, "1") == 0);
+        if (vector_read_overlap && !source->packed_stride()) {
+            const char * parallel = std::getenv("LLAMA_EXPERT_PARALLEL_READS");
+            parallel_window_reads = parallel && std::strcmp(parallel, "1") == 0;
+        }
         read_overlap = vector_read_overlap ||
             (metal && (source->architecture() == "lfm2moe" || source->architecture() == "qwen35moe"));
         backend.reset(ggml_backend_dev_init(device, nullptr));
@@ -208,14 +246,34 @@ struct llama_expert_executor::impl {
             }
         }
         max_expert_payload = max_expert;
+        const char * compact_mode = std::getenv("LLAMA_EXPERIMENTAL_EXPERT_COMPACT");
+        const bool compact_buffers = automatic_acceleration || (!llama_expert_acceleration_off() && vector_read_overlap && compact_mode && std::strcmp(compact_mode, "1") == 0);
+        const char * recycle_mode = std::getenv("LLAMA_EXPERIMENTAL_EXPERT_RECYCLE");
+        const bool recycle_buffers = compact_buffers && (automatic_acceleration || (max_expert <= 1024 * 1024 &&
+            recycle_mode && std::strcmp(recycle_mode, "1") == 0));
         size_t expert_granularity = allocation_granularity;
         // Equal-sized Metal slots avoid reallocating mixed-quantization LRU
         // victims. Bound the qualified Qwen4Exp geometry at 1 MiB; larger
         // experts retain the generic allocation policy. Charge the whole slot.
-        if (vector_read_overlap && max_expert <= 1024 * 1024) {
+        // Opt-in compact buffers instead round each slice to 64 KiB and only
+        // reuse victims in the same size class, preventing oversized retention.
+        if (vector_read_overlap && !compact_buffers && max_expert <= 1024 * 1024) {
             while (expert_granularity < max_expert) { expert_granularity *= 2; }
         }
         if (!discrete.device) { max_expert_allocation = rounded(max_expert, expert_granularity) + ggml_tensor_overhead(); }
+        const char * prefill_batch_mode = automatic_acceleration ?
+            std::getenv("LLAMA_EXPERIMENTAL_PREFILL_EXPERT_BATCH") : nullptr;
+        if (prefill_batch_mode && std::strcmp(prefill_batch_mode, "auto") == 0) {
+            for (const auto * weight : weights) {
+                const auto & info = source->tensor(weight->name);
+                const size_t bytes = rounded(info.expert_bytes(), expert_granularity) + ggml_tensor_overhead();
+                if (size_t(info.ne[2]) > (SIZE_MAX - full_expert_storage) / bytes) {
+                    full_expert_storage = SIZE_MAX;
+                    break;
+                }
+                full_expert_storage += size_t(info.ne[2]) * bytes;
+            }
+        }
         const auto initial = budget->snapshot(llama_memory_domain::host);
         const auto buffer_domain = discrete.device ? llama_memory_domain::device : llama_memory_domain::host;
         size_t meta_size = 0, buffer_size = 0, host_elements = 0, host_bytes = 0;
@@ -274,8 +332,49 @@ struct llama_expert_executor::impl {
             cpu_store = std::make_unique<llama_expert_store>(source, budget, cpu_backend.get(),
                     llama_memory_domain::host, allocation_granularity, ggml_backend_cpu_buffer_type());
         }
-        store.reset(new llama_expert_store(std::move(source), budget, backend.get(),
-                                           buffer_domain, expert_granularity));
+        store.reset(new llama_expert_store(source, budget, backend.get(),
+                                           buffer_domain, expert_granularity, nullptr, compact_buffers, recycle_buffers));
+        const char * combined = std::getenv("LLAMA_EXPERIMENTAL_METAL_MOE");
+        acceleration_width = std::max(max_input, max_output);
+        if (!std::getenv("LLAMA_MOE_STREAMING") && combined && std::strcmp(combined, "1") == 0 && vector_read_overlap &&
+                max_input <= 8192 && max_output <= 8192) {
+            moe_charge = admitted(*budget, llama_memory_category::runtime, sizeof(llama_expert_moe));
+            moe = std::make_unique<llama_expert_moe>(budget, backend.get(), *store, std::move(source),
+                    std::max(max_input, max_output), max_expert_allocation, max_expert_payload,
+                    failed, failure, sizeof(failure), profile, n_projections, n_matmuls, n_submissions);
+            moe_charge.commit();
+            minimum += 2 * max_expert_allocation;
+        }
+    }
+
+    void configure_acceleration() {
+        if (!automatic_acceleration || moe || !acceleration_source) { return; }
+        if (acceleration_width > 8192) {
+            std::fprintf(stderr,"expert acceleration: fallback (width exceeds qualified Metal geometry)\n"); return;
+        }
+        try {
+            auto charge = budget->reserve(llama_memory_domain::host, llama_memory_category::runtime, sizeof(llama_expert_moe));
+            if (!charge) { throw std::runtime_error("metadata does not fit"); }
+            auto candidate = std::make_unique<llama_expert_moe>(budget, backend.get(), *store, acceleration_source,
+                acceleration_width, max_expert_allocation, max_expert_payload, failed, failure, sizeof(failure),
+                profile, n_projections, n_matmuls, n_submissions, true, dflash_verify, profile_overlap);
+            charge.commit(); moe_charge = std::move(charge); moe = std::move(candidate);
+            std::fprintf(stderr,"expert acceleration: auto architecture=%s compact=1 recycle=1 reclaim=1 FP32=1 address_batch=%d priority_readers=%d prefetch=%zu ready=4 optional_bytes=%zu\n",
+                acceleration_source->architecture().c_str(),int(moe->address_batches()),int(moe->priority_reads()),
+                moe->prefetch_candidates(),moe->optional_bytes()+moe_charge.size());
+        } catch (const std::exception & e) {
+            std::fprintf(stderr,"expert acceleration: fallback (%s); ordinary streaming retained\n",e.what());
+        }
+    }
+    size_t optional_bytes() const {
+        return automatic_acceleration && moe ? moe_charge.size()+moe->optional_bytes() : 0;
+    }
+    void drop_acceleration() {
+        if (!automatic_acceleration || !moe) { return; }
+        moe->end_graph(); ggml_backend_synchronize(backend.get());
+        retired_moe_calls += moe->completed(); retired_pipeline_groups += moe->overlapped_groups();
+        retired_resident_groups += moe->resident_starts();
+        moe.reset(); moe_charge = {};
     }
 
     static int32_t id_at(const ggml_tensor * ids, int64_t slot, int64_t token) {
@@ -431,7 +530,7 @@ struct llama_expert_executor::impl {
         }
     }
 
-    void compute(const projection & p, ggml_tensor * dst) {
+    void compute(const projection & p, ggml_tensor * dst, bool keep_vector = false) {
         llama_expert_timer projection_timer(profile ? &profile->projection_ns : nullptr);
         llama_allocation_scope explicit_admission;
         const ggml_tensor * input = dst->src[0];
@@ -493,8 +592,9 @@ struct llama_expert_executor::impl {
         // one-row vector kernels changes prefill numerics. Pad bounded waves to
         // 32 rows so MUL_MAT_ID uses the corresponding matrix kernel, even
         // when an expert owns only one row. Original GGUF bytes remain intact.
-        const bool matrix_wave = metal && p.input >= 64 && p.experts <= 1024 && ids->ne[1] >= 32;
+        const bool matrix_wave = !keep_vector && metal && p.input >= 64 && p.experts <= 1024 && ids->ne[1] >= 32;
         const bool vector_batch = metal && !matrix_wave && ids->ne[1] > 1;
+        const bool address_batch = vector_batch && window_addresses;
         // CUDA selects indexed kernels by the original token count. Preserve
         // that dimension even when only a few rows route to this expert.
         if (discrete.device && ids->ne[1] > int64_t(max_wave_rows)) {
@@ -505,16 +605,20 @@ struct llama_expert_executor::impl {
         // miss staging buffer, even if every victim has the largest slice size.
         size_t available = 0;
         bool file_advice = false;
-        const bool decode_advice = window_decode_advice && read_overlap && !layer_window && ids->ne[1] == 1;
+        const bool decode_advice = window_advice_budget && read_overlap && !layer_window && ids->ne[1] == 1;
         if (!discrete.device) {
-            const auto resident = store->resident_bytes();
+            const auto resident = store->storage_bytes();
             const auto memory = budget->snapshot(llama_memory_domain::host);
             const size_t fixed = memory.used() - resident;
             available = memory.applied > fixed ? memory.applied - fixed : 0;
 #if defined(__APPLE__)
+            const bool at_window_budget = window_advice_budget &&
+                    memory.requested == window_advice_budget && memory.applied == window_advice_budget;
+            const bool at_class_lru_budget = memory.requested == class_lru_budget && memory.applied == class_lru_budget;
+            const bool prefill_advice = vector_batch && ids->ne[1] <= 8 &&
+                    ((class_policy && at_class_lru_budget) || (layer_window && at_window_budget));
             file_advice = vector_read_overlap && !policy_override && !tracing &&
-                (((class_policy || layer_window) && vector_batch && ids->ne[1] <= 8) || decode_advice) &&
-                memory.requested == class_lru_budget && memory.applied == class_lru_budget;
+                    (prefill_advice || (decode_advice && at_window_budget));
 #endif
         }
         const size_t group_limit = vector_read_overlap && !matrix_wave ? workspace_groups :
@@ -529,6 +633,7 @@ struct llama_expert_executor::impl {
         const size_t read_groups = vector_read_overlap ? max_wave_groups : 4;
         const size_t ahead_limit = read_overlap && overlap_wave && expert_capacity > groups ?
             std::min(read_groups, expert_capacity - groups) : 0;
+        const bool parallel_ahead = parallel_window_reads && layer_window && vector_batch && !tracing && ahead_limit > 1;
         const size_t early_limit = expert_capacity > groups ? std::min(size_t(4), expert_capacity - groups) : 0;
         if (early_target && (!matrix_wave || !early_limit)) {
             if (profile) { ++(matrix_wave ? profile->early_skip_budget : profile->early_skip_short); }
@@ -575,6 +680,8 @@ struct llama_expert_executor::impl {
         std::array<ggml_tensor *, max_wave_nodes> inputs {}, outputs {};
         std::array<size_t, max_wave_nodes> host_rows {};
         std::array<char *, max_wave_nodes> destinations {};
+        std::array<uint64_t, max_wave_groups> weight_addresses;
+        std::array<int32_t, max_wave_nodes> address_routes;
         ggml_cgraph * graph = nullptr;
         ggml_tensor * local_ids = nullptr;
         size_t waves = 0, nodes = 0, input_cursor = input_offset, output_cursor = output_offset;
@@ -620,8 +727,39 @@ struct llama_expert_executor::impl {
         auto flush = [&](int64_t after_expert) {
             if (!waves) { return; }
             llama_expert_timer timer(profile ? &profile->input_ns : nullptr);
-            for (size_t n = 0; n < nodes; ++n) {
-                ggml_backend_tensor_set(inputs[n], host.get() + host_rows[n] * p.input, 0, node_rows * p.input * sizeof(float));
+            ggml_tensor * batched_output = nullptr;
+            if (address_batch) {
+                // Same one-row indexed Metal arithmetic, with one grid over
+                // the routes and an address per leased weight. No weight copies.
+                auto * x = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, p.input, nodes, 1);
+                auto * indices = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, nodes, 1);
+                auto * table = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I64, waves);
+                size_t map_cursor = ids_offset;
+                bind(x, input_cursor, ids_offset);
+                bind(indices, map_cursor, output_offset);
+                bind(table, map_cursor, output_offset);
+                ggml_backend_tensor_set(indices, address_routes.data(), 0, nodes * sizeof(int32_t));
+                ggml_backend_tensor_set(table, weight_addresses.data(), 0, waves * sizeof(uint64_t));
+                auto * anchor = reinterpret_cast<ggml_tensor *>(uintptr_t(weight_addresses[0]));
+                batched_output = ggml_mul_mat_id(ctx.get(), anchor, x, indices);
+                if (!window_addresses(batched_output, table) || !ggml_backend_supports_op(backend.get(), batched_output)) {
+                    throw std::runtime_error("Metal rejected the prefill address batch");
+                }
+                bind(batched_output, output_cursor, ggml_backend_buffer_get_size(buffer.get()));
+                for (size_t n = 0; n < nodes; ++n) {
+                    // Compaction is forward and wave source offsets never lag
+                    // their dense destination.
+                    if (n != host_rows[n]) {
+                        std::memmove(host.get() + n * p.input, host.get() + host_rows[n] * p.input, p.input * sizeof(float));
+                    }
+                }
+                ggml_backend_tensor_set(x, host.get(), 0, nodes * p.input * sizeof(float));
+                ggml_build_forward_expand(graph, batched_output);
+                if (profile) { ++profile->moe_batch_groups; }
+            } else {
+                for (size_t n = 0; n < nodes; ++n) {
+                    ggml_backend_tensor_set(inputs[n], host.get() + host_rows[n] * p.input, 0, node_rows * p.input * sizeof(float));
+                }
             }
             timer.next(profile ? &profile->compute_ns : nullptr);
             llama_expert_timer submit_timer(profile ? &profile->submit_ns : nullptr);
@@ -636,7 +774,7 @@ struct llama_expert_executor::impl {
             }
             submit_timer.next(nullptr);
             // All routes are already known. Read only subsequent demand experts
-            // on this thread while the submitted graph retains its own leases.
+            // while the submitted graph retains its own leases.
             // No graph/workspace mutation or second backend submission occurs.
             bool preview_window = false, early_window = false;
             try {
@@ -675,6 +813,9 @@ struct llama_expert_executor::impl {
                     }
                     advise(after_expert);
                     int64_t previous = after_expert;
+                    std::array<int64_t, max_wave_groups> queued_ids;
+                    std::array<size_t, max_wave_groups> queued_slots;
+                    size_t queued = 0;
                     for (size_t n = 0; n < ahead_limit; ++n) {
                         int64_t next = p.experts;
                         if (routes) { next = routes->after(previous, p.experts); }
@@ -693,6 +834,12 @@ struct llama_expert_executor::impl {
                         if (std::find(ahead_ids.begin(), ahead_ids.end(), next) != ahead_ids.end()) { continue; }
                         auto empty = std::find(ahead_ids.begin(), ahead_ids.end(), int64_t(-1));
                         if (empty == ahead_ids.end()) { break; }
+                        if (parallel_ahead) {
+                            queued_ids[queued] = next;
+                            queued_slots[queued++] = size_t(empty - ahead_ids.begin());
+                            *empty = next;
+                            continue;
+                        }
                         llama_expert_timer acquire_timer(profile ? &profile->acquire_ns : nullptr);
                         llama_expert_timer overlap_timer(profile ? &profile->overlap_acquire_ns : nullptr);
                         const auto before = profile ? profile->direct_read_bytes : 0;
@@ -700,6 +847,18 @@ struct llama_expert_executor::impl {
                         *empty = next;
                         if (profile) {
                             ++profile->overlap_acquisitions;
+                            profile->overlap_read_bytes += profile->direct_read_bytes - before;
+                        }
+                    }
+                    if (queued) {
+                        std::array<llama_expert_store::lease, max_wave_groups> ready;
+                        llama_expert_timer acquire_timer(profile ? &profile->acquire_ns : nullptr);
+                        llama_expert_timer overlap_timer(profile ? &profile->overlap_acquire_ns : nullptr);
+                        const auto before = profile ? profile->direct_read_bytes : 0;
+                        store->acquire_many(p.name, queued_ids.data(), queued, ready.data());
+                        for (size_t i = 0; i < queued; ++i) { ahead[queued_slots[i]] = std::move(ready[i]); }
+                        if (profile) {
+                            profile->overlap_acquisitions += queued;
                             profile->overlap_read_bytes += profile->direct_read_bytes - before;
                         }
                     }
@@ -725,14 +884,22 @@ struct llama_expert_executor::impl {
                 }
             }
             timer.next(profile ? &profile->readback_ns : nullptr);
-            for (size_t n = 0; n < nodes; ++n) {
-                ggml_backend_tensor_get(outputs[n], host.get() + host_output + host_rows[n] * p.output, 0,
-                                        node_rows * p.output * sizeof(float));
-            }
-            timer.next(profile ? &profile->scatter_ns : nullptr);
-            for (size_t r = 0; r < waves * max_wave_rows; ++r) {
-                if (destinations[r]) {
-                    std::memcpy(destinations[r], host.get() + host_output + r * p.output, p.output * sizeof(float));
+            if (batched_output) {
+                ggml_backend_tensor_get(batched_output, host.get() + host_output, 0, nodes * p.output * sizeof(float));
+                timer.next(profile ? &profile->scatter_ns : nullptr);
+                for (size_t n = 0; n < nodes; ++n) {
+                    std::memcpy(destinations[host_rows[n]], host.get() + host_output + n * p.output, p.output * sizeof(float));
+                }
+            } else {
+                for (size_t n = 0; n < nodes; ++n) {
+                    ggml_backend_tensor_get(outputs[n], host.get() + host_output + host_rows[n] * p.output, 0,
+                                            node_rows * p.output * sizeof(float));
+                }
+                timer.next(profile ? &profile->scatter_ns : nullptr);
+                for (size_t r = 0; r < waves * max_wave_rows; ++r) {
+                    if (destinations[r]) {
+                        std::memcpy(destinations[r], host.get() + host_output + r * p.output, p.output * sizeof(float));
+                    }
                 }
             }
             n_matmuls += nodes;
@@ -755,12 +922,14 @@ struct llama_expert_executor::impl {
                 if (!rows) { return; }
                 llama_expert_timer timer(profile ? &profile->graph_setup_ns : nullptr);
                 if (!graph) {
-                    local_ids = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, 1, node_rows);
                     graph = ggml_new_graph_custom(ctx.get(), metal ? 4 * max_wave_rows * workspace_groups : 8, false);
-                    size_t cursor = ids_offset;
-                    bind(local_ids, cursor, output_offset);
-                    const std::array<int32_t, max_wave_rows> zeros {};
-                    ggml_backend_tensor_set(local_ids, zeros.data(), 0, node_rows * sizeof(int32_t));
+                    if (!address_batch) {
+                        local_ids = ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, 1, node_rows);
+                        size_t cursor = ids_offset;
+                        bind(local_ids, cursor, output_offset);
+                        const std::array<int32_t, max_wave_rows> zeros {};
+                        ggml_backend_tensor_set(local_ids, zeros.data(), 0, node_rows * sizeof(int32_t));
+                    }
                 }
                 const size_t row_base = waves * max_wave_rows;
                 if (!vector_batch) {
@@ -768,7 +937,13 @@ struct llama_expert_executor::impl {
                               host.get() + (row_base + wave_rows) * p.input, 0.0f);
                 }
                 const size_t count = vector_batch ? rows : 1;
+                if (address_batch) { weight_addresses[waves] = uintptr_t(current.tensor()); }
                 for (size_t n = 0; n < count; ++n) {
+                    if (address_batch) {
+                        address_routes[nodes] = int32_t(waves);
+                        host_rows[nodes++] = row_base + n;
+                        continue;
+                    }
                     inputs[nodes] = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F32, p.input, 1, node_rows);
                     outputs[nodes] = ggml_mul_mat_id(ctx.get(), current.tensor(), inputs[nodes], local_ids);
                     if (!ggml_backend_supports_op(backend.get(), outputs[nodes])) {
@@ -894,6 +1069,10 @@ struct llama_expert_executor::impl {
         if (ith != 0) { return; }
         const auto & p = *static_cast<projection *>(userdata);
         auto & owner = *p.owner;
+        if (owner.cross_window_ready == dst) {
+            owner.cross_window_ready = nullptr;
+            return;
+        }
         if (!owner.failed.load()) {
             try { owner.compute(p, dst); return; }
             catch (const std::exception & e) { std::snprintf(owner.failure, sizeof(owner.failure), "%s", e.what()); }
@@ -988,6 +1167,72 @@ ggml_tensor * llama_expert_executor::build(ggml_context * ctx, const ggml_tensor
 }
 
 const char * llama_expert_executor::error() const { return pimpl->failed.load() ? pimpl->failure : nullptr; }
+void llama_expert_executor::configure_acceleration(bool dflash_verify, bool profile_overlap) {
+    pimpl->profile_overlap = profile_overlap;
+    pimpl->dflash_verify = dflash_verify;
+    pimpl->configure_acceleration();
+}
+void llama_expert_executor::configure_resident_layers(const llama_model & model) {
+    if (!pimpl->moe || !pimpl->automatic_acceleration || !model.memory_contract) { return; }
+    auto resident = std::make_unique<llama_lfm_resident>(model.hparams.n_layer_dense_lead);
+    const auto state = stats();
+    // The 512-row target batch leaves room for the final expert bank. Each
+    // allocation still needs an individual ticket from the shared ledger.
+    size_t allowance = llama_lfm_resident::allowance(state.memory.applied, state.minimum_bytes);
+    if (model.memory_contract->qwen35_resident_verify && state.memory.applied == (size_t(24) << 30)) {
+        allowance += size_t(512) << 20;
+    }
+    resident->load(model, ggml_backend_get_device(pimpl->backend.get()), allowance,
+            model.memory_contract->qwen35_profile_layers ? model.memory_contract->qwen35_profile_layers : model.hparams.n_layer());
+    std::fprintf(stderr, "%s resident layers: %zu (%zu bytes)\n", model.arch == LLM_ARCH_QWEN35MOE ? "Qwen" : "LFM", resident->count(), resident->bytes());
+    pimpl->lfm_resident = std::move(resident);
+}
+
+const std::array<ggml_tensor *, 3> * llama_expert_executor::resident_layer(int il) const {
+    return pimpl->lfm_resident && !pimpl->layer_window ? pimpl->lfm_resident->get(il) : nullptr;
+}
+
+bool llama_expert_executor::can_retain_prefill_tail(size_t routed_layers) const {
+    return pimpl->lfm_resident && pimpl->lfm_resident->count() < routed_layers &&
+            !pimpl->lfm_resident->has_tail();
+}
+
+size_t llama_expert_executor::retain_prefill_tail(llama_prefill_wide_weights & weights, int first_layer) {
+    GGML_ASSERT(pimpl->lfm_resident && !pimpl->layer_window);
+    auto & resident = *pimpl->lfm_resident;
+    return resident.adopt_tail(first_layer, weights.take_tail_banks(*pimpl->budget));
+}
+
+bool llama_expert_executor::has_prefill_tail() const {
+    return pimpl->lfm_resident && pimpl->lfm_resident->has_tail();
+}
+
+void llama_expert_executor::release_prefill_tail() {
+    pimpl->lfm_resident->release_tail();
+}
+
+bool llama_expert_executor::automatic_acceleration() const { return pimpl->automatic_acceleration; }
+bool llama_expert_executor::combined_moe_enabled() const { return pimpl->moe && !pimpl->layer_window; }
+bool llama_expert_executor::fused_window_moe_enabled() const { return pimpl->fused_window_moe; }
+
+ggml_tensor * llama_expert_executor::build_moe(ggml_context * ctx, const ggml_tensor * up,
+        const ggml_tensor * gate, const ggml_tensor * down, ggml_tensor * input, ggml_tensor * ids,
+        const ggml_tensor * router, const std::array<const ggml_tensor *, 3> & future, ggml_backend_sched_t predictor_sched) {
+    if (!pimpl->moe || pimpl->tracing || pimpl->class_policy || (pimpl->layer_window && !pimpl->fused_window_moe) || pimpl->route_observer ||
+            pimpl->preview || pimpl->early || !pimpl->projections.count(up) ||
+            !pimpl->projections.count(gate) || !pimpl->projections.count(down)) { return nullptr; }
+    if (router && std::any_of(future.begin(), future.end(), [&](const ggml_tensor * w) {
+            return !pimpl->projections.count(w);
+        })) { router = nullptr; }
+    return pimpl->moe->build(ctx, up, gate, down, input, ids, router, future, predictor_sched, pimpl->fused_window_moe);
+}
+bool llama_expert_executor::moe_route_published(const ggml_tensor * ids) const { return combined_moe_enabled() && pimpl->moe->is_published(ids); }
+bool llama_expert_executor::moe_shared_publication(const ggml_tensor * up) const { return combined_moe_enabled() && pimpl->moe->shared_publication(up); }
+bool llama_expert_executor::moe_graph_lookahead_enabled() const { return combined_moe_enabled() && pimpl->moe->has_graph_lookahead(); }
+bool llama_expert_executor::moe_lookahead_enabled() const { return combined_moe_enabled() && pimpl->moe->has_lookahead(); }
+void llama_expert_executor::moe_lookahead_begin(bool decode) { pimpl->moe->begin_graph(decode); }
+void llama_expert_executor::moe_lookahead_end() { pimpl->moe->end_graph(); }
+
 llama_expert_execution_stats llama_expert_executor::stats() const {
     auto store = pimpl->store->stats();
     if (pimpl->cpu_store) {
@@ -1001,17 +1246,42 @@ llama_expert_execution_stats llama_expert_executor::stats() const {
     }
     const auto memory = pimpl->budget->snapshot(llama_memory_domain::host);
     return {store, memory, pimpl->n_projections, pimpl->n_matmuls,
-            memory.used() - (pimpl->discrete.device ? store.entries * ggml_tensor_overhead() : store.resident_bytes) +
-                pimpl->minimum - pimpl->fixed_workspace, pimpl->n_submissions};
+            memory.used() - (pimpl->discrete.device ? store.entries * ggml_tensor_overhead() : store.resident_bytes + store.pooled_bytes) +
+                pimpl->minimum - pimpl->fixed_workspace - pimpl->optional_bytes() -
+                (pimpl->lfm_resident ? pimpl->lfm_resident->bytes() : 0), pimpl->n_submissions,
+                pimpl->retired_moe_calls + (pimpl->moe ? pimpl->moe->completed() : 0),
+            pimpl->retired_pipeline_groups + (pimpl->moe ? pimpl->moe->overlapped_groups() : 0),
+            pimpl->retired_resident_groups + (pimpl->moe ? pimpl->moe->resident_starts() : 0),
+            pimpl->optional_bytes(), pimpl->moe ? pimpl->moe->prefetch_candidates() : 0};
 }
 bool llama_expert_executor::resize(size_t target) {
     if (pimpl->discrete.device || error()) { return false; }
     const bool drop_history = target != class_lru_budget && pimpl->class_policy && !pimpl->policy_override;
     const size_t optional_bytes = drop_history ? pimpl->store->class_lru_history_bytes() : 0;
-    if (target < stats().minimum_bytes - optional_bytes) { return false; }
+    const auto state = stats();
+    if (target < state.minimum_bytes - optional_bytes) { return false; }
+    // The context has synchronized and invalidated graphs before resizing.
+    // Only permanent banks participate in the new budget's prefix allowance.
+    if (target != state.memory.applied && has_prefill_tail()) { release_prefill_tail(); }
     if (drop_history) { select_decode_policy(0, 0); }
+    const bool shrinking_lfm = target < state.memory.applied && pimpl->automatic_acceleration && pimpl->moe &&
+            (pimpl->lfm_resident || pimpl->acceleration_source->architecture() == "lfm2moe");
+    const size_t combined_room = shrinking_lfm ? state.acceleration_bytes + pimpl->moe->admission_working_bytes() : 0;
+    if (pimpl->lfm_resident && target < state.memory.applied) {
+        pimpl->lfm_resident->shrink(llama_lfm_resident::allowance(target, state.minimum_bytes));
+        std::fprintf(stderr, "%s resident layers: %zu (%zu bytes)\n",
+                pimpl->acceleration_source->architecture() == "lfm2moe" ? "LFM" : "Qwen", pimpl->lfm_resident->count(), pimpl->lfm_resident->bytes());
+    }
+    pimpl->drop_acceleration();
     pimpl->store->request_budget(llama_memory_domain::host, target);
-    return !pimpl->budget->snapshot(llama_memory_domain::host).pending();
+    const bool applied = !pimpl->budget->snapshot(llama_memory_domain::host).pending();
+    if (applied) {
+        if (combined_room && target >= state.minimum_bytes && combined_room <= target - state.minimum_bytes) {
+            pimpl->store->reclaim_to_fit(llama_memory_domain::host, combined_room);
+        }
+        pimpl->configure_acceleration();
+    }
+    return applied;
 }
 bool llama_expert_executor::resize_discrete(size_t host_target, size_t device_target, size_t scratch_headroom) {
     if (!pimpl->discrete.device || error()) { return false; }
@@ -1043,12 +1313,21 @@ void llama_expert_executor::set_discrete_read_probe(bool (*callback)(void *) noe
         llama_expert_read_probe submitted_read) {
     pimpl->store->set_read_probe(callback, user, worker, submitted_read);
 }
+llama_memory_reclaimer llama_expert_executor::allocation_reclaimer() {
+    if (!pimpl->selective_reclaim || pimpl->tracing) { return {}; }
+    return {[](void * user, llama_memory_domain domain, size_t bytes) {
+        auto & self = *static_cast<impl *>(user);
+        self.store->reclaim_to_fit(domain, bytes);
+    }, pimpl.get()};
+}
+
 void llama_expert_executor::trim() {
     pimpl->store->trim();
     if (pimpl->cpu_store) { pimpl->cpu_store->trim(); }
 }
 
 void llama_expert_executor::set_trace(llama_expert_trace_callback callback, void * user) {
+    if (callback && pimpl->moe) { throw std::invalid_argument("combined MoE does not support demand trace mode"); }
     if (callback && pimpl->discrete.device) { throw std::invalid_argument("expert trace requires unified memory"); }
     if (callback && (pimpl->preview || pimpl->early)) { throw std::invalid_argument("early reads and preview cannot use demand-only ATET tracing"); }
     if (callback && pimpl->class_policy && !pimpl->policy_override) { select_decode_policy(0, 0); }
@@ -1058,7 +1337,7 @@ void llama_expert_executor::set_trace(llama_expert_trace_callback callback, void
 
 bool llama_expert_executor::set_policy(const std::string & policy) {
     if (pimpl->discrete.device) { return policy == "lru"; }
-    if ((pimpl->preview || pimpl->early) && policy != "lru") { return false; }
+    if ((pimpl->preview || pimpl->early || pimpl->moe) && policy != "lru") { return false; }
     if (!pimpl->store->set_policy(policy, pimpl->minimum - pimpl->fixed_workspace)) { return false; }
     pimpl->class_policy = policy != "lru";
     pimpl->policy_override = true;
@@ -1091,20 +1370,285 @@ void llama_expert_executor::set_profile(bool enabled) {
     pimpl->store->set_profile(pimpl->profile);
 }
 bool llama_expert_executor::can_layer_window() const {
-    return pimpl->vector_read_overlap && !pimpl->policy_override && !pimpl->tracing &&
-            !pimpl->preview && !pimpl->early && !error();
+    return (pimpl->vector_read_overlap || pimpl->automatic_acceleration) && !pimpl->policy_override && !pimpl->tracing &&
+            !pimpl->preview && !pimpl->early && (!pimpl->moe || pimpl->automatic_acceleration) && !error();
 }
-bool llama_expert_executor::set_layer_window(bool enabled) {
-    if (enabled && !can_layer_window()) { return false; }
-    if (enabled) { select_decode_policy(0, 0); }
-    // The latch is private to contexts that actually entered the opt-in window.
-    // Fixed-cap checks and option/policy disable boundaries constrain it.
-    if (enabled) { pimpl->window_decode_advice = true; }
-    pimpl->layer_window = enabled;
+bool llama_expert_executor::can_batch_window() const {
+    return can_layer_window() && pimpl->automatic_acceleration && pimpl->acceleration_source &&
+           !pimpl->cpu_store && !pimpl->route_observer;
+}
+
+bool llama_expert_executor::window_weights_fit_without_eviction() const {
+    const auto snapshot = pimpl->budget->snapshot(llama_memory_domain::host);
+    const size_t limit = std::min(snapshot.applied, snapshot.requested);
+    const size_t fixed = snapshot.used() - pimpl->store->storage_bytes();
+    return pimpl->full_expert_storage && fixed < limit && pimpl->max_expert_payload < limit - fixed &&
+        pimpl->full_expert_storage <= limit - fixed - pimpl->max_expert_payload;
+}
+
+bool llama_expert_executor::can_batch_window_layer(const std::array<const ggml_tensor *, 3> & weights) const {
+    return weights[0] && std::all_of(weights.begin(), weights.end(), [&](const ggml_tensor * weight) {
+        const auto projection = pimpl->projections.find(weight);
+        return projection != pimpl->projections.end() && !projection->second.on_cpu &&
+               projection->second.experts == weights[0]->ne[2];
+    });
+}
+
+const char * llama_expert_executor::window_projection_name(const ggml_tensor * node) const {
+    if (pimpl->fused_window_moe) { return pimpl->moe->window_weight_name(node); }
+    if (node->op != GGML_OP_CUSTOM) { return nullptr; }
+    ggml_custom_op_params params;
+    std::memcpy(&params, node->op_params, sizeof(params));
+    if (params.fun != impl::callback) { return nullptr; }
+    const auto & projection = *static_cast<const impl::projection *>(params.userdata);
+    return projection.owner == pimpl.get() ? projection.name.c_str() : nullptr;
+}
+
+bool llama_expert_executor::prepare_cross_window(size_t rows, size_t routes) {
+    if (!pimpl->layer_window || !pimpl->window_addresses || !rows || !routes ||
+            rows > cross_window_workers * 8 || routes > 32 || pimpl->cross_window_charge) { return false; }
+    size_t width = 0;
+    for (const auto & entry : pimpl->projections) {
+        const auto & projection = entry.second;
+        width = std::max(width, size_t(std::max(projection.input, projection.output)));
+    }
+    if (!width || width > 8192) { return false; }
+    const size_t lanes = rows * routes;
+    auto charge = pimpl->budget->reserve(llama_memory_domain::host, llama_memory_category::scratch,
+            lanes * (2 * width * sizeof(float) + sizeof(int32_t)));
+    if (!charge) { return false; }
+    try {
+        auto input = std::unique_ptr<float[]>(new float[lanes * width]);
+        auto output = std::unique_ptr<float[]>(new float[lanes * width]);
+        auto ids = std::unique_ptr<int32_t[]>(new int32_t[lanes]);
+        charge.commit();
+        pimpl->cross_window_charge = std::move(charge);
+        pimpl->cross_window_input = std::move(input);
+        pimpl->cross_window_output = std::move(output);
+        pimpl->cross_window_ids = std::move(ids);
+        pimpl->cross_window_width = width;
+        pimpl->cross_window_routes = lanes;
+    } catch (const std::bad_alloc &) { return false; }
     return true;
 }
 
-void llama_expert_executor::clear_window_decode_advice() { pimpl->window_decode_advice = false; }
+bool llama_expert_executor::compute_cross_window(ggml_tensor * const * nodes, size_t count) {
+    if (count < 2 || count > cross_window_workers || !pimpl->cross_window_charge || error()) { return false; }
+    const auto * first = nodes[0];
+    const char * weight = window_projection_name(first);
+    if (!weight) { return false; }
+    const auto * x = first->src[0];
+    const auto * ids = first->src[1];
+    const int64_t k = ids->ne[0], input_slots = x->ne[1];
+    if (k < 1 || (input_slots != 1 && input_slots != k)) { return false; }
+    int64_t rows = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const auto * node = nodes[i];
+        const char * name = window_projection_name(node);
+        if (!name || name != weight || node->src[0]->ne[2] < 2 ||
+                node->src[0]->ne[1] != input_slots || node->src[1]->ne[0] != k ||
+                node->src[0]->type != GGML_TYPE_F32 || node->src[1]->type != GGML_TYPE_I32 ||
+                node->src[0]->nb[0] != sizeof(float) || node->src[1]->nb[0] != sizeof(int32_t) ||
+                node->nb[0] != sizeof(float) || node->src[0]->ne[2] != node->src[1]->ne[1]) {
+            return false;
+        }
+        rows += node->src[0]->ne[2];
+    }
+    if (size_t(rows * k) > pimpl->cross_window_routes ||
+            size_t(std::max(x->ne[0], first->ne[0])) > pimpl->cross_window_width) { return false; }
+
+    ggml_custom_op_params params;
+    std::memcpy(&params, first->op_params, sizeof(params));
+    const auto & projection = *static_cast<const impl::projection *>(params.userdata);
+    auto pack = [](ggml_tensor copy, void * data, int64_t a, int64_t b, int64_t c) {
+        copy.data = data;
+        copy.buffer = nullptr;
+        copy.ne[0] = a; copy.ne[1] = b; copy.ne[2] = c; copy.ne[3] = 1;
+        copy.nb[1] = copy.nb[0] * a; copy.nb[2] = copy.nb[1] * b; copy.nb[3] = copy.nb[2] * c;
+        return copy;
+    };
+    auto input = pack(*x, pimpl->cross_window_input.get(), x->ne[0], input_slots, rows);
+    auto routed = pack(*ids, pimpl->cross_window_ids.get(), k, rows, 1);
+    auto output = pack(*first, pimpl->cross_window_output.get(), first->ne[0], k, rows);
+    output.src[0] = &input; output.src[1] = &routed;
+    size_t offset = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const auto * source = nodes[i]->src[0];
+        const auto * routes = nodes[i]->src[1];
+        for (int64_t row = 0; row < source->ne[2]; ++row, ++offset) {
+            std::memcpy(pimpl->cross_window_ids.get() + offset * k,
+                    static_cast<const char *>(routes->data) + row * routes->nb[1], k * sizeof(int32_t));
+            for (int64_t slot = 0; slot < input_slots; ++slot) {
+                std::memcpy(static_cast<char *>(input.data) + offset * input.nb[2] + slot * input.nb[1],
+                        static_cast<const char *>(source->data) + row * source->nb[2] + slot * source->nb[1], input.nb[1]);
+            }
+        }
+    }
+    // Keep the same one-row arithmetic even after concatenation crosses the
+    // ordinary matrix threshold. Each result returns to its original route.
+    pimpl->compute(projection, &output, true);
+    offset = 0;
+    for (size_t i = 0; i < count; ++i) {
+        auto * node = nodes[i];
+        for (int64_t row = 0; row < node->ne[2]; ++row, ++offset) {
+            for (int64_t slot = 0; slot < k; ++slot) {
+                std::memcpy(static_cast<char *>(node->data) + row * node->nb[2] + slot * node->nb[1],
+                        static_cast<const char *>(output.data) + offset * output.nb[2] + slot * output.nb[1], output.nb[1]);
+            }
+        }
+    }
+    return true;
+}
+
+void llama_expert_executor::use_cross_window_output(const ggml_tensor * node) {
+    if (pimpl->fused_window_moe) { pimpl->moe->use_window_output(node); return; }
+    if (pimpl->cross_window_ready) { throw std::logic_error("previous prefill projection was not consumed"); }
+    pimpl->cross_window_ready = node;
+}
+
+void llama_expert_executor::enable_fused_window_moe() {
+    pimpl->fused_window_moe = pimpl->layer_window && pimpl->window_addresses && pimpl->moe && pimpl->moe->address_batches();
+}
+
+void llama_expert_executor::compute_fused_window_moe(ggml_tensor * const * nodes, size_t count, const window_bindings * bindings) {
+    if (!pimpl->fused_window_moe || count > cross_window_workers) { throw std::logic_error("invalid fused window state"); }
+    pimpl->moe->compute_window(nodes, count, bindings ? bindings->data() : nullptr);
+}
+
+bool llama_expert_executor::prepare_matrix_window_moe() {
+    return pimpl->fused_window_moe && pimpl->moe->prepare_matrix_window();
+}
+
+bool llama_expert_executor::compute_matrix_window_moe(ggml_tensor * const * nodes, size_t count, const window_bindings & bindings) {
+    return pimpl->moe->compute_matrix_window(nodes, count, bindings.data());
+}
+
+size_t llama_expert_executor::window_expert_group_bytes(const std::array<const ggml_tensor *, 3> & weights) const {
+    size_t bytes = 0;
+    for (const auto * weight : weights) {
+        const size_t slice = pimpl->store->compact_slice_bytes(pimpl->projections.at(weight).name);
+        if (!slice || slice > SIZE_MAX - bytes) { return 0; }
+        bytes += slice;
+    }
+    return bytes;
+}
+
+size_t llama_expert_executor::window_expert_capacity(size_t group_bytes, size_t queued_experts) const {
+    const auto snapshot = pimpl->budget->snapshot(llama_memory_domain::host);
+    const size_t fixed = snapshot.used() - pimpl->store->storage_bytes();
+    // Keep one projection and its read workspace available to the original
+    // executor. The full layer union must fit even when every slice is cold.
+    size_t headroom = pimpl->max_expert_payload + pimpl->max_expert_allocation;
+    if (group_bytes) {
+        headroom += llama_expert_store::demand_queue_bytes(queued_experts);
+    } else {
+        group_bytes = 3 * pimpl->max_expert_allocation;
+    }
+    const size_t limit = std::min(snapshot.requested, snapshot.applied);
+    return limit > fixed + headroom ?
+        (limit - fixed - headroom) / group_bytes : 0;
+}
+
+void llama_expert_executor::pin_window_experts(const std::array<const ggml_tensor *, 3> & weights,
+        const int64_t * ids, size_t count, window_leases & leases, bool adjacent_ranges, window_bindings * bindings) {
+    if (!pimpl->layer_window || 3 * count > leases.capacity() - leases.size()) {
+        throw std::logic_error("invalid prefill expert group");
+    }
+    // The store reserves these buffers itself, as in the CPU projection bridge.
+    llama_allocation_scope explicit_admission;
+    // File layout is three separate tensors in ordinary GGUF. The existing
+    // store admits, validates and publishes each bounded set of exact slices.
+    for (size_t projection = 0; projection < weights.size(); ++projection) {
+        const auto & name = pimpl->projections.at(weights[projection]).name;
+        for (size_t first = 0; first < count;) {
+            const size_t size = std::min(size_t(16), count - first);
+            const size_t output = leases.size();
+            leases.resize(output + size);
+            pimpl->store->acquire_many(name, ids + first, size, leases.data() + output, nullptr, adjacent_ranges);
+            if (bindings) {
+                const size_t binding = projection < 2 ? 1 - projection : projection;
+                for (size_t i = 0; i < size; ++i) {
+                    bindings->at(ids[first + i])[binding] = leases[output + i].tensor();
+                }
+            }
+            first += size;
+        }
+    }
+}
+
+bool llama_expert_executor::can_pipeline_window() const {
+    return pimpl->layer_window && pimpl->moe && pimpl->moe->window_readers();
+}
+
+llama_expert_executor::window_demand llama_expert_executor::enqueue_window_experts(
+        const std::array<const ggml_tensor *, 3> & weights, const int64_t * ids, size_t count) {
+    if (!can_pipeline_window()) { throw std::logic_error("window demand pool unavailable"); }
+    llama_allocation_scope explicit_admission;
+    // The store expects up/gate/down. It keeps every slice unpublished until
+    // the entire triple validates. Decode prediction is idle inside the window.
+    const std::array<const char *, 3> names{
+        pimpl->projections.at(weights[1]).name.c_str(),
+        pimpl->projections.at(weights[0]).name.c_str(),
+        pimpl->projections.at(weights[2]).name.c_str(),
+    };
+    return pimpl->store->enqueue_demand(names, ids, count, nullptr, pimpl->moe->window_readers());
+}
+
+void llama_expert_executor::drain_window_experts(window_demand & demand, window_leases & leases, window_bindings * bindings) {
+    std::array<int64_t, 16> ids;
+    std::array<llama_expert_store::lease, 16> gate, up, down;
+    while (demand->pending()) {
+        const size_t count = demand->take(ids.data(), up.data(), gate.data(), down.data(), 1);
+        if (3 * count > leases.capacity() - leases.size()) {
+            throw std::logic_error("queued window leases exceed the layer union");
+        }
+        for (size_t i = 0; i < count; ++i) {
+            if (bindings) { bindings->at(ids[i]) = {up[i].tensor(), gate[i].tensor(), down[i].tensor()}; }
+            leases.push_back(std::move(up[i]));
+            leases.push_back(std::move(gate[i]));
+            leases.push_back(std::move(down[i]));
+        }
+    }
+    demand.reset();
+}
+
+bool llama_expert_executor::set_layer_window(size_t budget, bool vector_batch) {
+    if (budget) {
+        if (!can_layer_window()) { return false; }
+        // Window graphs use the existing per-projection executor. Keep the
+        // automatic MoE workspace/descriptors alive for cached decode graphs,
+        // but drain its predictions before the window can use the shared store.
+        if (pimpl->moe) {
+            pimpl->moe->end_graph();
+            ggml_backend_synchronize(pimpl->backend.get());
+        }
+        select_decode_policy(0, 0);
+        // A resize suppresses advice while the ledger is at a different cap.
+        pimpl->window_advice_budget = budget;
+    }
+    pimpl->layer_window = budget != 0;
+    pimpl->window_addresses = nullptr;
+    if (!budget) {
+        if (pimpl->fused_window_moe) {
+            pimpl->moe->clear_window_output();
+            pimpl->moe->release_matrix_window();
+        }
+        pimpl->fused_window_moe = false;
+        pimpl->cross_window_ready = nullptr;
+        pimpl->cross_window_ids.reset();
+        pimpl->cross_window_output.reset();
+        pimpl->cross_window_input.reset();
+        pimpl->cross_window_charge.reset();
+    }
+    if (budget && vector_batch && can_batch_window()) {
+        auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(pimpl->backend.get()));
+        pimpl->window_addresses = reinterpret_cast<impl::window_addresses_t>(
+            ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_expert_addresses_v1"));
+    }
+    return true;
+}
+
+void llama_expert_executor::clear_window_decode_advice() { pimpl->window_advice_budget = 0; }
 
 void llama_expert_executor::set_read_overlap(bool enabled) { pimpl->read_overlap = enabled; }
 bool llama_expert_executor::set_single_expert_map(bool enabled) {
@@ -1137,7 +1681,7 @@ bool llama_expert_executor::set_early_read(bool enabled) {
     if (error()) { return false; }
     if (!enabled) { pimpl->early.reset(); pimpl->early_charge.reset(); return true; }
     if (pimpl->early) { return true; }
-    if (!pimpl->metal || pimpl->preview || pimpl->tracing || pimpl->class_policy || pimpl->projections.size() > 768) { return false; }
+    if (!pimpl->metal || pimpl->preview || pimpl->moe || pimpl->tracing || pimpl->class_policy || pimpl->projections.size() > 768) { return false; }
     const auto memory = pimpl->budget->snapshot(llama_memory_domain::host);
     const auto floor = stats().minimum_bytes;
     if (memory.requested < floor || sizeof(impl::early_state) > memory.requested - floor) { return false; }
@@ -1200,6 +1744,7 @@ void llama_expert_executor::bind_early_graph(ggml_cgraph * graph) {
 }
 
 void llama_expert_executor::set_route_observer(llama_expert_route_callback callback, void * user) {
+    if (callback && pimpl->moe) { throw std::invalid_argument("combined MoE does not support projection observers"); }
     pimpl->route_observer = callback; pimpl->route_user = user;
 }
 bool llama_expert_executor::get_profile(llama_expert_profile_data & result) const {
@@ -1243,7 +1788,7 @@ bool llama_expert_executor::set_preview(int mode, const std::vector<llama_expert
     if (mode == 0) {
         pimpl->preview.reset(); pimpl->preview_charge.reset(); return true;
     }
-    if (pimpl->early || pimpl->tracing || pimpl->class_policy || layers.empty() || layers.size() > 256) { return false; }
+    if (pimpl->early || pimpl->moe || pimpl->tracing || pimpl->class_policy || layers.empty() || layers.size() > 256) { return false; }
     // Configure before evaluation, or after an explicit disable. A failed
     // configuration never changes the active policy or its memory floor.
     if (pimpl->preview) { return false; }

@@ -58,6 +58,7 @@ struct ggml_metal {
     int cb_start[GGML_METAL_MAX_COMMAND_BUFFERS + 1];
 
     struct ggml_cgraph * gf;
+    id<MTLCommandBuffer> window_commands;
 
     // the callback given to the thread pool
     void (^encode_async)(size_t ith);
@@ -487,7 +488,7 @@ bool ggml_metal_cpy_tensor_async(ggml_metal_t ctx_src, ggml_metal_t ctx_dst, con
     }
 }
 
-enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph * gf) {
+enum ggml_status ggml_metal_graph_compute_prefix(ggml_metal_t ctx, struct ggml_cgraph * gf, int prefix_nodes) {
     if (ctx->has_error) {
         GGML_LOG_ERROR("%s: backend is in error state from a previous command buffer failure - recreate the backend to recover\n", __func__);
         return GGML_STATUS_FAILED;
@@ -498,7 +499,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     }
 
     // number of nodes encoded by the main thread (empirically determined)
-    const int n_main = MAX(64, 0.1*gf->n_nodes);
+    const int n_main = prefix_nodes > 0 ? prefix_nodes : MAX(64, 0.1*gf->n_nodes);
 
     // number of threads in addition to the main thread
     const int n_cb = ctx->n_cb;
@@ -695,6 +696,57 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     }
 
     return GGML_STATUS_SUCCESS;
+}
+
+enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph * gf) {
+    return ggml_metal_graph_compute_prefix(ctx, gf, 0);
+}
+
+enum ggml_status ggml_metal_window_append(ggml_metal_t ctx, struct ggml_cgraph * gf) {
+    if (ctx->has_error) { return GGML_STATUS_FAILED; }
+    @autoreleasepool {
+        if (!ctx->window_commands) {
+            ggml_metal_device_rsets_keep_alive(ctx->dev);
+            id<MTLCommandQueue> queue = ggml_metal_device_get_queue(ctx->dev);
+            ctx->window_commands = [[queue commandBufferWithUnretainedReferences] retain];
+            if (!ctx->window_commands) { return GGML_STATUS_FAILED; }
+        }
+        // Each view gets its own encoder and fusion boundaries. Encoding views
+        // in order also keeps sequential reuse of the shared scratch ordered.
+        ggml_metal_op_t op = ggml_metal_op_init(ctx->dev, ctx->window_commands, gf, ctx->finfo,
+                0, gf->n_nodes, ctx->use_concurrency, false, ctx->debug_graph);
+        for (int i = 0; i < ggml_metal_op_n_nodes(op);) {
+            const int encoded = ggml_metal_op_encode(op, i);
+            if (!encoded) { ggml_metal_op_free(op); return GGML_STATUS_FAILED; }
+            i += encoded;
+        }
+        ggml_metal_op_free(op);
+    }
+    return GGML_STATUS_SUCCESS;
+}
+
+enum ggml_status ggml_metal_window_flush(ggml_metal_t ctx, uint64_t * submissions) {
+    if (!ctx->window_commands) { return GGML_STATUS_SUCCESS; }
+    id<MTLCommandBuffer> commands = ctx->window_commands;
+    ctx->window_commands = nil;
+    @autoreleasepool {
+        [commands commit];
+        ++*submissions;
+        [commands waitUntilCompleted];
+        if (commands.status != MTLCommandBufferStatusCompleted) {
+            ctx->has_error = true;
+            GGML_LOG_ERROR("%s: %s\n", __func__, [commands.error.localizedDescription UTF8String]);
+        }
+        [commands release];
+    }
+    return ctx->has_error ? GGML_STATUS_FAILED : GGML_STATUS_SUCCESS;
+}
+
+bool ggml_metal_wait_graph_prefix(ggml_metal_t ctx) {
+    id<MTLCommandBuffer> prefix = ctx->cmd_bufs[ctx->n_cb].obj;
+    if (!prefix) { return false; }
+    [prefix waitUntilCompleted];
+    return prefix.status == MTLCommandBufferStatusCompleted;
 }
 
 void ggml_metal_graph_optimize(ggml_metal_t ctx, struct ggml_cgraph * gf) {

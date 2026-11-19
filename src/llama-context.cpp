@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "../ggml/src/ggml-atomic-attention.h"
 #include "llama-context-budget.h"
 #include "llama-prefix-state.h"
 #include "llama-memory-pressure.h"
@@ -195,8 +196,12 @@ llama_context::llama_context(
                  model.n_gpu_layers() > model.hparams.n_layer_all || !params.op_offload)) {
             throw std::runtime_error("CUDA boundary reduction requires partially offloaded LFM2 MoE with op offload");
         }
+        const bool dflash_profile = (model.arch == LLM_ARCH_QWEN4EXP && params.n_ctx == 1024) ||
+            (model.arch == LLM_ARCH_QWEN35MOE && params.n_ctx == 4096 && params.n_batch == 4096);
+        const bool rollback_allowed = model.memory_contract->dflash2_target && dflash_profile &&
+            params.n_ubatch == 8 && params.n_rs_seq < params.n_ubatch - 1;
         if (params.n_ctx == 0 || params.n_ctx > 4096 || params.n_batch > 4096 || params.n_ubatch > 256 ||
-            params.n_seq_max != 1 || params.n_rs_seq || params.n_threads > 16 || params.n_threads_batch > 16 ||
+            params.n_seq_max != 1 || (params.n_rs_seq && !rollback_allowed) || params.n_threads > 16 || params.n_threads_batch > 16 ||
             params.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT || params.embeddings) {
             throw std::runtime_error("engine budget profile requires explicit ctx <= 4096, batch <= 4096, ubatch <= 256, one sequence, <=16 threads, no embeddings/rollback");
         }
@@ -380,6 +385,10 @@ llama_context::llama_context(
     // with causal attention, the batch size is limited by the context size
     cparams.n_batch = cparams.causal_attn ? std::min(cparams.n_ctx, params.n_batch) : params.n_batch;
 
+    if (model.memory_contract && model.memory_contract->qwen35_resident_verify) {
+        // Server batches also bound the target features retained for the drafter.
+        cparams.n_batch = std::min(cparams.n_batch, 512u);
+    }
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
     cparams.n_outputs_max = params.n_outputs_max == 0 || llama_model_has_encoder(&model) ? cparams.n_batch : params.n_outputs_max;
@@ -707,6 +716,53 @@ llama_context::llama_context(
         std::strcmp(ggml_backend_dev_name(model.devices.front().dev), "MTL0") == 0) {
         expert_executor->set_route_index(true);
     }
+    if (expert_executor) {
+        expert_executor->configure_acceleration(model.arch == LLM_ARCH_QWEN35MOE &&
+                model.memory_contract && model.memory_contract->dflash2_target && cparams.n_rs_seq > 0,
+                model.memory_contract && model.memory_contract->qwen35_profile_layers > 0);
+    }
+    if (budget_control && model.memory_contract && model.memory_contract->qwen35_profile_layers && expert_executor &&
+            prefill_wide_qualified()) {
+        expert_executor->configure_resident_layers(model);
+    }
+    if (budget_control && model.arch == LLM_ARCH_LFM2MOE && expert_executor) {
+        const char * grouped = std::getenv("LLAMA_LFM_GQA4");
+        lfm_grouped_decode = grouped && !std::strcmp(grouped, "1") && cparams.n_seq_max == 1 &&
+                cparams.n_ctx == 4096 && params.type_k == GGML_TYPE_BF16 && params.type_v == GGML_TYPE_BF16;
+        const char * resident = std::getenv("LLAMA_LFM_RESIDENT_LAYERS");
+        if ((!resident || std::strcmp(resident, "1") == 0) && prefill_wide_qualified()) {
+            expert_executor->configure_resident_layers(model);
+        }
+    }
+    if (budget_control && cparams.n_ctx == 4096 && cparams.n_batch == 4096 &&
+            cparams.n_ubatch == 8 && cparams.n_seq_max == 1 &&
+            params.type_k == GGML_TYPE_BF16 && params.type_v == GGML_TYPE_BF16) {
+        const char * wide = std::getenv("LLAMA_EXPERIMENTAL_PREFILL_WIDE");
+        if ((!wide || !std::strcmp(wide, "1")) && prefill_wide_qualified()) {
+            budget_control->prefill_window_wide_default = true;
+            budget_control->prefill_window.enabled = true;
+            if (model.arch == LLM_ARCH_LFM2MOE && model.hparams.n_layer_dense_lead == 2 &&
+                    expert_executor->resident_layer(2)) {
+                const char * partial = std::getenv("LLAMA_LFM_PARTIAL_WIDE_PREFILL");
+                if (!partial || !std::strcmp(partial, "1")) {
+                    // Shorter LFM prompts can change greedy output with wide arithmetic.
+                    // Keep the existing window admission floor for the automatic path.
+                    budget_control->partial_wide_min = 320;
+                }
+            } else if (model.arch == LLM_ARCH_QWEN35MOE && model.hparams.n_layer() == 40 &&
+                    model.memory_contract->qwen35_profile_layers) {
+                const char * partial = std::getenv("LLAMA_QWEN35_PARTIAL_WIDE_PREFILL");
+                if (partial && !std::strcmp(partial, "1")) {
+                    budget_control->partial_wide_min = cparams.n_ubatch + 1;
+                } else if (partial ? !std::strcmp(partial, "auto") : model.memory_contract->qwen35_fast_prefill_default) {
+                    // On the 10 GiB DFlash2 profile the staging cost paid off
+                    // at 128 rows. The other hybrid profiles won at 64 rows.
+                    budget_control->partial_wide_min =
+                        model.memory_contract->dflash2_target && model.memory_contract->qwen35_profile_layers == 4 ? 128 : 64;
+                }
+            }
+        }
+    }
 }
 
 llama_context::~llama_context() {
@@ -866,7 +922,8 @@ void llama_context::sched_new(const sched_params & params) {
 
 void llama_context::sched_reserve() {
     std::optional<llama_allocation_scope> allocation_scope;
-    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
+            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
     if (!sched_need_reserve) {
         return;
     }
@@ -1573,7 +1630,8 @@ ggml_backend_t llama_context::backend_from_dev(ggml_backend_dev_t dev) const {
 
 void llama_context::layer_inp_dev_alloc() {
     std::optional<llama_allocation_scope> allocation_scope;
-    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
+            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
     synchronize();
 
     layer_inp_dev     = nullptr;
@@ -1631,7 +1689,8 @@ void llama_context::layer_inp_dev_alloc() {
 
 bool llama_context::h_nextn_dev_alloc() {
     std::optional<llama_allocation_scope> allocation_scope;
-    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
+            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
     synchronize();
 
     auto reset = [&]() {
@@ -1900,7 +1959,7 @@ bool llama_context::set_adapter_cvec(
     return res;
 }
 
-llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret, bool expert_decode) {
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
@@ -1912,7 +1971,20 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     // the new graph parameters
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
-    const auto gparams = graph_params(res, ubatch, mctx, gtype);
+    auto gparams = graph_params(res, ubatch, mctx, gtype);
+    gparams.expert_graph_lookahead = expert_decode && expert_executor && expert_executor->moe_graph_lookahead_enabled();
+    if (expert_decode && model.memory_contract && model.memory_contract->qwen35_grouped_attention) {
+        // Expert residency controls the MoE graph. Attention uses the same KV
+        // layout for streamed layers and for a single serial decoding row.
+        const bool decode_rows = model.memory_contract->dflash2_target ?
+                (ubatch.n_tokens >= 2 && ubatch.n_tokens <= 7) : ubatch.n_tokens == 1;
+        if (decode_rows && gparams.n_outputs == ubatch.n_tokens && expert_executor &&
+                (!model.memory_contract->qwen35_resident_verify || expert_executor->resident_layer(39))) {
+            gparams.grouped_attention_variant = GGML_ATOMIC_FA_QWEN35_GQA8;
+        }
+    } else if (lfm_grouped_decode && expert_decode && ubatch.n_tokens == 1 && gparams.n_outputs == 1) {
+        gparams.grouped_attention_variant = GGML_ATOMIC_FA_LFM_GQA4;
+    }
 
     if (!graph_reuse_disable && gf_res_prev_active == res && res->can_reuse(gparams)) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
@@ -1963,7 +2035,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
+    const bool expert_ahead = expert_decode && expert_executor && expert_executor->moe_lookahead_enabled();
+    if (expert_ahead) { expert_executor->moe_lookahead_begin(true); }
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+    if (expert_ahead) { expert_executor->moe_lookahead_end(); }
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
@@ -1977,7 +2052,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
 int llama_context::encode(const llama_batch_ext & batch_inp) {
     std::optional<llama_allocation_scope> allocation_scope;
-    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
+            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
     if (batch_inp.tokens.empty()) {
         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
         return -1;
@@ -2225,11 +2301,27 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
     return false; // all sequences use backend sampling
 }
 
+void llama_context::reset_expert_graphs() {
+    ggml_backend_sched_reset(sched.get());
+    for (auto & graph : gf_res_prev) { graph->reset(); }
+    gf_res_reserve->reset();
+    gf_res_prev_active = nullptr;
+}
+
 int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_prompt_tokens) {
     if (budget_control && budget_control->prefill_window.failed) { return -3; }
+    if (uncached_prompt_tokens && expert_executor &&
+            (model.arch == LLM_ARCH_LFM2MOE || model.arch == LLM_ARCH_QWEN35MOE) &&
+            expert_executor->has_prefill_tail()) {
+        // Restore the prefill working set before reserving graphs for the next prompt.
+        ggml_backend_sched_synchronize(sched.get());
+        reset_expert_graphs();
+        expert_executor->release_prefill_tail();
+    }
     std::optional<llama_allocation_scope> allocation_scope;
     if (model.memory_contract) {
-        allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete);
+        allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
+            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{});
         if (expert_executor && !batch_inp.tokens.empty() && batch_inp.tokens.size() <= cparams.n_batch) {
             const size_t policy_tokens = std::max(uncached_prompt_tokens, batch_inp.tokens.size());
             const bool class_lru = expert_executor->select_decode_policy(policy_tokens, cparams.n_ubatch);
@@ -2351,10 +2443,70 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
     // handle any pending shifts/copies
     memory_update(false);
 
+    const bool write_h_nextn = cparams.embeddings_nextn_dev && h_nextn_dev != nullptr;
+    const bool wide_dflash = layer_inp_dev && model.arch == LLM_ARCH_QWEN35MOE &&
+            model.memory_contract && model.memory_contract->dflash2_target;
+    const bool can_window = budget_control && budget_control->prefill_window.enabled && batch_inp.embd.empty() &&
+            batch_inp.state.empty() && !has_samplers &&
+            !has_embd_row && !has_state_row && !write_h_nextn && (!layer_inp_dev || wide_dflash) && n_tokens_all > 1;
+    const bool legacy_window = can_window && budget_control->prefill_window_legacy;
+    uint32_t window_rows = cparams.n_ubatch;
+    uint32_t fallback_window_rows = window_rows;
+    if (wide_dflash && model.memory_contract->qwen35_resident_verify && uncached_prompt_tokens &&
+            n_outputs_all <= 1 && n_tokens_all > int(cparams.n_ubatch) && expert_executor &&
+            expert_executor->resident_layer(39) && batch_inp.embd.empty() && batch_inp.state.empty() &&
+            !has_samplers && !has_embd_row && !has_state_row && !write_h_nextn) {
+        window_rows = cparams.n_batch;
+    }
+    if (can_window && uncached_prompt_tokens && n_tokens_all >= 320 && n_outputs_all <= 1 &&
+            cparams.n_ubatch == 8 && cparams.n_seq_max == 1 && cparams.n_ctx == 4096 &&
+            (model.arch == LLM_ARCH_QWEN4EXP || model.arch == LLM_ARCH_QWEN35MOE || model.arch == LLM_ARCH_LFM2MOE)) {
+        if (legacy_window) {
+            const char * rows = std::getenv("LLAMA_EXPERIMENTAL_PREFILL_GROUP_ROWS");
+            const char * matrix = std::getenv("LLAMA_EXPERIMENTAL_PREFILL_MATRIX_FFN");
+            if (rows && !std::strcmp(rows, "16") && matrix && !std::strcmp(matrix, "1")) { window_rows = 16; }
+        }
+        fallback_window_rows = window_rows;
+        const bool wide_arch = model.arch != LLM_ARCH_QWEN4EXP || model.hparams.n_layer() == 48;
+        if (wide_arch && n_tokens_all >= prefill_wide_rows && n_tokens_all % 32 == 0) {
+            const char * wide = legacy_window ? std::getenv("LLAMA_EXPERIMENTAL_PREFILL_WIDE") : nullptr;
+            const bool fresh_prompt = batch_inp.tokens.front().pos[0] == 0 && n_tokens_all == uncached_prompt_tokens;
+            bool wide_default = false;
+            if (budget_control->prefill_window_wide_default && fresh_prompt) {
+                std::lock_guard<std::mutex> lock(budget_control->budget_mutex);
+                wide_default = budget_control->budget_policy.status().config.mode == llama_memory_mode::fixed;
+            }
+            if (wide_default || (legacy_window && wide && !std::strcmp(wide, "1"))) {
+                window_rows = prefill_wide_rows;
+            }
+        }
+    }
+
+    bool partial_wide = false;
+    if (can_window && budget_control->partial_wide_min && window_rows == cparams.n_ubatch &&
+            n_tokens_all >= budget_control->partial_wide_min && (n_tokens_all < prefill_wide_rows || n_tokens_all % 32 != 0) &&
+            n_outputs_all == 1 && n_tokens_all == uncached_prompt_tokens && batch_inp.tokens.front().pos[0] == 0) {
+        std::lock_guard<std::mutex> lock(budget_control->budget_mutex);
+        const size_t budget = budget_control->budget_requested;
+        const bool qualified_budget = model.arch != LLM_ARCH_LFM2MOE ||
+                (budget >= (size_t(8) << 30) && budget <= (size_t(24) << 30));
+        if (qualified_budget && budget_control->budget_policy.status().config.mode == llama_memory_mode::fixed) {
+            // Balance real rows across workers so even a one-token remainder
+            // stays with enough preceding tokens for recurrent rollback.
+            const uint32_t blocks = (n_tokens_all + prefill_wide_rows - 1) / prefill_wide_rows;
+            window_rows = (n_tokens_all + blocks - 1) / blocks;
+            partial_wide = true;
+        }
+    }
     llama_memory_context_ptr mctx;
 
     while (true) {
-        mctx = memory->init_batch(*balloc, cparams.n_ubatch, embd_all);
+        mctx = memory->init_batch(*balloc, window_rows, embd_all);
+        if (window_rows != cparams.n_ubatch && (!mctx || mctx->get_status() != LLAMA_MEMORY_STATUS_SUCCESS)) {
+            window_rows = window_rows == prefill_wide_rows ? fallback_window_rows : cparams.n_ubatch;
+            partial_wide = false;
+            continue;
+        }
         if (!mctx) {
             return -2;
         }
@@ -2439,17 +2591,65 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
             state_src->synchronize();
         }
     }
-    const bool write_h_nextn = cparams.embeddings_nextn_dev && h_nextn_dev != nullptr;
     if (write_h_nextn && ev_h_nextn_read_recorded) {
         ggml_backend_event_wait(h_nextn_backend, ev_h_nextn_read.get());
     }
 
     int window_result = 0;
-    if (budget_control && budget_control->prefill_window.enabled && batch_inp.embd.empty() &&
-            batch_inp.state.empty() && !has_samplers &&
-            !has_embd_row && !has_state_row && !write_h_nextn && !layer_inp_dev && n_tokens_all > 1) {
-        window_result = decode_prefill_window(mctx, n_outputs_all,
-                std::max(uncached_prompt_tokens, size_t(n_tokens_all)), n_outputs_prev, n_tokens_prev);
+    if (partial_wide || legacy_window || window_rows == prefill_wide_rows) {
+        const size_t prompt_tokens = std::max(uncached_prompt_tokens, size_t(n_tokens_all));
+        bool retry_smaller_wide = false;
+        bool try_shared_wide = false;
+        if (!partial_wide && wide_dflash && window_rows == prefill_wide_rows && n_tokens_all > 3 * prefill_wide_rows) {
+            const char * shared = std::getenv("LLAMA_EXPERIMENTAL_PREFILL_DFLASH2_SHARED_SCRATCH");
+            const char * overlap = std::getenv("LLAMA_EXPERIMENTAL_PREFILL_WIDE_OVERLAP");
+            if ((!shared || !std::strcmp(shared, "1")) && (!overlap || !std::strcmp(overlap, "1"))) {
+                window_result = decode_prefill_window(mctx, n_outputs_all, prompt_tokens, n_tokens_all,
+                        n_outputs_prev, n_tokens_prev, nullptr, true);
+            }
+        }
+        if (!window_result) {
+            window_result = decode_prefill_window(mctx, n_outputs_all, prompt_tokens, n_tokens_all,
+                        n_outputs_prev, n_tokens_prev, !partial_wide && window_rows == prefill_wide_rows ? &retry_smaller_wide : nullptr,
+                        false, partial_wide);
+        }
+        while (!window_result && window_rows != cparams.n_ubatch) {
+            // A wider trial can decline only before applying any KV updates.
+            GGML_ASSERT(n_tokens_prev == 0);
+            mctx.reset();
+            if (partial_wide) {
+                partial_wide = false;
+                window_rows = cparams.n_ubatch;
+            } else if (retry_smaller_wide) {
+                window_rows = prefill_smaller_wide_rows;
+                retry_smaller_wide = false;
+                const auto groups = [&](uint32_t workers) {
+                    const uint32_t tokens = workers * prefill_smaller_wide_rows;
+                    return (n_tokens_all + tokens - 1) / tokens;
+                };
+                try_shared_wide = model.arch == LLM_ARCH_QWEN4EXP && groups(4) < groups(3);
+            } else if (try_shared_wide) {
+                try_shared_wide = false;
+            } else if (window_rows == prefill_smaller_wide_rows) {
+                // Retry the same 1024-row geometry in consecutive groups.
+                window_rows = prefill_wide_rows;
+            } else {
+                window_rows = window_rows == prefill_wide_rows ? fallback_window_rows : cparams.n_ubatch;
+            }
+            mctx = memory->init_batch(*balloc, window_rows, embd_all);
+            if (window_rows != cparams.n_ubatch && (!mctx || mctx->get_status() != LLAMA_MEMORY_STATUS_SUCCESS)) {
+                continue;
+            }
+            if (!mctx) { return -2; }
+            const auto status = mctx->get_status();
+            if (status != LLAMA_MEMORY_STATUS_SUCCESS) {
+                return status == LLAMA_MEMORY_STATUS_FAILED_PREPARE ? 1 : -2;
+            }
+            if (legacy_window || window_rows != cparams.n_ubatch) {
+                window_result = decode_prefill_window(mctx, n_outputs_all, prompt_tokens, n_tokens_all,
+                        n_outputs_prev, n_tokens_prev, nullptr, try_shared_wide);
+            }
+        }
         if (window_result < 0) { return window_result; }
     }
     if (!window_result) do {
@@ -2473,7 +2673,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
 
         ggml_status status;
 
-        const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
+        const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status, uncached_prompt_tokens == 0);
 
         if (!res) {
             // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
@@ -2725,7 +2925,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
 
 uint32_t llama_context::output_reserve(int32_t n_outputs) {
     std::optional<llama_allocation_scope> allocation_scope;
-    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
+            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
     const auto & hparams = model.hparams;
     const auto & vocab   = model.vocab;
 
@@ -4221,7 +4422,8 @@ size_t llama_context::state_write_data(llama_io_write_i & io) {
 
 size_t llama_context::state_read_data(llama_io_read_i & io) {
     std::optional<llama_allocation_scope> allocation_scope;
-    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
+            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
     LLAMA_LOG_DEBUG("%s: reading state\n", __func__);
 
     // read model info
@@ -4257,7 +4459,8 @@ size_t llama_context::state_seq_write_data(llama_io_write_i & io, llama_seq_id s
 
 size_t llama_context::state_seq_read_data(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
     std::optional<llama_allocation_scope> allocation_scope;
-    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete); }
+    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
+            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
     if (memory) {
         memory->state_read(io, seq_id, flags);
     }

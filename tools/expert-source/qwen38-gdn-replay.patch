@@ -1,0 +1,416 @@
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -5,6 +5,8 @@
+ #include "llama-io.h"
+ #include "llama-batch.h"
+ #include "llama-model.h"
++#include "llama-memory-contract.h"
++#include <cstdlib>
+ 
+ #include <algorithm>
+ #include <cassert>
+@@ -16,6 +18,29 @@
+ //
+ // llama_memory_recurrent
+ //
++
++// Only this separate single-slot benchmark executable can opt into replay.
++static struct {
++    const llama_memory_recurrent * owner = nullptr;
++    const llama_memory_recurrent_context * context = nullptr;
++    int pending = 0;
++    int bank = 0;
++    int32_t inputs[3] = {0, 0, 1};
++    std::map<const ggml_tensor *, ggml_tensor *> history;
++} qgdn_probe;
++
++ggml_tensor * qgdn_history(const ggml_tensor * state) {
++    const auto found = qgdn_probe.history.find(state);
++    return found == qgdn_probe.history.end() ? nullptr : found->second;
++}
++
++void qgdn_info(const llama_memory_recurrent_context * ctx, int32_t (&out)[3]) {
++    if (qgdn_probe.context == ctx) {
++        std::copy_n(qgdn_probe.inputs, 3, out);
++    } else {
++        out[0] = 0; out[1] = 0; out[2] = 1;
++    }
++}
+ 
+ llama_memory_recurrent::llama_memory_recurrent(
+         const llama_model & model,
+@@ -29,6 +54,20 @@
+     const layer_filter_cb & filter) : hparams(model.hparams), n_seq_max(n_seq_max), ctxs_bufs(no_alloc) {
+     const int32_t n_layer = hparams.n_layer();
+ 
++    const char * opt = std::getenv("QGDN_REPLAY");
++    const bool compact = opt && !std::strcmp(opt,"1") && !no_alloc && offload &&
++            model.arch == LLM_ARCH_QWEN4EXP && model.memory_contract &&
++            model.memory_contract->dflash2_target && !model.memory_contract->discrete.device &&
++            mem_size == 1 && n_seq_max == 1 && n_rs_seq == 5 && type_s == GGML_TYPE_F32 &&
++            n_layer == 48 && hparams.ssm_d_state == 128 && hparams.ssm_d_inner == 6144 &&
++            hparams.ssm_n_group == 16 && hparams.ssm_dt_rank == 48 &&
++            model.dev_output() && !std::strcmp(ggml_backend_dev_name(model.dev_output()), "MTL0");
++    if (compact) {
++        GGML_ASSERT(!qgdn_probe.owner);
++        qgdn_probe.owner = this;
++    }
++
++
+     head = 0;
+     size = mem_size;
+     used = 0;
+@@ -53,7 +92,7 @@
+         if (it == ctx_map.end()) {
+             ggml_init_params params = {
+                 // r and s per layer, plus the separate PLE conv row where the model has one
+-                /*.mem_size   =*/ size_t((hparams.ple_conv_state() > 0 ? 3u : 2u)*n_layer*ggml_tensor_overhead()),
++                /*.mem_size   =*/ size_t((2u + (hparams.ple_conv_state() > 0 ? 1u : 0u) + (compact ? 1u : 0u))*n_layer*ggml_tensor_overhead()),
+                 /*.mem_buffer =*/ NULL,
+                 /*.no_alloc   =*/ true,
+             };
+@@ -101,18 +140,32 @@
+ 
+         const uint32_t n_rows = mem_size * (1 + n_rs_seq);
+         ggml_tensor * r = ggml_new_tensor_2d(ctx, type_r, hparams.n_embd_r(), n_rows);
+-        ggml_tensor * s = ggml_new_tensor_2d(ctx, type_s, hparams.n_embd_s(), n_rows);
++        ggml_tensor * s = ggml_new_tensor_2d(ctx, type_s, hparams.n_embd_s(), compact ? 1 : n_rows);
+         ggml_format_name(r, "cache_r_l%d", i);
+         ggml_format_name(s, "cache_s_l%d", i);
+         r_l[i] = r;
+         s_l[i] = s;
+ 
+         // the PLE history needs its own row: Meta must mirror it while the delta-net conv state next door stays split
++        if (compact) {
++            GGML_ASSERT(!std::strcmp(dev_name,"MTL0"));
++            constexpr int64_t input_width = 16*128 + 48*128 + 2*48;
++            auto * history = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, input_width*6, 2);
++            ggml_format_name(history, "qgdn_input_history_l%d", i);
++            qgdn_probe.history.emplace(s, history);
++        }
+         if (hparams.ple_conv_state() > 0 && hparams.is_ple(i)) {
+             ggml_tensor * p = ggml_new_tensor_2d(ctx, type_r, hparams.ple_conv_state(), n_rows);
+             ggml_format_name(p, "cache_ple_r_l%d", i);
+             p_l[i] = p;
+         }
++    }
++
++    if (compact) {
++        size_t history_bytes = 0;
++        for (const auto & entry : qgdn_probe.history) { history_bytes += ggml_nbytes(entry.second); }
++        fprintf(stderr, "QGDN compact state bytes: S=%zu history=%zu convolution=%zu PLE=%zu\n",
++                size_s_bytes(), history_bytes, size_r_bytes(), size_p_bytes());
+     }
+ 
+     // allocate the tensors and initialize the buffers to avoid NaNs in the padding
+@@ -153,6 +206,12 @@
+ 
+     head = 0;
+     used = 0;
++
++    if (qgdn_probe.owner == this) {
++        qgdn_probe.context = nullptr;
++        qgdn_probe.pending = 0;
++        qgdn_probe.bank = 0;
++    }
+ 
+     if (data) {
+         for (auto & [_, buf] : ctxs_bufs) {
+@@ -781,6 +840,7 @@
+ }
+ 
+ void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
++    GGML_ASSERT(qgdn_probe.owner != this && "QGDN benchmark does not serialize compact state");
+     GGML_UNUSED(flags);
+ 
+     std::vector<std::pair<uint32_t, uint32_t>> cell_ranges; // ranges, from inclusive, to exclusive
+@@ -862,6 +922,7 @@
+ }
+ 
+ void llama_memory_recurrent::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
++    GGML_ASSERT(qgdn_probe.owner != this && "QGDN benchmark does not restore serialized state");
+     GGML_UNUSED(flags);
+ 
+     uint32_t cell_count;
+@@ -1294,7 +1355,9 @@
+         llama_memory_recurrent * mem,
+         std::vector<llama_ubatch> ubatches) : status(LLAMA_MEMORY_STATUS_SUCCESS), mem(mem), ubatches(std::move(ubatches)) {}
+ 
+-llama_memory_recurrent_context::~llama_memory_recurrent_context() = default;
++llama_memory_recurrent_context::~llama_memory_recurrent_context() {
++    if (qgdn_probe.context == this) { qgdn_probe.context = nullptr; }
++}
+ 
+ bool llama_memory_recurrent_context::next() {
+     assert(status == LLAMA_MEMORY_STATUS_SUCCESS);
+@@ -1317,6 +1380,24 @@
+         return true;
+     }
+ 
++    if (qgdn_probe.owner == mem) {
++        const auto & u = ubatches[i_next];
++        GGML_ASSERT(u.n_seqs == 1 && u.n_seq_id[0] == 1 && u.seq_id[0][0] == 0);
++        const auto rollback = mem->rs_idx[0];
++        const bool reset = mem->cells[0].seq_id.empty();
++        const int pending = reset ? 0 : qgdn_probe.pending;
++        GGML_ASSERT(rollback <= uint32_t(pending));
++        qgdn_probe.context = this;
++        qgdn_probe.inputs[0] = pending - rollback;
++        qgdn_probe.inputs[1] = qgdn_probe.bank;
++        qgdn_probe.inputs[2] = reset;
++        qgdn_probe.pending = u.n_seq_tokens <= 6 ? u.n_seq_tokens : 0;
++        qgdn_probe.bank = 1 - qgdn_probe.bank;
++        if (std::getenv("QGDN_TRACE_STATE")) {
++            fprintf(stderr, "QGDN replay %d rollback %u input_rows %u position %d reset %d\n",
++                    qgdn_probe.inputs[0], rollback, u.n_seq_tokens, u.pos[0], reset);
++        }
++    }
+     mem->find_slot(ubatches[i_next]);
+ 
+     return true;
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -1174,7 +1174,8 @@
+     ggml_tensor * conv_input = build_conv_state_at(inp, conv_states_all, qkv_mixed,
+             conv_kernel_size - 1, conv_channels, il);
+ 
+-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
++    ggml_tensor * state = qgdn_history(ssm_states_all) ? ssm_states_all :
++            build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
+     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
+     cb(state, "state_predelta", il);
+ 
+--- a/src/models/delta-net-base.cpp
++++ b/src/models/delta-net-base.cpp
+@@ -2,6 +2,30 @@
+ 
+ #include "llama-impl.h"
+ #include "llama-memory-recurrent.h"
++#include "llama-memory-hybrid.h"
++
++namespace {
++class qgdn_replay_input final : public llm_graph_input_i {
++public:
++    qgdn_replay_input(ggml_tensor * tensor, const llama_memory_recurrent_context * context)
++        : tensor(tensor), context(context) {}
++
++    void set_input(const llama_ubatch *) override {
++        int32_t values[3];
++        qgdn_info(context, values);
++        ggml_backend_tensor_set(tensor, values, 0, sizeof(values));
++    }
++
++    bool can_reuse(const llm_graph_params & params) override {
++        context = static_cast<const llama_memory_hybrid_context *>(params.mctx)->get_recr();
++        return true;
++    }
++private:
++    ggml_tensor * tensor;
++    const llama_memory_recurrent_context * context;
++};
++}
++
+ 
+ llm_build_delta_net_base::llm_build_delta_net_base(const llm_graph_params & params) : llm_graph_context(params) {}
+ 
+@@ -95,6 +119,26 @@
+     const int64_t n_seqs       = s->ne[3];
+     const int64_t n_seq_tokens = q->ne[2];
+ 
++    if (auto * history = qgdn_history(ssm_states_all)) {
++        GGML_ASSERT(S_v == 128 && H_v == 48 && n_seqs == 1);
++        constexpr const char * name = "qgdn_replay_info";
++        auto * info = ggml_graph_get_tensor(gf, name);
++        if (!info) {
++            info = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 3);
++            ggml_set_name(info, name);
++            ggml_set_input(info);
++            res->add_input(std::make_unique<qgdn_replay_input>(info, mctx_cur));
++        }
++        ggml_tensor * out = ggml_gated_delta_net(ctx0, q, k, v, g, b, s, 1);
++        out->src[6] = info;
++        out->src[7] = history;
++        auto * output = ggml_view_4d(ctx0, out, S_v, H_v, n_seq_tokens, 1,
++                ggml_row_size(out->type, S_v), ggml_row_size(out->type, S_v * H_v),
++                ggml_row_size(out->type, S_v * H_v * n_seq_tokens), 0);
++        cb(output, "attn_output", il);
++        return output;
++    }
++
+     const bool keep = cparams.n_rs_seq > 0;
+ 
+     if (!keep) {
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2094,7 +2094,19 @@
+     GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
+     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
+ 
+-    auto pipeline = ggml_metal_library_get_pipeline_gated_delta_net(lib, op);
++    const bool replay = op->src[6] != nullptr && op->src[7] != nullptr;
++    ggml_metal_pipeline_with_params pipeline;
++    if (replay) {
++        GGML_ASSERT(ne20 == 128 && ne21 == 48 && ne23 == 1 && ne11 == 16 &&
++                    op->src[6]->type == GGML_TYPE_I32 && op->src[3]->ne[0] == 1 &&
++                    op->src[7]->ne[0] == 8288*6 && op->src[7]->ne[1] == 2);
++        const char * name = "kernel_flash_next_gdn_replay";
++        pipeline = ggml_metal_library_get_pipeline(lib, name);
++        if (!pipeline.pipeline) { pipeline = ggml_metal_library_compile_pipeline(lib, name, name, nullptr); }
++        pipeline.nsg = 4;
++    } else {
++        pipeline = ggml_metal_library_get_pipeline_gated_delta_net(lib, op);
++    }
+ 
+     // when fused with the trailing cache cpy, the snapshots are written straight into the
+     // recurrent cache and the cpy is skipped (see GGML_METAL_FUSION_GDN_CACHE)
+@@ -2102,7 +2114,7 @@
+     uint64_t nb_out = 0;
+     int n_fuse = 1;
+ 
+-    if (use_fusion) {
++    if (use_fusion && !replay) {
+         int n = 1;
+         const ggml_metal_fusion * fusion = ctx->can_fuse(idx, GGML_METAL_FUSION_FULL, &n);
+ 
+@@ -2172,6 +2184,11 @@
+     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[5]), ida++); // state
+     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++); // dst (attn)
+     ggml_metal_encoder_set_buffer  (enc, bid_out,                              ida++); // state_out
++
++    if (replay) {
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[6]), ida++);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[7]), ida++);
++    }
+ 
+     const int nsg = pipeline.nsg;
+ 
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -203,3 +203,7 @@
+ 
+     const bool is_full = false;
+ };
++
++// Internal to the Flash-Next compact replay benchmark.
++void qgdn_info(const llama_memory_recurrent_context * ctx, int32_t (&out)[3]);
++ggml_tensor * qgdn_history(const ggml_tensor * state);
+--- a/ggml/src/ggml-metal/kernels/gated_delta_net.metal
++++ b/ggml/src/ggml-metal/kernels/gated_delta_net.metal
+@@ -262,3 +262,117 @@
+ template [[host_name("kernel_gated_delta_net_f32_2")]] kernel kernel_gated_delta_net_t kernel_gated_delta_net_impl<float2, 2>;
+ template [[host_name("kernel_gated_delta_net_f32_4")]] kernel kernel_gated_delta_net_t kernel_gated_delta_net_impl<float4, 4>;
+ #endif
++
++// Fixed Qwen3.8-Flash-Next geometry. Retain the GDN state before the pending block
++// and ping-pong between two histories of the exact recurrent inputs.
++kernel void kernel_flash_next_gdn_replay(
++        constant ggml_metal_kargs_gated_delta_net & args [[buffer(0)]],
++        device const char * q [[buffer(1)]],
++        device const char * k [[buffer(2)]],
++        device const char * v [[buffer(3)]],
++        device const float * g [[buffer(4)]],
++        device const float * beta [[buffer(5)]],
++        device float * state [[buffer(6)]],
++        device float * output [[buffer(7)]],
++        device const int * replay [[buffer(9)]],
++        device float * history [[buffer(10)]],
++        uint3 group [[threadgroup_position_in_grid]],
++        uint3 thread_id [[thread_position_in_threadgroup]]) {
++    constexpr uint width = 128, heads = 48, key_heads = 16, tile = 4, max_rows = 6;
++    constexpr uint value_offset = width * key_heads;
++    constexpr uint gate_offset = value_offset + width * heads;
++    constexpr uint beta_offset = gate_offset + heads;
++    constexpr uint row_size = beta_offset + heads;
++
++    const uint lane = thread_id.x;
++    const uint row = group.x * tile + thread_id.y;
++    const uint head = group.y;
++    const uint q_head = head % args.ne01;
++    const uint k_head = head % args.ne11;
++    state += (head * width + row) * width;
++
++    float ls[tile];
++    FOR_UNROLL (short j = 0; j < tile; ++j) {
++        ls[j] = replay[2] ? 0.f : state[lane * tile + j];
++    }
++
++    device const float * prev = history + replay[1] * max_rows * row_size;
++    for (int t = 0; t < replay[0]; ++t) {
++        device const float * input = prev + t * row_size;
++        device const float * key = input + k_head * width;
++        float s_k = 0.0f;
++        const float g_exp = exp(input[gate_offset + head]);
++        FOR_UNROLL (short j = 0; j < tile; ++j) {
++            const short is = lane * tile + j;
++            ls[j] *= g_exp;
++            s_k += ls[j]*key[is];
++        }
++        s_k = simd_sum(s_k);
++        const float d = (input[value_offset + head * width + row] - s_k) * input[beta_offset + head];
++        FOR_UNROLL (short j = 0; j < tile; ++j) {
++            const short is = lane * tile + j;
++            ls[j] += key[is]*d;
++        }
++    }
++    const bool retain = args.ne22 <= max_rows;
++    if (retain) {
++        FOR_UNROLL (short j = 0; j < tile; ++j) {
++            state[lane * tile + j] = ls[j];
++        }
++    }
++
++    device const float * q_ptr = (device const float *)(q + q_head * args.nb01);
++    device const float * k_ptr = (device const float *)(k + k_head * args.nb11);
++    device const float * v_ptr = (device const float *)(v + head * args.nb21);
++    device float * next = history + (1 - replay[1]) * max_rows * row_size;
++    const float scale = 1.f / sqrt(float(width));
++
++    for (short t = 0; t < args.ne22; t++) {
++        const float g_input = g[t * heads + head];
++        const float b_input = beta[t * heads + head];
++        float s_k = 0.0f;
++        const float g_exp = exp(g_input);
++        FOR_UNROLL (short j = 0; j < tile; ++j) {
++            const short is = lane * tile + j;
++            ls[j] *= g_exp;
++            s_k += ls[j]*k_ptr[is];
++        }
++        s_k = simd_sum(s_k);
++        const float d = (v_ptr[row] - s_k)*b_input;
++        float y = 0.0f;
++        FOR_UNROLL (short j = 0; j < tile; ++j) {
++            const short is = lane * tile + j;
++            ls[j] += k_ptr[is]*d;
++            y += ls[j]*q_ptr[is];
++        }
++        y = simd_sum(y);
++        if (lane == 0) {
++            output[(t * heads + head) * width + row] = y*scale;
++        }
++
++        if (retain) {
++            device float * input = next + t * row_size;
++            if (row == 0 && head < key_heads) {
++                FOR_UNROLL (short j = 0; j < tile; ++j) {
++                    const short is = lane * tile + j;
++                    input[head * width + is] = k_ptr[is];
++                }
++            }
++            if (lane == 0) {
++                input[value_offset + head * width + row] = v_ptr[row];
++                if (row == 0) {
++                    input[gate_offset + head] = g_input;
++                    input[beta_offset + head] = b_input;
++                }
++            }
++        }
++        q_ptr += args.ns02;
++        k_ptr += args.ns12;
++        v_ptr += args.ns22;
++    }
++    if (!retain) {
++        FOR_UNROLL (short j = 0; j < tile; ++j) {
++            state[lane * tile + j] = ls[j];
++        }
++    }
++}

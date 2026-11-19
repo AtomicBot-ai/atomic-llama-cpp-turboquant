@@ -14,7 +14,12 @@
 #include <sys/stat.h>
 
 #if defined(__APPLE__)
+#include <dispatch/dispatch.h>
 #include <fcntl.h>
+#include <sys/uio.h>
+#if defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#endif
 #endif
 
 #if defined(_WIN32)
@@ -124,6 +129,13 @@ struct llama_expert_source::impl {
     std::string architecture;
     std::mutex mutex;
     bool failed = false;
+    struct expert_pack {
+        shard data;
+        std::array<packed_group, 48> groups {};
+        std::vector<packed_slice> slices;
+        size_t max_stride = 0;
+    };
+    std::unique_ptr<expert_pack> pack;
 
     explicit impl(const std::vector<std::string> & paths) {
         if (paths.empty() || paths.size() > std::numeric_limits<uint16_t>::max()) {
@@ -192,12 +204,264 @@ llama_expert_source::~llama_expert_source() = default;
 const std::string & llama_expert_source::architecture() const { return pimpl->architecture; }
 const std::vector<llama_expert_tensor_info> & llama_expert_source::tensors() const { return pimpl->tensors; }
 
+bool llama_expert_source::open_expert_pack(const std::string & path) {
+#if defined(__APPLE__) && defined(__ARM_FEATURE_CRC32)
+    if (pimpl->architecture != "qwen4exp" || pimpl->pack) {
+        throw std::invalid_argument("expert pack requires an unconfigured Qwen4Exp source");
+    }
+    struct expert_stat st;
+    if (::stat(path.c_str(), &st) != 0 && errno == ENOENT) { return false; }
+    auto pack = std::unique_ptr<impl::expert_pack>(new impl::expert_pack{impl::shard(path), {}, {}, 0});
+    FILE * file = pack->data.file.get();
+    auto read = [&](void * dst, size_t bytes) {
+        if (std::fread(dst, 1, bytes, file) != bytes) { throw std::runtime_error("truncated expert pack header"); }
+    };
+    char magic[8];
+    uint64_t count;
+    read(magic, sizeof(magic));
+    read(&count, sizeof(count));
+    if (std::memcmp(magic, "ATEXPK1", sizeof(magic)) || count != pimpl->shards.size()) {
+        throw std::runtime_error("invalid expert pack header");
+    }
+    size_t offset = sizeof(magic) + sizeof(count);
+    for (const auto & shard : pimpl->shards) {
+        const auto & state = shard.state.value;
+        const auto nanos = [](const timespec & t) { return uint64_t(t.tv_sec) * 1000000000 + uint64_t(t.tv_nsec); };
+        const std::array<uint64_t, 5> expected {uint64_t(state.st_dev), uint64_t(state.st_ino), uint64_t(state.st_size),
+            nanos(state.st_mtimespec), nanos(state.st_ctimespec)};
+        std::array<uint64_t, 5> actual;
+        read(actual.data(), sizeof(actual));
+        if (actual != expected) { throw std::runtime_error("expert pack belongs to different GGUF shards"); }
+        offset += sizeof(actual);
+    }
+    const size_t file_bytes = pack->data.state.value.st_size;
+    pack->slices.resize(pimpl->tensors.size());
+    for (size_t layer = 0; layer < pack->groups.size(); ++layer) {
+        auto & group = pack->groups[layer];
+        group.file_offset = offset;
+        for (const char * kind : {"gate", "up", "down"}) {
+            const auto & info = tensor("blk." + std::to_string(layer) + ".ffn_" + kind + "_exps.weight");
+            if (!info.can_read_experts() || info.ne[2] > 1024 ||
+                    (group.experts && group.experts != size_t(info.ne[2]))) {
+                throw std::runtime_error("unsupported expert pack tensor layout");
+            }
+            group.experts = info.ne[2];
+            pack->slices[&info - pimpl->tensors.data()] = {&group, group.stride};
+            const size_t bytes = info.expert_bytes();
+            if (bytes > size_t(INT32_MAX) - sizeof(uint32_t) - group.stride) {
+                throw std::runtime_error("expert pack record is too large");
+            }
+            group.stride += bytes;
+        }
+        group.stride += sizeof(uint32_t);
+        if (offset > file_bytes || group.stride > (file_bytes - offset) / group.experts) {
+            throw std::runtime_error("truncated expert pack payload");
+        }
+        offset += group.stride * group.experts;
+        pack->max_stride = std::max(pack->max_stride, group.stride);
+    }
+    if (offset != file_bytes) { throw std::runtime_error("unexpected expert pack size"); }
+    pack->data.check();
+    pimpl->pack = std::move(pack);
+    return true;
+#else
+    (void) path;
+    return false;
+#endif
+}
+
+size_t llama_expert_source::packed_stride() const { return pimpl->pack ? pimpl->pack->max_stride : 0; }
+
+llama_expert_source::packed_slice llama_expert_source::packed_location(size_t tensor_index) const {
+    return pimpl->pack ? pimpl->pack->slices[tensor_index] : packed_slice{};
+}
+
+void llama_expert_source::read_packed_expert(const packed_group & group, int64_t expert, void * dst) {
+#if defined(__APPLE__) && defined(__ARM_FEATURE_CRC32)
+    std::lock_guard<std::mutex> lock(pimpl->mutex);
+    if (pimpl->failed) { throw std::runtime_error("invalid expert source after earlier read failure"); }
+    auto & pack = pimpl->pack->data;
+    try {
+        for (const auto & shard : pimpl->shards) { shard.check(); }
+        pack.check();
+        const off_t offset = group.file_offset + size_t(expert) * group.stride;
+        ssize_t count;
+        do {
+            count = ::pread(expert_fileno(pack.file.get()), dst, group.stride, offset);
+        } while (count < 0 && errno == EINTR);
+        if (count != ssize_t(group.stride)) { throw std::runtime_error("incomplete expert pack read"); }
+        pack.check();
+        for (const auto & shard : pimpl->shards) { shard.check(); }
+
+        const auto * bytes = static_cast<const uint8_t *>(dst);
+        const size_t payload = group.stride - sizeof(uint32_t);
+        uint32_t crc = UINT32_MAX;
+        size_t i = 0;
+        for (; payload - i >= sizeof(uint64_t); i += sizeof(uint64_t)) {
+            uint64_t word;
+            std::memcpy(&word, bytes + i, sizeof(word));
+            crc = __crc32d(crc, word);
+        }
+        for (; i < payload; ++i) { crc = __crc32b(crc, bytes[i]); }
+        uint32_t expected;
+        std::memcpy(&expected, bytes + payload, sizeof(expected));
+        if (~crc != expected) { throw std::runtime_error("expert pack checksum mismatch"); }
+    } catch (...) {
+        pimpl->failed = true;
+        throw;
+    }
+#else
+    (void) group; (void) expert; (void) dst;
+    throw std::runtime_error("expert pack requires Apple silicon");
+#endif
+}
+
+bool llama_expert_source::advise_packed_expert(const packed_group & group, int64_t expert) {
+#if defined(__APPLE__)
+    std::lock_guard<std::mutex> lock(pimpl->mutex);
+    if (pimpl->failed) { return false; }
+    struct radvisory advice {off_t(group.file_offset + size_t(expert) * group.stride), int(group.stride)};
+    return fcntl(expert_fileno(pimpl->pack->data.file.get()), F_RDADVISE, &advice) != -1;
+#else
+    (void) group; (void) expert;
+    return false;
+#endif
+}
+
 const llama_expert_tensor_info & llama_expert_source::tensor(const std::string & name) const {
     const auto it = pimpl->by_name.find(name);
     if (it == pimpl->by_name.end()) {
         throw std::invalid_argument("unknown expert tensor: " + name);
     }
     return pimpl->tensors[it->second];
+}
+
+void llama_expert_source::read_experts(const read_request * requests, size_t count, bool speculative,
+        bool concurrent_demand, bool adjacent_ranges) {
+    if (count == 1 && !speculative && !concurrent_demand) {
+        const auto & req = requests[0];
+        read_expert(req.tensor->name, req.expert, req.destination, req.tensor->expert_bytes());
+        return;
+    }
+#if defined(__APPLE__)
+    if (!count || count > 16) { throw std::invalid_argument("invalid expert read batch size"); }
+    struct job {
+        int fd;
+        off_t offset;
+        size_t bytes;
+        void * destination;
+        bool complete = false;
+    };
+    struct batch {
+        std::array<job, 16> jobs;
+        size_t count;
+        size_t width;
+        std::array<size_t, 17> ranges {};
+        size_t range_count = 0;
+    } work {{}, count, concurrent_demand ? 1 : std::min(count, size_t(4)), {}, 0};
+    std::unique_lock<std::mutex> lock(pimpl->mutex);
+    if (pimpl->failed) { throw std::runtime_error("expert source is invalid after an earlier read failure"); }
+    for (size_t i = 0; i < count; ++i) {
+        const auto & req = requests[i];
+        const auto & info = *req.tensor;
+        const size_t bytes = info.expert_bytes();
+        if (!req.destination || req.expert < 0 || req.expert >= info.ne[2]) {
+            throw std::invalid_argument("invalid batched expert read");
+        }
+        work.jobs[i] = {expert_fileno(pimpl->shards[info.shard].file.get()),
+                        off_t(info.offset + size_t(req.expert) * bytes), bytes, req.destination};
+    }
+    // Offsets, handles and file identity are immutable. Positioned speculative
+    // reads can overlap demand without keeping the source mutex through I/O.
+    if (speculative || concurrent_demand) { lock.unlock(); }
+    try {
+        for (const auto & shard : pimpl->shards) { shard.check(); }
+        // A null queue selects the calling thread's QoS (DISPATCH_APPLY_AUTO).
+        auto read = [](void * opaque, size_t index) {
+            auto & state = *static_cast<batch *>(opaque);
+            for (; index < state.count; index += state.width) {
+                auto & job = state.jobs[index];
+                auto * dst = static_cast<char *>(job.destination);
+                size_t read_bytes = 0;
+                while (read_bytes < job.bytes) {
+                    const auto n = ::pread(job.fd, dst + read_bytes, job.bytes - read_bytes, job.offset + read_bytes);
+                    if (n < 0 && errno == EINTR) { continue; }
+                    if (n <= 0) { break; }
+                    read_bytes += n;
+                }
+                job.complete = read_bytes == job.bytes;
+            }
+        };
+        if (adjacent_ranges && !speculative && !concurrent_demand) {
+            if (__builtin_available(macOS 11.0, *)) {
+                size_t groups = 0;
+                for (size_t i = 0; i < work.count; ++i) {
+                    if (!i || requests[i].tensor != requests[i - 1].tensor ||
+                            work.jobs[i].fd != work.jobs[i - 1].fd ||
+                            work.jobs[i].offset != work.jobs[i - 1].offset + off_t(work.jobs[i - 1].bytes)) {
+                        work.ranges[groups++] = i;
+                    }
+                }
+                work.ranges[groups] = work.count;
+                // Read exact consecutive slices straight into each admitted
+                // destination. A short read advances the vectors and offset.
+                work.range_count = groups;
+                work.width = std::min(groups, size_t(4));
+                auto read_range = [](void * opaque, size_t first_group) {
+                    auto & batch = *static_cast<struct batch *>(opaque);
+                    for (size_t group = first_group; group < batch.range_count; group += batch.width) {
+                        const size_t first = batch.ranges[group], end = batch.ranges[group + 1];
+                        std::array<iovec, 16> vectors {};
+                        for (size_t i = first; i < end; ++i) {
+                            vectors[i] = {batch.jobs[i].destination, batch.jobs[i].bytes};
+                        }
+                        auto offset = batch.jobs[first].offset;
+                        for (size_t i = first; i < end;) {
+                            const auto bytes = ::preadv(batch.jobs[first].fd, vectors.data() + i, int(end - i), offset);
+                            if (bytes < 0 && errno == EINTR) { continue; }
+                            if (bytes <= 0) { return; }
+                            offset += bytes;
+                            size_t done = size_t(bytes);
+                            while (i < end && done >= vectors[i].iov_len) {
+                                done -= vectors[i].iov_len;
+                                ++i;
+                            }
+                            if (i < end && done) {
+                                vectors[i].iov_base = static_cast<char *>(vectors[i].iov_base) + done;
+                                vectors[i].iov_len -= done;
+                            }
+                        }
+                        for (size_t i = first; i < end; ++i) { batch.jobs[i].complete = true; }
+                    }
+                };
+                dispatch_apply_f(work.width, nullptr, &work, read_range);
+            } else {
+                dispatch_apply_f(work.width, nullptr, &work, read);
+            }
+        } else if (concurrent_demand) {
+            read(&work, 0);
+        } else {
+            dispatch_apply_f(work.width, nullptr, &work, read);
+        }
+        for (const auto & shard : pimpl->shards) { shard.check(); }
+        if (!std::all_of(work.jobs.begin(), work.jobs.begin() + count, [](const job & j) { return j.complete; })) {
+            throw std::runtime_error("incomplete batched expert read");
+        }
+    } catch (...) {
+        if (!speculative) {
+            if (!lock.owns_lock()) { lock.lock(); }
+            pimpl->failed = true;
+        }
+        throw;
+    }
+#else
+    (void) adjacent_ranges;
+    if (speculative || concurrent_demand) { throw std::invalid_argument("speculative batched expert reads require Metal"); }
+    for (size_t i = 0; i < count; ++i) {
+        const auto & req = requests[i];
+        read_expert(req.tensor->name, req.expert, req.destination, req.tensor->expert_bytes());
+    }
+#endif
 }
 
 bool llama_expert_source::advise_expert(const std::string & name, int64_t expert) {

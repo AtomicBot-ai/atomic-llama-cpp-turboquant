@@ -1,3 +1,4 @@
+#include "llama-expert-executor.h"
 #include "models.h"
 #include "llama-impl.h"
 #include "llama-memory-hybrid-idx.h"
@@ -992,7 +993,32 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
     sel = ggml_reshape_4d(ctx0, sel, sel->ne[0], sel->ne[1]/n_stream, 1, n_stream);
     cb(sel, "kq_mask_qsa", il);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, sel, nullptr, nullptr, nullptr, n_sel, kq_scale, il);
+    int64_t first_hint = n_sel;
+    if (n_tokens == 16 && cparams.n_ubatch == 8 &&
+            ubatch.n_seqs == 1 && cparams.flash_attn &&
+            expert_executor && expert_executor->fused_window_moe_enabled()) {
+        const auto * hybrid = static_cast<const llama_memory_hybrid_idx_context *>(mctx);
+        const uint32_t pools = hybrid->get_n_kpool_before(ubatch.seq_id_unq[0], ubatch.pos[7]);
+        const uint32_t width = hparams.indexer_kpool;
+        first_hint = width*std::min<uint32_t>(pools, hparams.indexer_top_k / width) + width - 1;
+    }
+    ggml_tensor * cur;
+    if (first_hint && first_hint != n_sel) {
+        GGML_ASSERT(n_stream == 1 && n_tokens == 16 && cparams.flash_attn);
+        // Keep each ub8 sparse reduction tree. The mask and KV remain shared.
+        auto half = [&](int offset, int64_t hint) {
+            auto * q_view = ggml_view_4d(ctx0, q, q->ne[0], q->ne[1], 8, 1,
+                    q->nb[1], q->nb[2], q->nb[3], offset*q->nb[2]);
+            auto * mask_view = ggml_view_4d(ctx0, sel, sel->ne[0], 8, 1, 1,
+                    sel->nb[1], sel->nb[2], sel->nb[3], offset*sel->nb[1]);
+            return build_attn_mha(q_view, k, v, nullptr, mask_view, nullptr, nullptr, nullptr, hint, kq_scale, il);
+        };
+        auto * left = half(0, first_hint);
+        auto * right = half(8, n_sel);
+        cur = ggml_concat(ctx0, left, right, 1);
+    } else {
+        cur = build_attn_mha(q, k, v, nullptr, sel, nullptr, nullptr, nullptr, n_sel, kq_scale, il);
+    }
     cb(cur, "kqv_out", il);
 
     // the rotation is its own inverse, so undo it on the value side of the output
@@ -1206,7 +1232,24 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     ggml_tensor * final_output = ggml_reshape_2d(ctx0, attn_out_norm, head_v_dim * num_v_heads, n_seq_tokens * n_seqs);
     cb(final_output, "final_output", il);
 
-    cur = build_lora_mm(model.layers[il].ssm_out, final_output, model.layers[il].ssm_out_s);
+    constexpr int64_t tile_rows = 8;
+    if (cparams.n_ubatch == tile_rows &&
+            n_seqs == 1 && n_seq_tokens == 2 * tile_rows &&
+            expert_executor && expert_executor->fused_window_moe_enabled()) {
+        // Reuse the eight-row projection and its Metal MMA reduction order for each half.
+        auto project = [&](int64_t first_row) {
+            auto * rows = ggml_view_2d(ctx0, final_output, final_output->ne[0], tile_rows,
+                    final_output->nb[1], first_row * final_output->nb[1]);
+            return build_lora_mm(model.layers[il].ssm_out, rows, model.layers[il].ssm_out_s);
+        };
+        auto * first = project(0);
+        auto * second = project(tile_rows);
+        cb(first, "ssm_out_ub8_first", il);
+        cb(second, "ssm_out_ub8_second", il);
+        cur = ggml_concat(ctx0, first, second, 1);
+    } else {
+        cur = build_lora_mm(model.layers[il].ssm_out, final_output, model.layers[il].ssm_out_s);
+    }
     cb(cur, "linear_attn_out", il);
 
     return cur;
@@ -1253,6 +1296,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_ffn(ggml_tensor * cur, co
         ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
         cb(ffn_shexp, "ffn_shexp_gated", il);
 
+        if (published_moe_for_shared && published_moe_for_shared == model.layers[il].ffn_up_exps) {
+            ggml_build_forward_expand(gf, ffn_shexp);
+        }
         cur = ggml_add(ctx0, moe_out, ffn_shexp);
         cb(cur, "ffn_out", il);
     } else {

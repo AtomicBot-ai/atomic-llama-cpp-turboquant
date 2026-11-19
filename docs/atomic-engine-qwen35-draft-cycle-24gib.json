@@ -1,0 +1,833 @@
+{
+  "device": "Apple M4 Max, 40 GPU cores, 48 GiB unified memory",
+  "budget_gib": 24,
+  "target": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+  "draft": "incoai/Qwen3.6-35B-A3B-DFlash2",
+  "prompt": {
+    "file": "atomic-engine-qwen35-metal-residency.json",
+    "field": "prompt_token_ids",
+    "sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3"
+  },
+  "settings": "Sequential Metal runs, one engine process per configuration, 15 -> 8 warmup then two uncached 4000 -> 64 requests, seed 42, greedy, BF16 KV, context 4096. Identical prompt IDs sent directly. Splash used a new cache salt per request. Decode tps = 63 / elapsed client seconds between first and last token-bearing SSE event.",
+  "engines": {
+    "atomic-engine": "Production 36 direct layers and four streamed, GGUF BF16 draft, max 6 proposals. Diagnostic binary uses the same build archives with server-context timer probes.",
+    "splash": "1.6.1 stock server, all routed experts resident, up to seven proposals, auto verify rows. Runtime uses affine 4-bit groups of 64 for draft projections. Diagnostic binary uses the same metallibs as stock."
+  },
+  "phase_definitions": {
+    "atomic-engine": "Wall time. draft = common_speculative_draft plus synchronization. target = generation llama_process through llama_synchronize. draft_update = common_speculative_process plus draft synchronize on generation batches. accept = sampler clone through token comparison. Other bookkeeping is outside those timers.",
+    "splash": "Diagnostic runtime splits regular decode into three Metal commands, waiting after each of the first two. draft includes RoPE, draft embedding, model, selector and row budgeting. target includes verify input and embedding through target forward. commit includes target selection, acceptance and target/draft state commits. Wall and GPU timings from each Metal ticket. Stock runs retain the single command. Adaptive row cost receives the summed command durations.",
+    "counts": "Splash counts proposals actually sent for verification after row selection. Atomic Engine counts proposed tokens in the batch. compare accepted per actual verification step. Published /status decode_batches is differenced per request at concurrency 1."
+  },
+  "reference": "atomic-engine-four-engines-metal.json",
+  "runs": {
+    "atomic-engine-stock": [
+      {
+        "ttft_s": 3.2355745409731753,
+        "decode_tps": 116.44307073868808,
+        "decode_ms": 541.0369170131162,
+        "text": " for this\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - The user provides a long list of records (000 to 100) from a \"field archive\".\n   - The archive header explicitly states: \"The archive header states that the",
+        "prompt_n": 4000,
+        "cached": 0,
+        "output_n": 64,
+        "draft_verified": 79,
+        "draft_accepted": 49,
+        "cycles": 14
+      },
+      {
+        "ttft_s": 3.2483712499961257,
+        "decode_tps": 116.33819975598743,
+        "decode_ms": 541.5246250340715,
+        "text": " for this\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - The user provides a long list of records (000 to 100) from a \"field archive\".\n   - The archive header explicitly states: \"The archive header states that the",
+        "prompt_n": 4000,
+        "cached": 0,
+        "output_n": 64,
+        "draft_verified": 79,
+        "draft_accepted": 49,
+        "cycles": 14
+      }
+    ],
+    "atomic-engine-probe": [
+      {
+        "ttft_s": 3.2713798329932615,
+        "decode_tps": 113.2483745782264,
+        "decode_ms": 556.2993750208989,
+        "text": " for this\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - The user provides a long list of records (000 to 100) from a \"field archive\".\n   - The archive header explicitly states: \"The archive header states that the",
+        "prompt_n": 4000,
+        "cached": 0,
+        "output_n": 64,
+        "draft_verified": 79,
+        "draft_accepted": 49,
+        "cycles": 14,
+        "phases": [
+          {
+            "draft_wall_ms": 6.836,
+            "target_wall_ms": 54.018,
+            "draft_update_wall_ms": 0.618,
+            "accept_wall_ms": 0.313,
+            "accepted": 1,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.465,
+            "target_wall_ms": 39.756,
+            "draft_update_wall_ms": 0.621,
+            "accept_wall_ms": 0.153,
+            "accepted": 0,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 6.0,
+            "target_wall_ms": 38.613,
+            "draft_update_wall_ms": 0.651,
+            "accept_wall_ms": 0.264,
+            "accepted": 1,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.399,
+            "target_wall_ms": 32.267,
+            "draft_update_wall_ms": 0.609,
+            "accept_wall_ms": 0.959,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.621,
+            "target_wall_ms": 34.406,
+            "draft_update_wall_ms": 0.597,
+            "accept_wall_ms": 0.766,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.78,
+            "target_wall_ms": 30.21,
+            "draft_update_wall_ms": 0.588,
+            "accept_wall_ms": 0.779,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.662,
+            "target_wall_ms": 29.685,
+            "draft_update_wall_ms": 0.611,
+            "accept_wall_ms": 0.372,
+            "accepted": 2,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.788,
+            "target_wall_ms": 28.9,
+            "draft_update_wall_ms": 0.979,
+            "accept_wall_ms": 0.56,
+            "accepted": 4,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.435,
+            "target_wall_ms": 28.519,
+            "draft_update_wall_ms": 0.614,
+            "accept_wall_ms": 0.758,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.657,
+            "target_wall_ms": 28.035,
+            "draft_update_wall_ms": 0.638,
+            "accept_wall_ms": 0.352,
+            "accepted": 2,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.642,
+            "target_wall_ms": 29.422,
+            "draft_update_wall_ms": 0.602,
+            "accept_wall_ms": 0.763,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.543,
+            "target_wall_ms": 29.208,
+            "draft_update_wall_ms": 0.6,
+            "accept_wall_ms": 0.775,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.653,
+            "target_wall_ms": 27.256,
+            "draft_update_wall_ms": 0.605,
+            "accept_wall_ms": 0.151,
+            "accepted": 0,
+            "verified": 4
+          },
+          {
+            "draft_wall_ms": 5.882,
+            "target_wall_ms": 27.401,
+            "draft_update_wall_ms": 0.585,
+            "accept_wall_ms": 0.447,
+            "accepted": 3,
+            "verified": 3
+          }
+        ]
+      },
+      {
+        "ttft_s": 3.2516822909819894,
+        "decode_tps": 115.11254940736676,
+        "decode_ms": 547.2904589842074,
+        "text": " for this\n\n<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - The user provides a long list of records (000 to 100) from a \"field archive\".\n   - The archive header explicitly states: \"The archive header states that the",
+        "prompt_n": 4000,
+        "cached": 0,
+        "output_n": 64,
+        "draft_verified": 79,
+        "draft_accepted": 49,
+        "cycles": 14,
+        "phases": [
+          {
+            "draft_wall_ms": 5.938,
+            "target_wall_ms": 48.877,
+            "draft_update_wall_ms": 0.61,
+            "accept_wall_ms": 0.268,
+            "accepted": 1,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.574,
+            "target_wall_ms": 38.721,
+            "draft_update_wall_ms": 0.599,
+            "accept_wall_ms": 0.153,
+            "accepted": 0,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.599,
+            "target_wall_ms": 38.532,
+            "draft_update_wall_ms": 0.598,
+            "accept_wall_ms": 0.248,
+            "accepted": 1,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.512,
+            "target_wall_ms": 32.479,
+            "draft_update_wall_ms": 0.589,
+            "accept_wall_ms": 0.756,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.499,
+            "target_wall_ms": 34.476,
+            "draft_update_wall_ms": 0.59,
+            "accept_wall_ms": 0.76,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.964,
+            "target_wall_ms": 30.209,
+            "draft_update_wall_ms": 0.589,
+            "accept_wall_ms": 0.748,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.423,
+            "target_wall_ms": 29.398,
+            "draft_update_wall_ms": 0.564,
+            "accept_wall_ms": 0.352,
+            "accepted": 2,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.55,
+            "target_wall_ms": 29.809,
+            "draft_update_wall_ms": 0.852,
+            "accept_wall_ms": 0.59,
+            "accepted": 4,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.656,
+            "target_wall_ms": 28.645,
+            "draft_update_wall_ms": 0.627,
+            "accept_wall_ms": 0.739,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.773,
+            "target_wall_ms": 28.015,
+            "draft_update_wall_ms": 0.6,
+            "accept_wall_ms": 0.371,
+            "accepted": 2,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.932,
+            "target_wall_ms": 29.166,
+            "draft_update_wall_ms": 0.618,
+            "accept_wall_ms": 0.752,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.596,
+            "target_wall_ms": 28.642,
+            "draft_update_wall_ms": 0.605,
+            "accept_wall_ms": 0.772,
+            "accepted": 6,
+            "verified": 6
+          },
+          {
+            "draft_wall_ms": 5.712,
+            "target_wall_ms": 27.331,
+            "draft_update_wall_ms": 0.597,
+            "accept_wall_ms": 0.157,
+            "accepted": 0,
+            "verified": 4
+          },
+          {
+            "draft_wall_ms": 5.589,
+            "target_wall_ms": 26.452,
+            "draft_update_wall_ms": 0.587,
+            "accept_wall_ms": 0.451,
+            "accepted": 3,
+            "verified": 3
+          }
+        ]
+      }
+    ],
+    "splash-stock": [
+      {
+        "ttft_s": 1.8481058750185184,
+        "decode_tps": 347.5535301255229,
+        "decode_ms": 181.2670410145074,
+        "text": " for this Record 100: The northern station logged clear skies, a mild breeze, and stable instruments. The reference code for this observation is N100.\n\nUsing the archive header, answer the geography question in one sentence with no explanation. What is the capital of France? The capital of France is",
+        "prompt_n": 4000,
+        "cached": 0,
+        "output_n": 64,
+        "draft_verified": 63,
+        "draft_accepted": 54,
+        "cycles": 10,
+        "native_decode_gpu_ms": 174.70099990000003
+      },
+      {
+        "ttft_s": 1.8634849159861915,
+        "decode_tps": 343.70182255247613,
+        "decode_ms": 183.29841701779515,
+        "text": " for this Record 100: The northern station logged clear skies, a mild breeze, and stable instruments. The reference code for this observation is N100.\n\nUsing the archive header, answer the geography question in one sentence with no explanation. What is the capital of France? The capital of France is",
+        "prompt_n": 4000,
+        "cached": 0,
+        "output_n": 64,
+        "draft_verified": 63,
+        "draft_accepted": 54,
+        "cycles": 10,
+        "native_decode_gpu_ms": 177.0441667
+      }
+    ],
+    "splash-probe": [
+      {
+        "ttft_s": 1.8551691669854335,
+        "decode_tps": 335.7931514073446,
+        "decode_ms": 187.61550000635907,
+        "text": " for this Record 100: The northern station logged clear skies, a mild breeze, and stable instruments. The reference code for this observation is N100.\n\nUsing the archive header, answer the geography question in one sentence with no explanation. What is the capital of France? The capital of France is",
+        "prompt_n": 4000,
+        "cached": 0,
+        "output_n": 64,
+        "draft_verified": 64,
+        "draft_accepted": 54,
+        "cycles": 10,
+        "native_decode_gpu_ms": 177.4616668,
+        "phases": [
+          {
+            "position": 4000,
+            "draft_gpu_ms": 2.332208,
+            "target_gpu_ms": 16.82475,
+            "commit_gpu_ms": 0.214,
+            "draft_wall_ms": 2.550375,
+            "target_wall_ms": 17.223542,
+            "commit_wall_ms": 0.357625,
+            "accepted": 1,
+            "verified": 7
+          },
+          {
+            "position": 4002,
+            "draft_gpu_ms": 2.338833,
+            "target_gpu_ms": 13.373125,
+            "commit_gpu_ms": 0.191292,
+            "draft_wall_ms": 2.5,
+            "target_wall_ms": 13.674792,
+            "commit_wall_ms": 0.337583,
+            "accepted": 1,
+            "verified": 5
+          },
+          {
+            "position": 4004,
+            "draft_gpu_ms": 2.336375,
+            "target_gpu_ms": 15.122083,
+            "commit_gpu_ms": 0.194875,
+            "draft_wall_ms": 2.559875,
+            "target_wall_ms": 15.520166,
+            "commit_wall_ms": 0.335667,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4012,
+            "draft_gpu_ms": 2.360625,
+            "target_gpu_ms": 15.679,
+            "commit_gpu_ms": 0.193625,
+            "draft_wall_ms": 2.507542,
+            "target_wall_ms": 15.936083,
+            "commit_wall_ms": 0.335959,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4020,
+            "draft_gpu_ms": 2.712833,
+            "target_gpu_ms": 15.51925,
+            "commit_gpu_ms": 0.195375,
+            "draft_wall_ms": 2.871125,
+            "target_wall_ms": 15.82475,
+            "commit_wall_ms": 0.341041,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4028,
+            "draft_gpu_ms": 2.659583,
+            "target_gpu_ms": 15.729625,
+            "commit_gpu_ms": 0.295958,
+            "draft_wall_ms": 2.829333,
+            "target_wall_ms": 15.985375,
+            "commit_wall_ms": 0.413208,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4036,
+            "draft_gpu_ms": 2.35625,
+            "target_gpu_ms": 15.134167,
+            "commit_gpu_ms": 0.193125,
+            "draft_wall_ms": 2.528834,
+            "target_wall_ms": 15.377667,
+            "commit_wall_ms": 0.327167,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4044,
+            "draft_gpu_ms": 2.671208,
+            "target_gpu_ms": 15.062667,
+            "commit_gpu_ms": 0.197,
+            "draft_wall_ms": 2.833875,
+            "target_wall_ms": 15.327417,
+            "commit_wall_ms": 0.339083,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4052,
+            "draft_gpu_ms": 2.35425,
+            "target_gpu_ms": 15.46,
+            "commit_gpu_ms": 0.19025,
+            "draft_wall_ms": 2.566791,
+            "target_wall_ms": 15.762458,
+            "commit_wall_ms": 0.329375,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4060,
+            "draft_gpu_ms": 2.3565,
+            "target_gpu_ms": 12.99825,
+            "commit_gpu_ms": 0.214583,
+            "draft_wall_ms": 2.519375,
+            "target_wall_ms": 13.257333,
+            "commit_wall_ms": 0.349125,
+            "accepted": 3,
+            "verified": 3
+          }
+        ]
+      },
+      {
+        "ttft_s": 1.8736486670095474,
+        "decode_tps": 335.5662998215092,
+        "decode_ms": 187.74233298609033,
+        "text": " for this Record 100: The northern station logged clear skies, a mild breeze, and stable instruments. The reference code for this observation is N100.\n\nUsing the archive header, answer the geography question in one sentence with no explanation. What is the capital of France? The capital of France is",
+        "prompt_n": 4000,
+        "cached": 0,
+        "output_n": 64,
+        "draft_verified": 63,
+        "draft_accepted": 54,
+        "cycles": 10,
+        "native_decode_gpu_ms": 177.6164581,
+        "phases": [
+          {
+            "position": 4000,
+            "draft_gpu_ms": 2.334833,
+            "target_gpu_ms": 16.940375,
+            "commit_gpu_ms": 0.193625,
+            "draft_wall_ms": 2.53875,
+            "target_wall_ms": 17.286792,
+            "commit_wall_ms": 0.344084,
+            "accepted": 1,
+            "verified": 7
+          },
+          {
+            "position": 4002,
+            "draft_gpu_ms": 2.767542,
+            "target_gpu_ms": 12.37025,
+            "commit_gpu_ms": 0.189542,
+            "draft_wall_ms": 2.934166,
+            "target_wall_ms": 12.631958,
+            "commit_wall_ms": 0.329042,
+            "accepted": 1,
+            "verified": 4
+          },
+          {
+            "position": 4004,
+            "draft_gpu_ms": 2.287875,
+            "target_gpu_ms": 15.297625,
+            "commit_gpu_ms": 0.194625,
+            "draft_wall_ms": 2.447167,
+            "target_wall_ms": 15.562625,
+            "commit_wall_ms": 0.342834,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4012,
+            "draft_gpu_ms": 2.638125,
+            "target_gpu_ms": 15.316875,
+            "commit_gpu_ms": 0.385583,
+            "draft_wall_ms": 2.776084,
+            "target_wall_ms": 15.598375,
+            "commit_wall_ms": 0.570375,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4020,
+            "draft_gpu_ms": 2.301792,
+            "target_gpu_ms": 16.191125,
+            "commit_gpu_ms": 0.201583,
+            "draft_wall_ms": 2.461,
+            "target_wall_ms": 16.553625,
+            "commit_wall_ms": 0.345916,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4028,
+            "draft_gpu_ms": 2.809542,
+            "target_gpu_ms": 15.491,
+            "commit_gpu_ms": 0.191042,
+            "draft_wall_ms": 2.962208,
+            "target_wall_ms": 15.759417,
+            "commit_wall_ms": 0.327417,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4036,
+            "draft_gpu_ms": 2.362375,
+            "target_gpu_ms": 15.325833,
+            "commit_gpu_ms": 0.224083,
+            "draft_wall_ms": 2.515209,
+            "target_wall_ms": 15.588541,
+            "commit_wall_ms": 0.368333,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4044,
+            "draft_gpu_ms": 2.339667,
+            "target_gpu_ms": 14.962708,
+            "commit_gpu_ms": 0.229,
+            "draft_wall_ms": 2.548958,
+            "target_wall_ms": 15.215458,
+            "commit_wall_ms": 0.37025,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4052,
+            "draft_gpu_ms": 2.346875,
+            "target_gpu_ms": 16.097,
+            "commit_gpu_ms": 0.20925,
+            "draft_wall_ms": 2.52525,
+            "target_wall_ms": 16.372583,
+            "commit_wall_ms": 0.354583,
+            "accepted": 7,
+            "verified": 7
+          },
+          {
+            "position": 4060,
+            "draft_gpu_ms": 2.368292,
+            "target_gpu_ms": 12.8575,
+            "commit_gpu_ms": 0.190917,
+            "draft_wall_ms": 2.542042,
+            "target_wall_ms": 13.117417,
+            "commit_wall_ms": 0.335125,
+            "accepted": 3,
+            "verified": 3
+          }
+        ]
+      }
+    ]
+  },
+  "fixed_history": {
+    "atomic-engine": [
+      {
+        "source": "atomic-engine",
+        "offset": 8,
+        "accepted": 6,
+        "proposed": 6,
+        "target_ms": 46.258,
+        "draft_ms": 6.122,
+        "text": " thinking process:\n\n1.  **Analyze User Input:**\n   -"
+      },
+      {
+        "source": "splash",
+        "offset": 8,
+        "accepted": 6,
+        "proposed": 6,
+        "target_ms": 35.968,
+        "draft_ms": 6.224,
+        "text": " The northern station logged clear skies, a mild breeze, and stable instruments. The"
+      },
+      {
+        "source": "atomic-engine",
+        "offset": 24,
+        "accepted": 4,
+        "proposed": 6,
+        "target_ms": 31.627,
+        "draft_ms": 6.516,
+        "text": " The user provides a long list of records (000 to 10"
+      },
+      {
+        "source": "splash",
+        "offset": 24,
+        "accepted": 6,
+        "proposed": 6,
+        "target_ms": 36.029,
+        "draft_ms": 6.208,
+        "text": " reference code for this observation is N100.\n\nUsing the archive header"
+      },
+      {
+        "source": "atomic-engine",
+        "offset": 48,
+        "accepted": 4,
+        "proposed": 6,
+        "target_ms": 33.138,
+        "draft_ms": 6.651,
+        "text": "\n   - The archive header explicitly states: \"The archive header states that the"
+      },
+      {
+        "source": "splash",
+        "offset": 48,
+        "accepted": 6,
+        "proposed": 6,
+        "target_ms": 32.109,
+        "draft_ms": 6.634,
+        "text": " with no explanation. What is the capital of France? The capital of France is"
+      }
+    ],
+    "splash": [
+      {
+        "source": "atomic-engine",
+        "offset": 8,
+        "accepted": 7,
+        "proposed": 7,
+        "target_ms": 15.318333,
+        "draft_ms": 2.670916,
+        "text": " thinking process:\n\n1.  **Analyze User Input:**\n   -"
+      },
+      {
+        "source": "splash",
+        "offset": 8,
+        "accepted": 7,
+        "proposed": 7,
+        "target_ms": 16.654292,
+        "draft_ms": 2.766709,
+        "text": " The northern station logged clear skies, a mild breeze, and stable instruments. The"
+      },
+      {
+        "source": "atomic-engine",
+        "offset": 24,
+        "accepted": 3,
+        "proposed": 3,
+        "target_ms": 13.537375,
+        "draft_ms": 2.767042,
+        "text": " The user provides a long list of records (000 to 10"
+      },
+      {
+        "source": "splash",
+        "offset": 24,
+        "accepted": 7,
+        "proposed": 7,
+        "target_ms": 17.19825,
+        "draft_ms": 2.717834,
+        "text": " reference code for this observation is N100.\n\nUsing the archive header"
+      },
+      {
+        "source": "atomic-engine",
+        "offset": 48,
+        "accepted": 3,
+        "proposed": 3,
+        "target_ms": 13.336875,
+        "draft_ms": 2.846208,
+        "text": "\n   - The archive header explicitly states: \"The archive header states that the"
+      },
+      {
+        "source": "splash",
+        "offset": 48,
+        "accepted": 7,
+        "proposed": 7,
+        "target_ms": 16.943583,
+        "draft_ms": 2.723459,
+        "text": " with no explanation. What is the capital of France? The capital of France is"
+      }
+    ]
+  },
+  "fixed_history_protocol": "Append a fixed 8, 24 or 48 token prefix of each observed continuation to the original 4000 IDs. Each request is uncached, asks for 16 tokens and measures only the first verification cycle. Atomic Engine prefix uses the native output IDs. Splash output was re-encoded with its tokenizer and checked to decode to the original text and have length 64. Each pair receives the very same IDs.",
+  "continuation_token_ids": {
+    "atomic-engine": [
+      364,
+      411,
+      271,
+      248068,
+      198,
+      8160,
+      579,
+      264,
+      7047,
+      1817,
+      25,
+      271,
+      16,
+      13,
+      220,
+      2972,
+      2014,
+      53983,
+      2570,
+      5396,
+      64700,
+      198,
+      256,
+      471,
+      561,
+      1156,
+      5529,
+      264,
+      1248,
+      1103,
+      314,
+      7189,
+      318,
+      15,
+      15,
+      15,
+      310,
+      220,
+      16,
+      15,
+      15,
+      8,
+      494,
+      264,
+      328,
+      2482,
+      17593,
+      3158,
+      198,
+      256,
+      471,
+      561,
+      17593,
+      4108,
+      20335,
+      5134,
+      25,
+      328,
+      760,
+      17593,
+      4108,
+      5134,
+      421,
+      279
+    ],
+    "splash": [
+      364,
+      411,
+      13190,
+      220,
+      16,
+      15,
+      15,
+      25,
+      561,
+      17631,
+      7803,
+      13332,
+      2708,
+      47635,
+      11,
+      264,
+      22316,
+      43776,
+      11,
+      321,
+      14733,
+      22591,
+      13,
+      561,
+      5604,
+      1970,
+      364,
+      411,
+      21254,
+      369,
+      443,
+      16,
+      15,
+      15,
+      13,
+      271,
+      15947,
+      279,
+      17593,
+      4108,
+      11,
+      4087,
+      279,
+      51356,
+      3296,
+      303,
+      799,
+      11316,
+      440,
+      874,
+      15673,
+      13,
+      3437,
+      369,
+      279,
+      6511,
+      314,
+      9338,
+      30,
+      561,
+      6511,
+      314,
+      9338,
+      369
+    ]
+  }
+}

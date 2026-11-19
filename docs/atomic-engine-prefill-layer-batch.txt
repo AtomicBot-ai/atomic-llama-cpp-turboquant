@@ -1,0 +1,293 @@
+Experimental layer-wide expert loading for Metal prefill
+
+The legacy layer-batched experiment is gated by --engine-prefill-window, a fixed managed budget,
+LLAMA_MOE_STREAMING=auto, one text sequence, context 4096 and microbatch
+eight. The admitted architectures are Qwen4Exp, Qwen3.5 MoE and LFM2 MoE
+with registered separate Metal gate, up and down GGUF projections. LFM2's
+leading dense layers run in order without a route pause. Routing, expert
+selection bias, shared experts and weighted reduction stay in the original
+graph. The normal window and decoder retain their behavior with the
+experiment off.
+
+LLAMA_EXPERIMENTAL_PREFILL_EXPERT_BATCH selects 64, 128 or 256 tokens.
+The value auto tries 256, then 128 and 64. It uses ordinary streaming
+when the expert store can hold all the model's expert slices under the
+current budget. Explicit 512 and 1024 are diagnostic limits. Qwen4Exp also
+accepts explicit 2048 with the compact scheduler and bounded graph arenas,
+and explicit 4096 with the fused expert path and shared main Metal scratch.
+All widths require a sufficiently large --batch-size to be realized. A
+window can be smaller than its requested setting. Graph
+buffers are prepared for a synthetic full cache before applying real prompt
+state. An unadmitted window uses the existing streaming path.
+
+Wide Metal prefill
+
+Wide prefill is automatic for fixed-budget Metal streaming with context
+and batch size 4096, microbatch 8, BF16 K/V and one text sequence. Automatic
+admission is limited to the checked Qwen4Exp, Qwen3.5 MoE and LFM2 MoE
+expert shapes and projection types. The fresh text batch must contain at
+least 1024 tokens, be a multiple of 32 and request at most one logits row.
+For the qualified 40-layer Qwen35 resident profile, set
+LLAMA_QWEN35_PARTIAL_WIDE_PREFILL=1 to also try wide prefill for a fresh
+prompt longer than the ordinary eight-token microbatch with one output row.
+Short prompts use their actual row count. For unaligned prompts longer
+than 1024 tokens, the coordinator balances the real tokens across blocks
+of at most 1024 rows. Neither path inserts padding tokens into the sequence.
+The existing fixed-budget admission and narrow fallback still apply.
+The Qwen 8, 10 and 12 GiB calibration kept partial wide prefill opt-in.
+At each budget at least one 1023-token input changed the greedy output,
+so no minimum length below 1024 preserved all 64 output IDs across the
+tested prompts. See atomic-engine-qwen36-partial-wide-thresholds.json for
+per-prompt timings, physical peaks and the first differing token IDs.
+Use --no-engine-prefill-window to bypass all window work.
+Preflight checks the separate GGUF
+projections and requires the grouped expert operations to run on Metal.
+The graph retains the model's routing, selection bias and shared FFN.
+Leading dense LFM blocks use the original graph without expert reads.
+The exact layer output is the synchronization boundary. Wide execution
+can produce different logits, output tokens and slot bytes from narrower
+prefill. Overlapped and serial staging of the same wide graph matched
+bitwise in the qualification pairs, and wide slots passed save/restore.
+On the 4000-token fixture, the first-logit relative L2 difference between
+wide and narrow prefill ranged from 0.13% (Ornith 122B) to 30.2% (LFM 24B).
+Use --engine-prefill-window to also allow the legacy windows.
+LLAMA_EXPERIMENTAL_PREFILL_WIDE=1 with that flag retains the diagnostic
+wide override; setting it to 0 suppresses the wide selection.
+
+On M4 Max, automatic selection was checked on the 4000/64 fixture with
+Flash-Next at 8 GiB and LFM 24B, Qwen 35B, Ornith 35B and Ornith 122B at
+18 GiB. All five stayed within budget and matched the explicit wide
+overlap reference byte for byte for logits, output IDs and saved and
+restored slots. LFM 24B with --no-engine-prefill-window matched the old
+sequential build on a 1024/64 request at 18 GiB.
+
+Wide prefill tries a second bank and one reader by default.
+LLAMA_EXPERIMENTAL_PREFILL_WIDE_OVERLAP=0 selects serial staging for
+comparisons. When admitted, the reader reads layer N+1 while Metal
+executes layer N. Full layer reads and Metal completion respectively
+publish and retire a bank. If the second bank cannot be admitted, the
+reader tries a 256, 128, or 64 MiB staging buffer for a prefix of the next
+layer. At the boundary the coordinator copies the prefix into the sole
+Metal bank and reads the remaining weights directly into that bank.
+Serial staging applies when no overlap buffer fits.
+
+If at most one 1024-row graph worker fits a multi-block batch, preflight
+tries 512-row blocks. On Flash-Next it first tries four workers with a
+shared 130 MiB Metal scratch buffer when this reduces the number of
+groups. It can use three workers with private scratch, then
+the original geometry in smaller groups. Each group rereads the layer
+weights once. In the four-worker layout, the reader can also stage the
+next layer in unused regions of the active bank when a second complete
+bank does not fit. It writes beyond the current tensor with a page of
+separation. The coordinator moves those bytes to their final positions
+after the current layer finishes on Metal. The existing prefill path
+handles requests whose wide preflight fails. A read failure after the
+window starts invalidates the context. A pending budget change is
+applied when the wide batch ends, after the reader joins and its buffers
+and the graph workers have been released.
+
+With ATOMIC_WINDOW_PROFILE=1, WINDOW_WIDE prints the active overlap bit,
+layer count, logical GGUF bytes, cumulative staging microseconds,
+coordinator wait and staging microseconds, and layer execution and wait
+microseconds. Bounded staging times include publishing the prefetched
+prefix. WINDOW_WIDE_STAGING reports the active graph workers, allocated
+prefix staging capacity in bytes, and bytes the reader staged. WINDOW_WIDE_TAIL_BYTES is the subset staged in unused regions of the weight bank.
+
+On the 4000-input / 64-output Flash-Next experiment at 18 GiB, serial and
+overlapped staging took 14.11 s and 8.41 s to first token. The coordinator
+waited 6.52 s and 0.68 s for weights respectively. Both modes read 42.91 GB
+of logical GGUF data. Logits, generated tokens and serialized slots matched
+the earlier 13.72 s wide replay bitwise. Both slots passed save/restore.
+
+Optional controls for the experiment:
+- LLAMA_EXPERIMENTAL_PREFILL_EXPERT_VECTOR=1 batches existing FP32 vector
+  calls through the private Metal address-table operation.
+- LLAMA_EXPERIMENTAL_PREFILL_CROSS_BATCH=1 pools rows from up to eight
+  microbatches at each expert projection and requires the vector switch.
+  It gathers inputs into a charged
+  workspace, uses the one-row FP32 Metal kernel, and scatters the results to
+  the original custom-op outputs. Unsupported projection shapes execute
+  through the existing executor.
+- LLAMA_EXPERIMENTAL_PREFILL_FUSED_MOE=1 uses the compact Qwen4Exp 2048
+  or 4096 window and requires the vector switch and the admitted combined Metal
+  MoE workspace. It pools up to eight microbatches, submits gate, up,
+  SwiGLU and down together per expert group, and scatters the routed results
+  to the original token and expert positions. The expert group reuses the
+  same charged backend arena. Attention and other main-graph buffers keep
+  their existing ownership.
+- LLAMA_EXPERIMENTAL_PREFILL_FUSED_EXPERTS=64 widens those expert groups
+  using the weights already pinned by the window's demand queue. The
+  microbatch and row limits are unchanged.
+- LLAMA_EXPERIMENTAL_PREFILL_EARLY_DEMAND=1 requires the wide fused group
+  and a demand pipeline. It starts reads for the first group when its
+  exact routes are available and collects the other routes in parallel.
+- LLAMA_EXPERIMENTAL_PREFILL_BATCH_SUBMIT=1 requires the fused 4096 window
+  with shared main Metal scratch. It encodes up to eight microbatches in
+  position order and retrieves their routes after a shared wait. Each
+  graph view keeps its own encoder. A host dependency can end the batch
+  early. Route transfers use private storage while the views share scratch.
+  ATOMIC_WINDOW_PROFILE=1 reports the main Metal compute commits for this
+  path as WINDOW_MAIN_SUBMISSIONS.
+- LLAMA_EXPERIMENTAL_PREFILL_BATCH_SUBMIT=32 enables the wider Metal
+  submissions and shared reservation sizing for the compact Qwen4Exp
+  ub8 window with the vector FFN and the grouped 2×ub8 window with the
+  matrix FFN. It keeps the first eight views on the
+  existing submission cadence when early demand reads are enabled. Later
+  routing and layer-end submissions contain up to 32 views. Host dependencies
+  still force a wait. One synthetic full-cache graph provides the buffer
+  sizes for the other workers, each of which owns its private buffers and
+  plans its real graph independently. A worker whose reservation cannot be
+  copied uses the original synthetic graph path. The value 1 is the
+  eight-view control and reserves each worker through its synthetic graph.
+- LLAMA_EXPERIMENTAL_PREFILL_DIRECT_FFN_UPLOAD=1 extends batch submission
+  to a completed host FFN result when the current worker owns the
+  destination and Metal exposes its shared storage to the CPU. The
+  existing split-copy path handles other transfers. This flag is only
+  considered for the batch submission path.
+- LLAMA_EXPERIMENTAL_PREFILL_EXPERT_PIPELINE=1 uses the idle demand reader
+  pool to stage only the next microbatch's known missing experts. A value
+  of 4 extends the exact queue to the next four microbatches. With cross
+  batching, the next group of up to eight workers is staged during compute.
+- LLAMA_EXPERIMENTAL_PREFILL_COALESCE=1 combines adjacent ranges of one
+  projection and one shard with positioned vectored reads. An observed
+  run showed no benefit. Leave this switch unset in the reference setup.
+- LLAMA_PREFILL_EXPERT_ROUTE_TRACE is an opt-in diagnostics file. It records
+  unique exact IDs for each layer and microbatch.
+
+At a layer boundary, each microbatch advances through the mixer and router
+in sequence order. The coordinator pins the union of required slices and
+releases the leases after the last consumer has synchronized. If the union
+does not fit, it subdivides at consecutive microbatch boundaries. Demand
+tasks publish fully validated triples and stay inside the window lifetime.
+Cancellation joins or drains pending work before releasing graph resources.
+Budget changes are applied after the active window ends.
+
+The private GGML scheduler hook runs after scheduled split input transfers
+and before the streamed expert custom node. It pauses outside the CPU
+threadpool, so another scheduler can use that pool while a graph is parked.
+On Qwen3.5 MoE and LFM2 MoE, the window scheduler also fences Metal graph
+optimization at layer output nodes. This preserves the order in which
+successive microbatches update KV and mixer state when they yield at a layer
+boundary. Upstream updates must retain this order and the split-input
+tensor lifetime through the callbacks.
+
+The experiment remains opt-in. Full model-by-budget acceptance is separate.
+
+At 18 GiB, the 321-input/64-output checks on Qwen 35B, Ornith 35B,
+Ornith 122B and LFM 24B matched ordinary streaming bitwise for all
+logits and serialized slots. The slot was saved, erased, restored and
+saved again. Both separate projections and cross batches passed these
+checks at a 512-token window and exact read queue depth four. LFM also
+passed the ordinary streaming fallback when auto detected that all
+experts fit without trimming the store.
+
+Initial performance evidence (M4 Max, fixed 18 GiB, context 4096)
+
+The fixed 3617-token Flash-Next input, 64 outputs, BF16 KV and no prefix
+reuse took 277.1 s with the restored prefill window. The 64-token layer
+union retained exact results but did not improve TTFT. The first 256-token
+layer union took 157.7 s, with 320.3 GB logical expert reads (including
+warmup), down from 832.3 GB. With address batches, adding the exact demand
+pipeline reduced 170.7 s to 116.7 s on the same diagnostic build. An
+explicit 1024-token width and queue depth four reached 80.0 s, 3.46x
+from the restored window, with 121.5 GB of logical expert reads. Grouping
+rows across microbatches took 73.9 s in a single full prompt run, with the
+same logical bytes, logits, output IDs and serialized slot.
+
+Reproduce the fastest measured configuration by adding the following to
+the existing Flash-Next server invocation:
+  LLAMA_MOE_STREAMING=auto
+  LLAMA_EXPERIMENTAL_PREFILL_EXPERT_BATCH=1024
+  LLAMA_EXPERIMENTAL_PREFILL_EXPERT_VECTOR=1
+  LLAMA_EXPERIMENTAL_PREFILL_EXPERT_PIPELINE=4
+  LLAMA_EXPERIMENTAL_PREFILL_CROSS_BATCH=1
+  --engine-prefill-window --engine-budget-mib 18432 -c 4096 -b 1024 -ub 8
+
+Measured configurations retained exact logits, output IDs and serialized
+slots. The 246/64 DFlash2 regression matched seven rollback events and
+14 discarded positions. During a separate 321-token request, a live
+18-to-12 GiB shrink applied at a window boundary, fell back to ordinary
+decode and preserved logits and slot bytes. The runs are single sequential
+observations with uncontrolled filesystem cache. The 45-second acceptance
+threshold remains open.
+
+Grouping rows reduced expert Metal command buffers by the first token from
+501,112 to 190,888 and Metal waits from 33.7 s to 19.9 s. Blocking reads
+went from 9.1 s to 14.3 s.
+The timer intervals have different scopes and can overlap. Replaying the
+exact routes counts 65.4 GB for groups of 2048 and 35.2 GB for the entire
+prompt, before cross-group reuse, with a peak layer working set of 1.10 GB.
+These are logical expert bytes, separate from physical I/O or latency.
+The original window reserves 64 MiB of metadata and stack budget per
+worker. The compact 2048-token path holds at most 6 MiB of used graph
+metadata for each worker and releases unused mapped pages after graph
+construction. It admits a temporary 16 MiB construction arena, checks
+scheduler copy and dependency storage before allocation, and requests a
+1 MiB worker stack plus a Darwin page-rounding allowance. Metal graph
+payload buffers remain separately charged. Expanding to the full prompt
+also requires sharing backend execution workspace. Pooling gate, up,
+SwiGLU and down in a single Metal submission could remove the current
+per-projection handoffs.
+
+Follow-up Flash-Next probes used the same input IDs, BF16 KV and 18 GiB
+budget. A single 3617-token microbatch used 41.1 GB of logical expert
+reads and reached 43.3 s with the existing large-matrix path. It changed
+the first generated token, the logits and slot contents. The budgeted
+microbatch limit was restored after the measurement.
+
+Keeping microbatch eight and pooling 32 workers per projection, with
+an indexed route list, preserved all logits, tokens and slot bytes.
+Expert Metal command buffers fell to 79,246, while blocking reads rose
+to 21.9 s and TTFT rose to 76.7 s. This is a joint probe of both changes.
+The eight-worker 73.9 s configuration served as the 1024-token control.
+
+With the compact 2048-token graph arenas, the same request completed in
+two windows at 68.3 s. Logical expert reads fell from 121.5 to 72.7 GB,
+while the expert Metal command buffer count remained at 190,888. All
+logits, token IDs and saved/restored state matched the control bitwise.
+The compact scheduler plus reduced stacks alone took 84.1 s and read
+250.6 GB. Releasing the unused graph pages gave the store enough room
+to reuse slices across the wider token group. These are single runs.
+To reproduce the 68.3 s variant, use the same flags as the 1024-token
+control with LLAMA_EXPERIMENTAL_PREFILL_EXPERT_BATCH=2048 and -b 2048.
+
+Adding LLAMA_EXPERIMENTAL_PREFILL_FUSED_MOE=1 to that invocation reduced
+TTFT from 68.3 s to 53.5 s and expert Metal command buffers from 190,888 to
+65,108. Logical expert reads remained 72.7 GB. The logits and slot files
+matched byte for byte, and all 64 generated tokens matched. Both windows
+fit the 18 GiB engine budget. This is one comparison with the earlier
+2048-token control and uncontrolled filesystem cache.
+
+Widening the fused group to 64 experts reduced expert Metal command
+buffers to 21,156. Starting the first exact demand reads while the
+remaining routes were produced took 43.5 s and 43.2 s in the two run
+orders, compared with 51.1 s and 57.7 s without early reads. Blocking
+read time was 4.3–4.4 s instead of 10.8–11.0 s, with 72.7 GB of logical
+expert reads in every case. The file cache was uncontrolled. All output
+token IDs, logits and saved and restored slot files matched. The
+single-encoder main Metal graph probe timed at 51.1 s and was removed.
+
+The explicit 4096 path borrows one charged 32 MiB compute buffer for the
+main Metal graph across all workers. The scheduler classifies lifetimes
+after split optimization and includes backend copy and allocator dependency
+nodes. Inputs, externally visible outputs and values crossing a route or
+layer pause stay in each worker's private storage. In-place reuse may not
+cross the private and shared storage boundary. The shared allocation never
+grows after graphs bind it.
+
+On the same 3617-token request, this admitted one window at microbatch
+eight with 39.1 s TTFT, compared with the earlier 43.2–43.5 s control.
+Logical expert reads through the first token fell from 72.7 to 42.6 GB
+including warmup. All logits, 64 generated IDs and saved/restored slot
+files matched byte for byte. A separate traced run verified one admitted
+expert union in each of the 48 layers. Set LLAMA_EXPERIMENTAL_PREFILL_EXPERT_BATCH=4096
+and -b 4096 with the same fused and early-demand controls.
+
+With main Metal batch submission enabled on that setup, TTFT was 38.18 s
+versus 39.64 s in the same-build control. The batched main backend committed
+24,933 compute command buffers; the separate traced control on the same
+input and settings recorded 87,882. These counts exclude the expert backend.
+Both runs admitted all 3617 tokens in one window and stayed within 18 GiB.
+The logits, all 64 output IDs, and slot files before and after restore
+matched byte for byte. This is one sequential control/candidate pair with
+uncontrolled filesystem cache. The flag remains off by default.

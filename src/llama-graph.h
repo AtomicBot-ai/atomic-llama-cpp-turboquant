@@ -838,10 +838,14 @@ struct llm_graph_params {
     llm_graph_cb cb;
 
     llm_graph_result * res;
+    bool expert_graph_lookahead = false;
+    int32_t grouped_attention_variant = 0;
+    const std::array<ggml_tensor *, 3> * prefill_expert_weights = nullptr; // per layer, gate/up/down
 
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {
+        if (prefill_expert_weights || other.prefill_expert_weights) { return false; }
         // first check the ubatch
         bool can_reuse_ubatch =
             ubatch.equal_seqs() == other.ubatch.equal_seqs() &&
@@ -876,7 +880,8 @@ struct llm_graph_params {
             return false;
         }
 
-        if (n_outputs != other.n_outputs) {
+        if (n_outputs != other.n_outputs || expert_graph_lookahead != other.expert_graph_lookahead ||
+                grouped_attention_variant != other.grouped_attention_variant) {
             return false;
         }
 
@@ -928,7 +933,9 @@ struct llm_graph_fused_node {
 
 class llm_graph_result {
 public:
-    llm_graph_result(int64_t max_nodes);
+    // When supplied, the caller owns the graph metadata buffer until this
+    // result is destroyed. The original graph-built capacity is still required.
+    llm_graph_result(int64_t max_nodes, void * external_meta = nullptr);
 
     virtual ~llm_graph_result() = default;
 
@@ -1003,6 +1010,7 @@ public:
 
 private:
     int64_t max_nodes;
+    void * external_meta;
 
     // keep a copy of the previous graph parameters
     // we will use this to determine whether the graph can be reused by comparing them with the new parameters
@@ -1080,6 +1088,10 @@ struct llm_graph_context {
     const llama_cross            * cross;
     const llama_moe_cache        * moe_cache;
     llama_expert_executor        * expert_executor;
+    bool expert_graph_lookahead = false;
+    int32_t grouped_attention_variant = 0;
+    const std::array<ggml_tensor *, 3> * prefill_expert_weights;
+    mutable const ggml_tensor * published_moe_for_shared = nullptr;
 
     const llama_prec_policy * prec_policy;
 

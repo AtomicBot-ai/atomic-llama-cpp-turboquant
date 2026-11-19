@@ -1,0 +1,252 @@
+{
+  "date": "2026-11-18",
+  "hardware": "Apple M4 Max, 40 Metal GPU cores, 48 GiB unified memory",
+  "target": "Qwen3.6-35B-A3B Q4_K_M with BF16 KV and BF16 DFlash2, maximum draft depth 6",
+  "fixture": "atomic-engine-qwen35-metal-residency.json#prompt_token_ids",
+  "protocol": "One slot, context 4096, 15/8 warmup, then uncached 4000/64 greedy requests. The 24 GiB sequence used snapshots, compact, compact, snapshots with two requests per process. The 12 GiB sequence used snapshots, compact, compact, snapshots with one request per process. No concurrent GPU benchmarks.",
+  "timing": "Client TTFT and client decode throughput. Approximate end-to-end time is TTFT plus elapsed time between first and last token. The managed ledger peak includes all budget-admitted memory and can include elastic expert fills. Process disk reads reflect OS file cache state.",
+  "qwen3_6": {
+    "12": {
+      "snapshots": {
+        "direct_layers": 9,
+        "load_ledger_bytes": 10826281938,
+        "requests": [
+          {
+            "process": 1,
+            "ttft_s": 2.9476743749692105,
+            "prompt_eval_ms": 2946.651,
+            "decode_tps": 54.67582443273655,
+            "request_s": 4.099920374981593,
+            "process_disk_read_bytes": 1190461440,
+            "wide_prefill_tokens": 4000,
+            "ledger_peak_bytes": 12884901138,
+            "draft_accepted": 49,
+            "draft_total": 79
+          },
+          {
+            "process": 2,
+            "ttft_s": 2.655555874982383,
+            "prompt_eval_ms": 2654.574,
+            "decode_tps": 58.69968092108652,
+            "request_s": 3.7288155420101248,
+            "process_disk_read_bytes": 0,
+            "wide_prefill_tokens": 4000,
+            "ledger_peak_bytes": 12884901138,
+            "draft_accepted": 49,
+            "draft_total": 79
+          }
+        ],
+        "mean_ttft_s": 2.801615124975797,
+        "mean_decode_tps": 56.68775267691153,
+        "mean_request_s": 3.914367958495859,
+        "max_ledger_peak_bytes": 12884901138
+      },
+      "compact": {
+        "direct_layers": 9,
+        "load_ledger_bytes": 10457248722,
+        "requests": [
+          {
+            "process": 1,
+            "ttft_s": 2.572667459025979,
+            "prompt_eval_ms": 2571.633,
+            "decode_tps": 48.25499779184556,
+            "request_s": 3.878231709008105,
+            "process_disk_read_bytes": 0,
+            "wide_prefill_tokens": 4000,
+            "ledger_peak_bytes": 12884879474,
+            "draft_accepted": 49,
+            "draft_total": 79
+          },
+          {
+            "process": 2,
+            "ttft_s": 2.635680584004149,
+            "prompt_eval_ms": 2634.673,
+            "decode_tps": 38.996358567690784,
+            "request_s": 4.251216042030137,
+            "process_disk_read_bytes": 344064,
+            "wide_prefill_tokens": 4000,
+            "ledger_peak_bytes": 12884879474,
+            "draft_accepted": 49,
+            "draft_total": 79
+          }
+        ],
+        "mean_ttft_s": 2.604174021515064,
+        "mean_decode_tps": 43.62567817976817,
+        "mean_request_s": 4.064723875519121,
+        "max_ledger_peak_bytes": 12884879474
+      },
+      "output_ids_identical": true,
+      "load_ledger_saved_bytes": 369033216,
+      "peak_ledger_saved_bytes": 21664
+    },
+    "24": {
+      "snapshots": {
+        "direct_layers": 36,
+        "load_ledger_bytes": 23748932562,
+        "requests": [
+          {
+            "process": 1,
+            "ttft_s": 3.125545500020962,
+            "prompt_eval_ms": 3128.602,
+            "decode_tps": 114.68722358858949,
+            "request_s": 3.6748656250420026,
+            "process_disk_read_bytes": 13120909312,
+            "wide_prefill_tokens": 4000,
+            "ledger_peak_bytes": 25733133266,
+            "draft_accepted": 49,
+            "draft_total": 79
+          },
+          {
+            "process": 1,
+            "ttft_s": 3.1256584170041606,
+            "prompt_eval_ms": 3128.109,
+            "decode_tps": 118.21999175713749,
+            "request_s": 3.658563208009582,
+            "process_disk_read_bytes": 15269707776,
+            "wide_prefill_tokens": 8000,
+            "ledger_peak_bytes": 25733133266,
+            "draft_accepted": 49,
+            "draft_total": 79
+          },
+          {
+            "process": 2,
+            "ttft_s": 3.2292122909566388,
+            "prompt_eval_ms": 3228.189,
+            "decode_tps": 114.95399393391139,
+            "request_s": 3.777257624955382,
+            "process_disk_read_bytes": 19896893440,
+            "wide_prefill_tokens": 4000,
+            "ledger_peak_bytes": 25733133266,
+            "draft_accepted": 49,
+            "draft_total": 79
+          },
+          {
+            "process": 2,
+            "ttft_s": 3.2369807919603772,
+            "prompt_eval_ms": 3236.131,
+            "decode_tps": 119.81017708037498,
+            "request_s": 3.762812583008781,
+            "process_disk_read_bytes": 19927883776,
+            "wide_prefill_tokens": 8000,
+            "ledger_peak_bytes": 25733133266,
+            "draft_accepted": 49,
+            "draft_total": 79
+          }
+        ],
+        "mean_ttft_s": 3.1793492499855347,
+        "mean_decode_tps": 116.91784659000334,
+        "mean_request_s": 3.718374760253937,
+        "max_ledger_peak_bytes": 25733133266
+      },
+      "compact": {
+        "direct_layers": 36,
+        "load_ledger_bytes": 23379899346,
+        "requests": [
+          {
+            "process": 1,
+            "ttft_s": 3.149273917020764,
+            "prompt_eval_ms": 3147.966,
+            "decode_tps": 117.24811244021224,
+            "request_s": 3.686595999985002,
+            "process_disk_read_bytes": 13516943360,
+            "wide_prefill_tokens": 4000,
+            "ledger_peak_bytes": 25363772370,
+            "draft_accepted": 49,
+            "draft_total": 79
+          },
+          {
+            "process": 1,
+            "ttft_s": 3.071722624998074,
+            "prompt_eval_ms": 3070.588,
+            "decode_tps": 119.0469909607309,
+            "request_s": 3.6009254170348868,
+            "process_disk_read_bytes": 15483674624,
+            "wide_prefill_tokens": 8000,
+            "ledger_peak_bytes": 25363772370,
+            "draft_accepted": 49,
+            "draft_total": 79
+          },
+          {
+            "process": 2,
+            "ttft_s": 3.267508667020593,
+            "prompt_eval_ms": 3266.519,
+            "decode_tps": 116.28490054355765,
+            "request_s": 3.8092814999981783,
+            "process_disk_read_bytes": 19532808192,
+            "wide_prefill_tokens": 4000,
+            "ledger_peak_bytes": 25363772370,
+            "draft_accepted": 49,
+            "draft_total": 79
+          },
+          {
+            "process": 2,
+            "ttft_s": 3.225138458015863,
+            "prompt_eval_ms": 3224.329,
+            "decode_tps": 116.79576383543854,
+            "request_s": 3.7645415830193087,
+            "process_disk_read_bytes": 19901407232,
+            "wide_prefill_tokens": 8000,
+            "ledger_peak_bytes": 25363772370,
+            "draft_accepted": 49,
+            "draft_total": 79
+          }
+        ],
+        "mean_ttft_s": 3.1784109167638235,
+        "mean_decode_tps": 117.34394194498483,
+        "mean_request_s": 3.715336125009344,
+        "max_ledger_peak_bytes": 25363772370
+      },
+      "output_ids_identical": true,
+      "load_ledger_saved_bytes": 369033216,
+      "peak_ledger_saved_bytes": 369360896
+    }
+  },
+  "logits": {
+    "qwen24": {
+      "fixture": "Qwen3.6, 24 GiB, 4000/64, DFlash2 depth 6",
+      "rows": 94,
+      "vocab": 248320,
+      "bitwise_equal": true,
+      "output_ids_equal": true,
+      "snapshots_peak_ledger_bytes": 25733133266,
+      "compact_peak_ledger_bytes": 25363772370,
+      "note": "Instrumentation records raw FP32 logits and changes timing."
+    },
+    "flash18": {
+      "fixture": "Qwen3.8 Flash-Next, 18 GiB, 246/64, DFlash2 depth 5",
+      "rows": 133,
+      "vocab": 248320,
+      "bitwise_equal": true,
+      "output_ids_equal": true,
+      "snapshots_peak_ledger_bytes": 19327352810,
+      "compact_peak_ledger_bytes": 19327352826,
+      "note": "Instrumentation records raw FP32 logits and changes timing."
+    }
+  },
+  "qwen3_6_24gib_slot": {
+    "bytes": 199667252,
+    "identical_sha256": "ac2d3cb1a3af415e04e1f7bef35364808def1e8ecee14a5e607c4fef6c699288",
+    "cross_restore_tokens": 4063,
+    "cached_followup_ids": [
+      1970,
+      364,
+      411,
+      21254,
+      369,
+      443,
+      15,
+      15
+    ]
+  },
+  "status": "shelved",
+  "archived_patch": "tools/expert-source/qwen-gdn-replay-rollout.patch",
+  "reason": "The compact cache saved 352 MiB at 24 GiB with effectively unchanged request time. It reduced throughput and increased total request time at 12 GiB.",
+  "experimental_default_policy": "Enable on the 24 GiB Qwen3.6 BF16 draft profile (36 direct layers, depth six). Keep snapshots as the default on other profiles because the 12 GiB run lost whole-request throughput. The opt-in remains available for single-slot compatible Metal Qwen targets excluding Ornith.",
+  "experimental_build_smoke": {
+    "qwen3_6_24gib_default_replay": true,
+    "qwen3_6_12gib_default_snapshots": true,
+    "qwen3_6_12gib_explicit_replay": true,
+    "qwen3_6_24gib_sequence_api": "Host and on-device state round trips returned identical host state after a speculative request."
+  },
+  "current_policy": "Production Qwen uses the standard recurrent snapshots."
+}

@@ -1,0 +1,1041 @@
+{
+  "date": "2026-11-19",
+  "hardware": "Apple M4 Max, 48 GiB unified memory",
+  "model": "LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+  "production_binary_sha256": "4fcdb0a3d326e076d946def12764b643fb7a5cb9501b83ec0bb06bb75fb5e829",
+  "diagnostic_binary_sha256": "4c79ad7adcc4bf911957b1ac8e139605f36d45f3c75d11e6ec14e0bc4a00ece7",
+  "arguments": [
+    "-c",
+    "4096",
+    "-b",
+    "4096",
+    "-ub",
+    "8",
+    "-np",
+    "1",
+    "-t",
+    "8",
+    "-tb",
+    "8",
+    "-ngl",
+    "99",
+    "-ctk",
+    "bf16",
+    "-ctv",
+    "bf16",
+    "-fit",
+    "off",
+    "--cache-ram",
+    "0",
+    "--ctx-checkpoints",
+    "0",
+    "--no-warmup",
+    "--metrics",
+    "--no-webui",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "<port>",
+    "--engine-budget-mib",
+    "<budget MiB>"
+  ],
+  "fixture": "atomic-engine-lfm-metal-grid.json#prompt_ids",
+  "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+  "reference_output_ids": [
+    4713,
+    374,
+    532,
+    13707,
+    355,
+    427,
+    31592,
+    318,
+    17505,
+    229,
+    31536,
+    34,
+    440,
+    9150,
+    5694,
+    49040,
+    3983,
+    52378,
+    20,
+    267,
+    13044,
+    61479,
+    20,
+    309,
+    10891,
+    13142,
+    22,
+    440,
+    6891,
+    4713,
+    374,
+    532,
+    13707,
+    355,
+    427,
+    31536,
+    318,
+    17505,
+    229,
+    31395,
+    34,
+    440,
+    9150,
+    5694,
+    49040,
+    3983,
+    52378,
+    20,
+    267,
+    13044,
+    61479,
+    20,
+    309,
+    10891,
+    13142,
+    22,
+    440,
+    6891,
+    4713,
+    374,
+    532,
+    13707,
+    355,
+    427
+  ],
+  "request": {
+    "temperature": 0,
+    "seed": 42,
+    "stream": true,
+    "ignore_eos": true,
+    "n_predict": 64,
+    "cache_prompt": false
+  },
+  "protocol": "Separate process per budget, profile and instrumentation mode. Both timing arms use the same Release llama-server, standard expert and prefill profiles, single slot, BF16 KV. Only the candidate sets LLAMA_LFM_GQA4=1. Sequential Metal runs. Warm 15 -> 8 and 4000 -> 8, then three uncached 4000 -> 64 requests, independently greedy. TTFT and request time are measured on client SSE events, excluding server startup. Decode TPS = 63/(time from first to last token event). Columns are independent medians. Timing arm order alternates by budget.",
+  "logit_protocol": "A separate diagnostic server evaluates the two kernels on the exact same input IDs at all 64 output positions. After storing every FP32 vocabulary logit and the independently sampled ID it supplies the fixture reference token as the next input. Row 0 is the final prompt position and rows 1..63 are serial decode. Hashes cover the full matrices in row-major order. A Metal encode-site counter counts actual GQA4 dispatches in this request. Errors and top-1 agreement are computed on all 64 x 128000 logits at each budget. Clean timing runs do not force token IDs or emit logits.",
+  "kernel": "Decode only. Single query row, 32 query heads / 8 KV heads, width 64. 4096 physical KV rows, 32 splits. BF16 K/V expanded to float, FP32 simdgroup matrix multiply and partial softmax followed by the ordinary split reduction. Other shapes follow the regular dispatch.",
+  "rows": [
+    {
+      "budget_gib": 8,
+      "startup_resident_layers": 7,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 1.9028562910389155,
+          "tps": 35.76272539273894,
+          "request_s": 3.6946905410150066
+        },
+        "tps_range": [
+          31.252625701672347,
+          36.5212971687858
+        ],
+        "process_lifetime_peak_bytes": 7091541896,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.8918645409867167,
+            "decode_tps": 36.5212971687858,
+            "request_s": 3.6168854160350747,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 8589933512
+          },
+          {
+            "ttft_s": 1.9028562910389155,
+            "decode_tps": 31.252625701672347,
+            "request_s": 3.918686916003935,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 8589933512
+          },
+          {
+            "ttft_s": 1.9330798329901882,
+            "decode_tps": 35.76272539273894,
+            "request_s": 3.6946905410150066,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 8589933512
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 2.106142125034239,
+          "tps": 35.700069274939565,
+          "request_s": 3.870844583027065
+        },
+        "tps_range": [
+          35.51853691544581,
+          36.175283013918694
+        ],
+        "process_lifetime_peak_bytes": 7084611368,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 2.0093342910404317,
+            "decode_tps": 36.175283013918694,
+            "request_s": 3.750854875019286,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 8589933512
+          },
+          {
+            "ttft_s": 2.106142125034239,
+            "decode_tps": 35.700069274939565,
+            "request_s": 3.870844583027065,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 8589933512
+          },
+          {
+            "ttft_s": 2.1249518750119023,
+            "decode_tps": 35.51853691544581,
+            "request_s": 3.8986735840444453,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 8589933512
+          }
+        ]
+      },
+      "tps_change_percent": -0.17519950482325353,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    },
+    {
+      "budget_gib": 10,
+      "startup_resident_layers": 13,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 1.9950073750223964,
+          "tps": 41.668840363655434,
+          "request_s": 3.5069285000208765
+        },
+        "tps_range": [
+          30.43036138550404,
+          41.769144279225834
+        ],
+        "process_lifetime_peak_bytes": 9231261040,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 2.0358081669546664,
+            "decode_tps": 30.43036138550404,
+            "request_s": 4.106108916981611,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 10737410760
+          },
+          {
+            "ttft_s": 1.9950073750223964,
+            "decode_tps": 41.668840363655434,
+            "request_s": 3.5069285000208765,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 10737410760
+          },
+          {
+            "ttft_s": 1.9912335840053856,
+            "decode_tps": 41.769144279225834,
+            "request_s": 3.499523999984376,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 10737410760
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 2.109925542026758,
+          "tps": 41.410171924845855,
+          "request_s": 3.662939458969049
+        },
+        "tps_range": [
+          30.99869365239252,
+          41.91342781436041
+        ],
+        "process_lifetime_peak_bytes": 9232407944,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 2.1598412089515477,
+            "decode_tps": 41.91342781436041,
+            "request_s": 3.662939458969049,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 10737410760
+          },
+          {
+            "ttft_s": 2.109925542026758,
+            "decode_tps": 30.99869365239252,
+            "request_s": 4.142269250005484,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 10737410760
+          },
+          {
+            "ttft_s": 2.0694510839530267,
+            "decode_tps": 41.410171924845855,
+            "request_s": 3.5908164169522934,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 10737410760
+          }
+        ]
+      },
+      "tps_change_percent": -0.6207718682644137,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    },
+    {
+      "budget_gib": 12,
+      "startup_resident_layers": 19,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 1.8949798749526963,
+          "tps": 50.30567517101962,
+          "request_s": 3.1462072919821367
+        },
+        "tps_range": [
+          49.614216662946426,
+          50.62301462952349
+        ],
+        "process_lifetime_peak_bytes": 11382268832,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.8868387500406243,
+            "decode_tps": 50.30567517101962,
+            "request_s": 3.1391825419850647,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 12884881528
+          },
+          {
+            "ttft_s": 1.8949798749526963,
+            "decode_tps": 49.614216662946426,
+            "request_s": 3.1647772080032155,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 12884881528
+          },
+          {
+            "ttft_s": 1.9017140420037322,
+            "decode_tps": 50.62301462952349,
+            "request_s": 3.1462072919821367,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 12884881528
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 1.8942069580079988,
+          "tps": 50.95909600991815,
+          "request_s": 3.1304926250013523
+        },
+        "tps_range": [
+          38.27767864286856,
+          51.09029975938894
+        ],
+        "process_lifetime_peak_bytes": 11374044064,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.8866005000309087,
+            "decode_tps": 51.09029975938894,
+            "request_s": 3.1197112920344807,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 12884881528
+          },
+          {
+            "ttft_s": 1.8942069580079988,
+            "decode_tps": 50.95909600991815,
+            "request_s": 3.1304926250013523,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 12884881528
+          },
+          {
+            "ttft_s": 1.901863124978263,
+            "decode_tps": 38.27767864286856,
+            "request_s": 3.547730957972817,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 12884881528
+          }
+        ]
+      },
+      "tps_change_percent": 1.2989008430503102,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    },
+    {
+      "budget_gib": 14,
+      "startup_resident_layers": 25,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 1.8556654580170289,
+          "tps": 63.157926395339054,
+          "request_s": 2.8531649580108933
+        },
+        "tps_range": [
+          46.55039698224621,
+          63.89880590798129
+        ],
+        "process_lifetime_peak_bytes": 13526722928,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.8574012500466779,
+            "decode_tps": 63.89880590798129,
+            "request_s": 2.8433351670391858,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 15032153112
+          },
+          {
+            "ttft_s": 1.8543505830457434,
+            "decode_tps": 46.55039698224621,
+            "request_s": 3.207722500024829,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 15032153112
+          },
+          {
+            "ttft_s": 1.8556654580170289,
+            "decode_tps": 63.157926395339054,
+            "request_s": 2.8531649580108933,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 15032153112
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 1.8713463330059312,
+          "tps": 62.76695158182602,
+          "request_s": 2.8680401659803465
+        },
+        "tps_range": [
+          50.6601822668616,
+          63.49917226514309
+        ],
+        "process_lifetime_peak_bytes": 13528525096,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.8713463330059312,
+            "decode_tps": 63.49917226514309,
+            "request_s": 2.86348524998175,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 15032153112
+          },
+          {
+            "ttft_s": 1.8643272499903105,
+            "decode_tps": 62.76695158182602,
+            "request_s": 2.8680401659803465,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 15032153112
+          },
+          {
+            "ttft_s": 2.0054993749945424,
+            "decode_tps": 50.6601822668616,
+            "request_s": 3.2490795829799026,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 15032153112
+          }
+        ]
+      },
+      "tps_change_percent": -0.6190431444276889,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    },
+    {
+      "budget_gib": 16,
+      "startup_resident_layers": 31,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 2.170077583985403,
+          "tps": 94.5806891014055,
+          "request_s": 2.835254875011742
+        },
+        "tps_range": [
+          91.78814224473922,
+          94.71159170631609
+        ],
+        "process_lifetime_peak_bytes": 15670898544,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 2.3577614170499146,
+            "decode_tps": 91.78814224473922,
+            "request_s": 3.0441245840047486,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 17179834424
+          },
+          {
+            "ttft_s": 1.882171917008236,
+            "decode_tps": 94.5806891014055,
+            "request_s": 2.548269834020175,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 17179834424
+          },
+          {
+            "ttft_s": 2.170077583985403,
+            "decode_tps": 94.71159170631609,
+            "request_s": 2.835254875011742,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 17179834424
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 1.8756305829738267,
+          "tps": 93.97166783710473,
+          "request_s": 2.7068752500345
+        },
+        "tps_range": [
+          65.52454609345044,
+          94.70551095530405
+        ],
+        "process_lifetime_peak_bytes": 15660937048,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.8756305829738267,
+            "decode_tps": 93.97166783710473,
+            "request_s": 2.5460454159765504,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 17178957880
+          },
+          {
+            "ttft_s": 1.8726315829553641,
+            "decode_tps": 65.52454609345044,
+            "request_s": 2.834103332948871,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 17178957880
+          },
+          {
+            "ttft_s": 2.0416552500100806,
+            "decode_tps": 94.70551095530405,
+            "request_s": 2.7068752500345,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 17178957880
+          }
+        ]
+      },
+      "tps_change_percent": -0.6439171358201823,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    },
+    {
+      "budget_gib": 18,
+      "startup_resident_layers": 36,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 2.4233990000211634,
+          "tps": 131.42451396063925,
+          "request_s": 2.915718083968386
+        },
+        "tps_range": [
+          91.38172431086824,
+          131.43248798659036
+        ],
+        "process_lifetime_peak_bytes": 16484414136,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 2.4233990000211634,
+            "decode_tps": 91.38172431086824,
+            "request_s": 3.112814749998506,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18911434376
+          },
+          {
+            "ttft_s": 2.413421041041147,
+            "decode_tps": 131.42451396063925,
+            "request_s": 2.8927836660295725,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18911434376
+          },
+          {
+            "ttft_s": 2.4363845419720747,
+            "decode_tps": 131.43248798659036,
+            "request_s": 2.915718083968386,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18911434376
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 2.404884084011428,
+          "tps": 132.75387573895293,
+          "request_s": 2.8821920409682207
+        },
+        "tps_range": [
+          82.32384976061616,
+          132.94646390684443
+        ],
+        "process_lifetime_peak_bytes": 16479384200,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 2.4076296249986626,
+            "decode_tps": 132.75387573895293,
+            "request_s": 2.8821920409682207,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18911434376
+          },
+          {
+            "ttft_s": 2.4033785410574637,
+            "decode_tps": 82.32384976061616,
+            "request_s": 3.1686488750274293,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18911434376
+          },
+          {
+            "ttft_s": 2.404884084011428,
+            "decode_tps": 132.94646390684443,
+            "request_s": 2.8787590420106426,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18911434376
+          }
+        ]
+      },
+      "tps_change_percent": 1.0115021454154327,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    },
+    {
+      "budget_gib": 20,
+      "startup_resident_layers": 38,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 1.8297126660472713,
+          "tps": 131.10482871238892,
+          "request_s": 2.3135605420102365
+        },
+        "tps_range": [
+          130.04615865415565,
+          131.1635823423603
+        ],
+        "process_lifetime_peak_bytes": 16492065344,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.846404917014297,
+            "decode_tps": 131.10482871238892,
+            "request_s": 2.3269364170264453,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8291171670425683,
+            "decode_tps": 130.04615865415565,
+            "request_s": 2.3135605420102365,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8297126660472713,
+            "decode_tps": 131.1635823423603,
+            "request_s": 2.3100289159920067,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 1.8311000000103377,
+          "tps": 131.90396640431067,
+          "request_s": 2.3173897090018727
+        },
+        "tps_range": [
+          129.5524022719894,
+          132.33398988824754
+        ],
+        "process_lifetime_peak_bytes": 16489722528,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.856515290972311,
+            "decode_tps": 132.33398988824754,
+            "request_s": 2.332583457988221,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8253246659878641,
+            "decode_tps": 131.90396640431067,
+            "request_s": 2.3029448749730363,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8311000000103377,
+            "decode_tps": 129.5524022719894,
+            "request_s": 2.3173897090018727,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          }
+        ]
+      },
+      "tps_change_percent": 0.6095410060561912,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    },
+    {
+      "budget_gib": 22,
+      "startup_resident_layers": 38,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 1.834364959038794,
+          "tps": 130.58888235641083,
+          "request_s": 2.3174387920298614
+        },
+        "tps_range": [
+          130.41484696018497,
+          130.78658171554358
+        ],
+        "process_lifetime_peak_bytes": 16483955264,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.834364959038794,
+            "decode_tps": 130.41484696018497,
+            "request_s": 2.3174387920298614,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8357942079892382,
+            "decode_tps": 130.78658171554358,
+            "request_s": 2.317495000024792,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.827800999977626,
+            "decode_tps": 130.58888235641083,
+            "request_s": 2.3102310419781134,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 1.8337180830421858,
+          "tps": 131.72672037420583,
+          "request_s": 2.3119809580384754
+        },
+        "tps_range": [
+          100.15592385364756,
+          132.11171932193756
+        ],
+        "process_lifetime_peak_bytes": 16490099312,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.8346042080083862,
+            "decode_tps": 100.15592385364756,
+            "request_s": 2.4636234170175157,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8337180830421858,
+            "decode_tps": 131.72672037420583,
+            "request_s": 2.3119809580384754,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8291099579655565,
+            "decode_tps": 132.11171932193756,
+            "request_s": 2.305979083001148,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          }
+        ]
+      },
+      "tps_change_percent": 0.8713130836739413,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    },
+    {
+      "budget_gib": 24,
+      "startup_resident_layers": 38,
+      "ordinary": {
+        "medians": {
+          "ttft_s": 1.8400415410287678,
+          "tps": 128.72943948310055,
+          "request_s": 2.321901249990333
+        },
+        "tps_range": [
+          126.54497630691395,
+          130.7434484110916
+        ],
+        "process_lifetime_peak_bytes": 16479531656,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.8400415410287678,
+            "decode_tps": 130.7434484110916,
+            "request_s": 2.321901249990333,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.9306496659992263,
+            "decode_tps": 126.54497630691395,
+            "request_s": 2.4284963750396855,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8318351659690961,
+            "decode_tps": 128.72943948310055,
+            "request_s": 2.3212337080040015,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          }
+        ]
+      },
+      "grouped": {
+        "medians": {
+          "ttft_s": 1.8344282080070116,
+          "tps": 131.4862531383366,
+          "request_s": 2.3103200829937123
+        },
+        "tps_range": [
+          85.12860668954481,
+          132.38301242642692
+        ],
+        "process_lifetime_peak_bytes": 16486904456,
+        "within_budget": true,
+        "trials": [
+          {
+            "ttft_s": 1.840470541967079,
+            "decode_tps": 85.12860668954481,
+            "request_s": 2.5805272919824347,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8273510840372182,
+            "decode_tps": 131.4862531383366,
+            "request_s": 2.3064886250067502,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          },
+          {
+            "ttft_s": 1.8344282080070116,
+            "decode_tps": 132.38301242642692,
+            "request_s": 2.3103200829937123,
+            "output_sha256_le_u32": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+            "matching_reference_tokens": 64,
+            "ledger_peak_bytes": 18910320264
+          }
+        ]
+      },
+      "tps_change_percent": 2.1415564818006994,
+      "logits": {
+        "rows": 64,
+        "vocab_size": 128000,
+        "logit_count": 8192000,
+        "bit_identical_rows": [
+          0
+        ],
+        "matching_argmax_rows": 64,
+        "max_absolute_error": 2.714540481567383,
+        "rmse": 0.12800134098604282,
+        "ordinary": {
+          "logits_sha256_le_f32": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+          "gqa4_kernel_dispatches": 0
+        },
+        "grouped": {
+          "logits_sha256_le_f32": "f34fb6629bd7b43c1266508e27446443824b64b4774c3d8e8aac23254e11dac2",
+          "gqa4_kernel_dispatches": 630
+        }
+      }
+    }
+  ]
+}

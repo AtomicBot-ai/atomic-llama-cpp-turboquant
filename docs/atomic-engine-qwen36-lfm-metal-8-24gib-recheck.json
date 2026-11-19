@@ -1,0 +1,1744 @@
+{
+  "date": "2026-11-19",
+  "hardware": "Apple M4 Max, 48 GiB unified memory",
+  "models": {
+    "qwen": "Qwen3.6-35B-A3B Q4_K_M",
+    "lfm": "LFM2.5-24B-A2B-AD Q4_K_M"
+  },
+  "binary": "build-metal/bin/llama-server",
+  "binary_sha256": "a56c93f94f3d0364858d8f2e7c88333b9d5f71787829c3c3ba6f1d7252416524",
+  "fixtures": {
+    "qwen": "atomic-engine-qwen35-metal-residency.json#prompt_token_ids",
+    "lfm": "atomic-engine-lfm-metal-grid.json#prompt_ids"
+  },
+  "server_args": [
+    "-c",
+    "4096",
+    "-b",
+    "4096",
+    "-ub",
+    "8",
+    "-np",
+    "1",
+    "-t",
+    "8",
+    "-tb",
+    "8",
+    "-ngl",
+    "99",
+    "-ctk",
+    "bf16",
+    "-ctv",
+    "bf16",
+    "-fit",
+    "off",
+    "--cache-ram",
+    "0",
+    "--ctx-checkpoints",
+    "0",
+    "--no-warmup",
+    "--metrics",
+    "--no-webui",
+    "--host",
+    "127.0.0.1"
+  ],
+  "profile_env": {
+    "default": {},
+    "gqa8": {
+      "LLAMA_QWEN35_RESIDENT_VERIFY": "1"
+    }
+  },
+  "protocol": "Cold process per model, budget and profile. Run sequentially with no competing benchmark or build. After server readiness, warm up with 15/8 and then 4000/8. Time three separate uncached requests of 4000 input and 64 output tokens. Use each model’s historical token-ID fixture, temperature 0, seed 42, ignore EOS. TTFT is request-to-first-token SSE time. TPS is 63 divided by seconds between first and last token-bearing SSE events. Request time is request-to-last-token. Medians are independent. Managed and process lifetime physical high-water marks include startup and warmup. ATOMIC_WINDOW_PROFILE=1 only records prefill path. No live resize.",
+  "correctness": "Compare all 64 output IDs with the historical same-model, same-mode, same-cap reference at 8 GiB and above. Also compare the three outputs to each other. SHA-256 uses little-endian uint32 token IDs. This sweep did not capture vocabulary logits.",
+  "previous_defaults": "atomic-engine-qwen36-lfm-dflash-default-metal-8-24gib.json",
+  "previous_gqa8": "atomic-engine-qwen36-resident-verify-24gib.json",
+  "rows": [
+    {
+      "model": "qwen",
+      "budget_gib": 8,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.712558458035346,
+        "decode_tps": 32.085485250433386,
+        "request_s": 4.6932375420001335
+      },
+      "range": {
+        "ttft_s": [
+          2.640697209048085,
+          2.734220332989935
+        ],
+        "decode_tps": [
+          31.69947421988124,
+          32.1589824276383
+        ],
+        "request_s": [
+          4.604201875044964,
+          4.699973125010729
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 2,
+      "managed_peak_bytes": 8589919498,
+      "process_lifetime_footprint_bytes": 7287887848,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 2.640697209048085,
+          "decode_tps": 32.085485250433386,
+          "request_s": 4.604201875044964,
+          "ledger_peak": 8589919498,
+          "ledger_minimum": 3982244930,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54",
+          "reference_sha256": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 1234056 43990 2507107",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 2.712558458035346,
+          "decode_tps": 31.69947421988124,
+          "request_s": 4.699973125010729,
+          "ledger_peak": 8589919498,
+          "ledger_minimum": 3982244930,
+          "disk_read_bytes": 35700736,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54",
+          "reference_sha256": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 1248696 44390 2557708",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 2.734220332989935,
+          "decode_tps": 32.1589824276383,
+          "request_s": 4.6932375420001335,
+          "ledger_peak": 8589919498,
+          "ledger_minimum": 3982244930,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54",
+          "reference_sha256": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 1239501 44255 2574947",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 2.5969048750121146,
+      "previous_tps": 32.58776395074901
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 8,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.0184267919976264,
+        "decode_tps": 34.76856048979039,
+        "request_s": 3.8231935419607908
+      },
+      "range": {
+        "ttft_s": [
+          2.011211708013434,
+          2.02364079200197
+        ],
+        "decode_tps": [
+          34.60503400272046,
+          34.956315946246676
+        ],
+        "request_s": [
+          3.8206762080080807,
+          3.844185166992247
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 7,
+      "managed_peak_bytes": 8589933512,
+      "process_lifetime_footprint_bytes": 7080925016,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 2.011211708013434,
+          "decode_tps": 34.76856048979039,
+          "request_s": 3.8231935419607908,
+          "ledger_peak": 8589933512,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 4096,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 907215 15 1939022",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.0184267919976264,
+          "decode_tps": 34.956315946246676,
+          "request_s": 3.8206762080080807,
+          "ledger_peak": 8589933512,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 907914 16 1945423",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.02364079200197,
+          "decode_tps": 34.60503400272046,
+          "request_s": 3.844185166992247,
+          "ledger_peak": 8589933512,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 262144,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 906829 19 1953694",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.8866664160159416,
+      "previous_tps": 36.32908615479199
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 10,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.784696874965448,
+        "decode_tps": 49.888358287757995,
+        "request_s": 4.0475165419629775
+      },
+      "range": {
+        "ttft_s": [
+          2.7490109159843996,
+          2.7955307500087656
+        ],
+        "decode_tps": [
+          49.829339455337745,
+          50.285760809798845
+        ],
+        "request_s": [
+          4.013326290994883,
+          4.048370499978773
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 4,
+      "managed_peak_bytes": 10737418018,
+      "process_lifetime_footprint_bytes": 8854641864,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 2.7490109159843996,
+          "decode_tps": 49.829339455337745,
+          "request_s": 4.013326290994883,
+          "ledger_peak": 10737418018,
+          "ledger_minimum": 6319520834,
+          "disk_read_bytes": 165888000,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 1319695 44532 2552487",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 2.784696874965448,
+          "decode_tps": 49.888358287757995,
+          "request_s": 4.0475165419629775,
+          "ledger_peak": 10737418018,
+          "ledger_minimum": 6319520834,
+          "disk_read_bytes": 202555392,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 1278130 45481 2582292",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 2.7955307500087656,
+          "decode_tps": 50.285760809798845,
+          "request_s": 4.048370499978773,
+          "ledger_peak": 10737418018,
+          "ledger_minimum": 6319520834,
+          "disk_read_bytes": 294789120,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 1283727 43630 2595775",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 2.7022434580139816,
+      "previous_tps": 49.79844474648153
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 10,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 1.9824275000137277,
+        "decode_tps": 40.46928634025169,
+        "request_s": 3.5376584580517374
+      },
+      "range": {
+        "ttft_s": [
+          1.9782370829489082,
+          2.1837442080141045
+        ],
+        "decode_tps": [
+          39.830150758338114,
+          40.50845289208825
+        ],
+        "request_s": [
+          3.5349732079776004,
+          3.7654605410061777
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 13,
+      "managed_peak_bytes": 10737410760,
+      "process_lifetime_footprint_bytes": 9234472304,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 1.9782370829489082,
+          "decode_tps": 40.46928634025169,
+          "request_s": 3.5349732079776004,
+          "ledger_peak": 10737410760,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 17252352,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 920203 17 1905787",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 1.9824275000137277,
+          "decode_tps": 40.50845289208825,
+          "request_s": 3.5376584580517374,
+          "ledger_peak": 10737410760,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 916803 19 1908697",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.1837442080141045,
+          "decode_tps": 39.830150758338114,
+          "request_s": 3.7654605410061777,
+          "ledger_peak": 10737410760,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 917489 16 2110792",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.9014982089865953,
+      "previous_tps": 42.31094547973495
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 12,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 3.1867062089731917,
+        "decode_tps": 51.94456828694916,
+        "request_s": 4.448845958977472
+      },
+      "range": {
+        "ttft_s": [
+          2.907348957960494,
+          3.3649242079700343
+        ],
+        "decode_tps": [
+          49.91523323767146,
+          54.064904886537185
+        ],
+        "request_s": [
+          4.072615041979589,
+          4.577755541016813
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 9,
+      "managed_peak_bytes": 12884901138,
+      "process_lifetime_footprint_bytes": 10999571120,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 2.907348957960494,
+          "decode_tps": 54.064904886537185,
+          "request_s": 4.072615041979589,
+          "ledger_peak": 12884901138,
+          "ledger_minimum": 6319520834,
+          "disk_read_bytes": 16813367296,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 2643367 291621 2467215",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.1867062089731917,
+          "decode_tps": 49.91523323767146,
+          "request_s": 4.448845958977472,
+          "ledger_peak": 12884901138,
+          "ledger_minimum": 6319520834,
+          "disk_read_bytes": 13837074432,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 2342172 196253 2829370",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.3649242079700343,
+          "decode_tps": 51.94456828694916,
+          "request_s": 4.577755541016813,
+          "ledger_peak": 12884901138,
+          "ledger_minimum": 6319520834,
+          "disk_read_bytes": 13737451520,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 2358917 171152 3029389",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 3.0364007499883883,
+      "previous_tps": 53.88147808282399
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 12,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.3300975839956664,
+        "decode_tps": 48.14460960527361,
+        "request_s": 3.6443675839691423
+      },
+      "range": {
+        "ttft_s": [
+          2.1843108749599196,
+          2.408124916953966
+        ],
+        "decode_tps": [
+          47.93535574978615,
+          48.214399496598816
+        ],
+        "request_s": [
+          3.4928685830091126,
+          3.714788499986753
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 19,
+      "managed_peak_bytes": 12884881528,
+      "process_lifetime_footprint_bytes": 11376812912,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 2.1843108749599196,
+          "decode_tps": 48.14460960527361,
+          "request_s": 3.4928685830091126,
+          "ledger_peak": 12884881528,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 18104320,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 936560 21 2107524",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.3300975839956664,
+          "decode_tps": 47.93535574978615,
+          "request_s": 3.6443675839691423,
+          "ledger_peak": 12884881528,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 928252 10 2253767",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.408124916953966,
+          "decode_tps": 48.214399496598816,
+          "request_s": 3.714788499986753,
+          "ledger_peak": 12884881528,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 931523 19 2333504",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.8958539579762146,
+      "previous_tps": 50.01151717591682
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 14,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 3.4002233750070445,
+        "decode_tps": 54.09522694973444,
+        "request_s": 4.598633832996711
+      },
+      "range": {
+        "ttft_s": [
+          3.0997384999645874,
+          3.550451625022106
+        ],
+        "decode_tps": [
+          52.56963470235606,
+          54.85811808014848
+        ],
+        "request_s": [
+          4.26435141597176,
+          4.698868709034286
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 13,
+      "managed_peak_bytes": 15032366098,
+      "process_lifetime_footprint_bytes": 13141731480,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 3.0997384999645874,
+          "decode_tps": 54.09522694973444,
+          "request_s": 4.26435141597176,
+          "ledger_peak": 15032366098,
+          "ledger_minimum": 6319586370,
+          "disk_read_bytes": 18339340288,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 2797945 315613 2621019",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.4002233750070445,
+          "decode_tps": 52.56963470235606,
+          "request_s": 4.598633832996711,
+          "ledger_peak": 15032366098,
+          "ledger_minimum": 6319586370,
+          "disk_read_bytes": 17232166912,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 2645499 201285 3024495",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.550451625022106,
+          "decode_tps": 54.85811808014848,
+          "request_s": 4.698868709034286,
+          "ledger_peak": 15032366098,
+          "ledger_minimum": 6319586370,
+          "disk_read_bytes": 17588420608,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 2740066 187199 3190751",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 3.153391166997608,
+      "previous_tps": 54.40535486984708
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 14,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.239488707971759,
+        "decode_tps": 60.1283812520241,
+        "request_s": 3.2872468329733238
+      },
+      "range": {
+        "ttft_s": [
+          2.0577741249580868,
+          2.3486410409677774
+        ],
+        "decode_tps": [
+          59.732483801502696,
+          60.20308984739836
+        ],
+        "request_s": [
+          3.1124766250140965,
+          3.3950989579898305
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 25,
+      "managed_peak_bytes": 15032153112,
+      "process_lifetime_footprint_bytes": 13524478296,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 2.0577741249580868,
+          "decode_tps": 59.732483801502696,
+          "request_s": 3.1124766250140965,
+          "ledger_peak": 15032153112,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 16990208,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 927307 16 1986497",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.239488707971759,
+          "decode_tps": 60.1283812520241,
+          "request_s": 3.2872468329733238,
+          "ledger_peak": 15032153112,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 925986 17 2163057",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.3486410409677774,
+          "decode_tps": 60.20308984739836,
+          "request_s": 3.3950989579898305,
+          "ledger_peak": 15032153112,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "WINDOW_WIDE 1 40 14251720704 928583 16 2275662",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.8996018340112641,
+      "previous_tps": 62.6149026927056
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 16,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 3.2705597080057487,
+        "decode_tps": 63.38002925398106,
+        "request_s": 4.264447457971983
+      },
+      "range": {
+        "ttft_s": [
+          3.151618707983289,
+          3.4635403330321424
+        ],
+        "decode_tps": [
+          61.63489994206954,
+          63.38743988155638
+        ],
+        "request_s": [
+          4.173766874999274,
+          4.457544292032253
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 18,
+      "managed_peak_bytes": 17179869122,
+      "process_lifetime_footprint_bytes": 15288249984,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 3.151618707983289,
+          "decode_tps": 61.63489994206954,
+          "request_s": 4.173766874999274,
+          "ledger_peak": 17179869122,
+          "ledger_minimum": 6319651906,
+          "disk_read_bytes": 19613769728,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 2941468 493589 2503631",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.2705597080057487,
+          "decode_tps": 63.38743988155638,
+          "request_s": 4.264447457971983,
+          "ledger_peak": 17179869122,
+          "ledger_minimum": 6319651906,
+          "disk_read_bytes": 19963609088,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 3019536 398552 2703663",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.4635403330321424,
+          "decode_tps": 63.38002925398106,
+          "request_s": 4.457544292032253,
+          "ledger_peak": 17179869122,
+          "ledger_minimum": 6319651906,
+          "disk_read_bytes": 19963609088,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 3012677 249338 3040262",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 3.1912667920114473,
+      "previous_tps": 59.84248125224439
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 16,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.1609601249801926,
+        "decode_tps": 90.77643574967291,
+        "request_s": 2.8549728330108337
+      },
+      "range": {
+        "ttft_s": [
+          1.9542491670581512,
+          2.254710334003903
+        ],
+        "decode_tps": [
+          89.44129016423786,
+          91.79772735125958
+        ],
+        "request_s": [
+          2.6405406670528464,
+          2.959082999965176
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 31,
+      "managed_peak_bytes": 17179834424,
+      "process_lifetime_footprint_bytes": 15657365336,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 1.9542491670581512,
+          "decode_tps": 91.79772735125958,
+          "request_s": 2.6405406670528464,
+          "ledger_peak": 17179834424,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 314187776,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_PREFILL_RETAINED 883949568",
+            "WINDOW_WIDE 1 40 14251720704 924502 16 1888220",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.1609601249801926,
+          "decode_tps": 90.77643574967291,
+          "request_s": 2.8549728330108337,
+          "ledger_peak": 17179834424,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 1391058944,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_PREFILL_RETAINED 883949568",
+            "WINDOW_WIDE 1 40 14251720704 1042770 573 2092998",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.254710334003903,
+          "decode_tps": 89.44129016423786,
+          "request_s": 2.959082999965176,
+          "ledger_peak": 17179834424,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 655548416,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_PREFILL_RETAINED 883949568",
+            "WINDOW_WIDE 1 40 14251720704 961633 1382 2182560",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.901426625030581,
+      "previous_tps": 92.55540515723112
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 18,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 3.31626445899019,
+        "decode_tps": 74.19439461562294,
+        "request_s": 4.173375833022874
+      },
+      "range": {
+        "ttft_s": [
+          3.3087932500056922,
+          3.3255997090018354
+        ],
+        "decode_tps": [
+          72.86753311655367,
+          74.25109890641744
+        ],
+        "request_s": [
+          4.164736750011798,
+          4.17472045897739
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 22,
+      "managed_peak_bytes": 19327351506,
+      "process_lifetime_footprint_bytes": 17445647512,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 3.3087932500056922,
+          "decode_tps": 72.86753311655367,
+          "request_s": 4.173375833022874,
+          "ledger_peak": 19327351506,
+          "ledger_minimum": 6319651906,
+          "disk_read_bytes": 19954171904,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 3121424 672441 2485557",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.3255997090018354,
+          "decode_tps": 74.19439461562294,
+          "request_s": 4.17472045897739,
+          "ledger_peak": 19327351506,
+          "ledger_minimum": 6319651906,
+          "disk_read_bytes": 19944734720,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 3130243 684465 2481558",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.31626445899019,
+          "decode_tps": 74.25109890641744,
+          "request_s": 4.164736750011798,
+          "ledger_peak": 19327351506,
+          "ledger_minimum": 6319651906,
+          "disk_read_bytes": 19944734720,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "WINDOW_WIDE 1 40 19503513600 3124873 677354 2484261",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 3.2517760830232874,
+      "previous_tps": 73.89144144796879
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 18,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.4345407909713686,
+        "decode_tps": 132.03927853615835,
+        "request_s": 2.9116715409909375
+      },
+      "range": {
+        "ttft_s": [
+          2.4300548330065794,
+          2.4472082919673994
+        ],
+        "decode_tps": [
+          131.41687204982256,
+          133.1225207838946
+        ],
+        "request_s": [
+          2.909445333003532,
+          2.9204565419931896
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 36,
+      "managed_peak_bytes": 18911434376,
+      "process_lifetime_footprint_bytes": 16487838320,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 2.4345407909713686,
+          "decode_tps": 132.03927853615835,
+          "request_s": 2.9116715409909375,
+          "ledger_peak": 18911434376,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 14742245376,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_PREFILL_RETAINED 883949568",
+            "WINDOW_WIDE 1 40 14251720704 2299821 557346 1821179",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.4472082919673994,
+          "decode_tps": 133.1225207838946,
+          "request_s": 2.9204565419931896,
+          "ledger_peak": 18911434376,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 14742249472,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_PREFILL_RETAINED 883949568",
+            "WINDOW_WIDE 1 40 14251720704 2301074 547753 1831303",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        },
+        {
+          "ttft_s": 2.4300548330065794,
+          "decode_tps": 131.41687204982256,
+          "request_s": 2.909445333003532,
+          "ledger_peak": 18911434376,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 14742249472,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_PREFILL_RETAINED 883949568",
+            "WINDOW_WIDE 1 40 14251720704 2294866 561431 1809271",
+            "WINDOW_WIDE_STAGING 4 0 14251720704"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.8836237500072457,
+      "previous_tps": 128.72687494419418
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 20,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 3.238515999983065,
+        "decode_tps": 91.89578269328307,
+        "request_s": 3.9241961669758894
+      },
+      "range": {
+        "ttft_s": [
+          3.235177833994385,
+          3.245072457997594
+        ],
+        "decode_tps": [
+          91.8795716030376,
+          92.55173964636708
+        ],
+        "request_s": [
+          3.9158781670266762,
+          3.9306316659785807
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 26,
+      "managed_peak_bytes": 21474806930,
+      "process_lifetime_footprint_bytes": 19564018304,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 3.235177833994385,
+          "decode_tps": 92.55173964636708,
+          "request_s": 3.9158781670266762,
+          "ledger_peak": 21474806930,
+          "ledger_minimum": 6319717442,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3059672 681405 2414250",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.245072457997594,
+          "decode_tps": 91.89578269328307,
+          "request_s": 3.9306316659785807,
+          "ledger_peak": 21474806930,
+          "ledger_minimum": 6319717442,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3068977 693860 2410741",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.238515999983065,
+          "decode_tps": 91.8795716030376,
+          "request_s": 3.9241961669758894,
+          "ledger_peak": 21474806930,
+          "ledger_minimum": 6319717442,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3062670 688640 2410002",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 3.241109583992511,
+      "previous_tps": 88.10933627042974
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 20,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.2191001669852994,
+        "decode_tps": 130.13968938174787,
+        "request_s": 2.7006739999633282
+      },
+      "range": {
+        "ttft_s": [
+          2.2165787919657305,
+          2.2732911669882014
+        ],
+        "decode_tps": [
+          125.08843900440301,
+          131.228777840759
+        ],
+        "request_s": [
+          2.6991777920047753,
+          2.7769348330330104
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 38,
+      "managed_peak_bytes": 18910320264,
+      "process_lifetime_footprint_bytes": 16484512368,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 2.2191001669852994,
+          "decode_tps": 131.228777840759,
+          "request_s": 2.6991777920047753,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 2184271",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        },
+        {
+          "ttft_s": 2.2165787919657305,
+          "decode_tps": 130.13968938174787,
+          "request_s": 2.7006739999633282,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 2181711",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        },
+        {
+          "ttft_s": 2.2732911669882014,
+          "decode_tps": 125.08843900440301,
+          "request_s": 2.7769348330330104,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 2238800",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.8512858750182204,
+      "previous_tps": 129.83603820779402
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 22,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 3.308864291990176,
+        "decode_tps": 106.33134983861208,
+        "request_s": 3.89880137500586
+      },
+      "range": {
+        "ttft_s": [
+          3.291887458995916,
+          3.315997583034914
+        ],
+        "decode_tps": [
+          104.8943116371643,
+          106.7910491029856
+        ],
+        "request_s": [
+          3.884375000023283,
+          3.916602125042118
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 31,
+      "managed_peak_bytes": 23622286130,
+      "process_lifetime_footprint_bytes": 21711028328,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 3.308864291990176,
+          "decode_tps": 106.7910491029856,
+          "request_s": 3.89880137500586,
+          "ledger_peak": 23622286130,
+          "ledger_minimum": 6319782978,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3134712 758355 2412203",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.291887458995916,
+          "decode_tps": 106.33134983861208,
+          "request_s": 3.884375000023283,
+          "ledger_peak": 23622286130,
+          "ledger_minimum": 6319782978,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3119906 745570 2409479",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.315997583034914,
+          "decode_tps": 104.8943116371643,
+          "request_s": 3.916602125042118,
+          "ledger_peak": 23622286130,
+          "ledger_minimum": 6319782978,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3143958 723348 2456947",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 3.2438411659677513,
+      "previous_tps": 103.06069824723775
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 22,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 1.8771134999697097,
+        "decode_tps": 133.96847859893793,
+        "request_s": 2.34737337497063
+      },
+      "range": {
+        "ttft_s": [
+          1.8236854170099832,
+          2.0336167499772273
+        ],
+        "decode_tps": [
+          127.9605690891272,
+          135.98517608520945
+        ],
+        "request_s": [
+          2.286971208988689,
+          2.5259559170226566
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 38,
+      "managed_peak_bytes": 18910320264,
+      "process_lifetime_footprint_bytes": 16482792024,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 1.8236854170099832,
+          "decode_tps": 135.98517608520945,
+          "request_s": 2.286971208988689,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 1789699",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        },
+        {
+          "ttft_s": 1.8771134999697097,
+          "decode_tps": 133.96847859893793,
+          "request_s": 2.34737337497063,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 1845084",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        },
+        {
+          "ttft_s": 2.0336167499772273,
+          "decode_tps": 127.9605690891272,
+          "request_s": 2.5259559170226566,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 2002191",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.8590507080079988,
+      "previous_tps": 129.4850803163909
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 24,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 3.313851875020191,
+        "decode_tps": 131.59499135538195,
+        "request_s": 3.7967036250047386
+      },
+      "range": {
+        "ttft_s": [
+          3.2768363330396824,
+          3.3203373750438914
+        ],
+        "decode_tps": [
+          130.4748300115225,
+          134.17388402121583
+        ],
+        "request_s": [
+          3.746376292023342,
+          3.799079000018537
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 36,
+      "managed_peak_bytes": 25733133266,
+      "process_lifetime_footprint_bytes": 23506584952,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 3.2768363330396824,
+          "decode_tps": 134.17388402121583,
+          "request_s": 3.746376292023342,
+          "ledger_peak": 25733133266,
+          "ledger_minimum": 6319848514,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3121671 746833 2409908",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.3203373750438914,
+          "decode_tps": 131.59499135538195,
+          "request_s": 3.799079000018537,
+          "ledger_peak": 25733133266,
+          "ledger_minimum": 6319848514,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3157599 773852 2418977",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        },
+        {
+          "ttft_s": 3.313851875020191,
+          "decode_tps": 130.4748300115225,
+          "request_s": 3.7967036250047386,
+          "ledger_peak": 25733133266,
+          "ledger_minimum": 6319848514,
+          "disk_read_bytes": 19927891968,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": [
+            "QWEN35_PREFILL_RETAINED 1044381696",
+            "WINDOW_WIDE 1 40 19503513600 3144711 753296 2428248",
+            "WINDOW_WIDE_STAGING 4 0 19503513600"
+          ]
+        }
+      ],
+      "previous_ttft_s": 3.294172541995067,
+      "previous_tps": 126.40647062096586
+    },
+    {
+      "model": "lfm",
+      "budget_gib": 24,
+      "profile": "default",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.207266458950471,
+        "decode_tps": 129.97091480402412,
+        "request_s": 2.6979942089528777
+      },
+      "range": {
+        "ttft_s": [
+          2.1721808750298806,
+          2.213341708993539
+        ],
+        "decode_tps": [
+          128.38075694657792,
+          131.42973454792167
+        ],
+        "request_s": [
+          2.6515244590118527,
+          2.698065541975666
+        ]
+      },
+      "dflash2": false,
+      "startup_direct_layers": 38,
+      "managed_peak_bytes": 18910320264,
+      "process_lifetime_footprint_bytes": 16485773912,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "aea123039582a83ebbab3a9224467597b9a547a420ab7dc8f6acbd2fe4fb9296",
+      "trials": [
+        {
+          "ttft_s": 2.1721808750298806,
+          "decode_tps": 131.42973454792167,
+          "request_s": 2.6515244590118527,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 2137123",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        },
+        {
+          "ttft_s": 2.207266458950471,
+          "decode_tps": 128.38075694657792,
+          "request_s": 2.6979942089528777,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 2170749",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        },
+        {
+          "ttft_s": 2.213341708993539,
+          "decode_tps": 129.97091480402412,
+          "request_s": 2.698065541975666,
+          "ledger_peak": 18910320264,
+          "ledger_minimum": 3643876416,
+          "disk_read_bytes": 0,
+          "draft_proposed": 0,
+          "draft_accepted": 0,
+          "matching_reference": true,
+          "output_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "reference_sha256": "ce28b3811e9e27dda3549b30819be6e25aa99e3b47f3dde1be878819e4ba0655",
+          "profile": [
+            "LFM_DIRECT_PREFILL 38",
+            "WINDOW_WIDE 0 40 0 0 0 2175153",
+            "WINDOW_WIDE_STAGING 4 0 0"
+          ]
+        }
+      ],
+      "previous_ttft_s": 1.8651779579813592,
+      "previous_tps": 129.30659594635165
+    },
+    {
+      "model": "qwen",
+      "budget_gib": 24,
+      "profile": "gqa8",
+      "status": "ok",
+      "medians": {
+        "ttft_s": 2.7047415830311365,
+        "decode_tps": 160.79658115537055,
+        "request_s": 3.0946980000007898
+      },
+      "range": {
+        "ttft_s": [
+          2.702450707962271,
+          2.8563279579975642
+        ],
+        "decode_tps": [
+          151.31345483271264,
+          161.5565156987857
+        ],
+        "request_s": [
+          3.0942500829696655,
+          3.272682207985781
+        ]
+      },
+      "dflash2": true,
+      "startup_direct_layers": 40,
+      "managed_peak_bytes": 25760887762,
+      "process_lifetime_footprint_bytes": 23879386896,
+      "physical_peak_within_cap": true,
+      "all_64_ids_match_reference": true,
+      "identical_outputs_all_repeats": true,
+      "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "trials": [
+        {
+          "ttft_s": 2.702450707962271,
+          "decode_tps": 160.79658115537055,
+          "request_s": 3.0942500829696655,
+          "ledger_peak": 25760887762,
+          "ledger_minimum": 6236355650,
+          "disk_read_bytes": 0,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": []
+        },
+        {
+          "ttft_s": 2.7047415830311365,
+          "decode_tps": 161.5565156987857,
+          "request_s": 3.0946980000007898,
+          "ledger_peak": 25760887762,
+          "ledger_minimum": 6236355650,
+          "disk_read_bytes": 0,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": []
+        },
+        {
+          "ttft_s": 2.8563279579975642,
+          "decode_tps": 151.31345483271264,
+          "request_s": 3.272682207985781,
+          "ledger_peak": 25760887762,
+          "ledger_minimum": 6236355650,
+          "disk_read_bytes": 0,
+          "draft_proposed": 79,
+          "draft_accepted": 49,
+          "matching_reference": true,
+          "output_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "reference_sha256": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa",
+          "profile": []
+        }
+      ],
+      "previous_ttft_s": 2.777233,
+      "previous_tps": 150.955588
+    }
+  ]
+}

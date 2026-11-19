@@ -1,4 +1,5 @@
 #include "atomic-budget.h"
+#include "atomic-dflash-depth.h"
 #include "server-context.h"
 #include <atomic>
 #include <thread>
@@ -1097,6 +1098,7 @@ private:
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
     common_speculative_ptr spec;
+    std::unique_ptr<common_atomic_dflash_cost> atomic_dflash_cost;
 
     bool add_bos_token = true;
 
@@ -1142,6 +1144,7 @@ private:
     void destroy() {
         prefix_checkpoints.reset();
         spec.reset();
+        atomic_dflash_cost.reset();
         spec_init.reset();
 
         ctx_dft   = nullptr;
@@ -1235,12 +1238,16 @@ private:
         const bool is_resume = sleeping;
 
         params_base = params;
+        if (params_base.engine_budget && !is_resume) {
+            try { common_atomic_select_qwen35_profile(params_base); }
+            catch (const std::exception & e) { SRV_ERR("%s\n", e.what()); return false; }
+        }
         const auto output_limits = server_output_limits(params_base);
         params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
 
         const bool has_mmproj = !params.mmproj.path.empty();
-        const bool has_draft = params.speculative.has_dft();
+        const bool has_draft = params_base.speculative.has_dft();
         const bool spec_mtp = std::find(params_base.speculative.types.begin(),
                                         params_base.speculative.types.end(),
                                         COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
@@ -1529,7 +1536,16 @@ private:
         // try speculative decoding
         if (ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
             try {
+                const char * adaptive = std::getenv("LLAMA_EXPERIMENTAL_DFLASH2_ADAPTIVE");
+                params_base.speculative.draft.atomic_adaptive_dflash =
+                    adaptive && std::strcmp(adaptive, "1") == 0 && common_atomic_dflash2_enabled(params_base);
                 spec.reset(common_speculative_init(params_base.speculative, params_base.n_parallel));
+                if (spec && params_base.speculative.draft.atomic_adaptive_dflash) {
+                    const char * timed = std::getenv("LLAMA_EXPERIMENTAL_DFLASH2_TIMED_COST");
+                    if (timed && std::strcmp(timed, "1") == 0) {
+                        atomic_dflash_cost = std::make_unique<common_atomic_dflash_cost>();
+                    }
+                }
             } catch (const std::exception & e) {
                 SRV_ERR("failed to initialize speculative decoding context: %s\n", e.what());
                 if (params_base.speculative.has_synth()) {
@@ -1540,6 +1556,14 @@ private:
 
         if (ctx_dft) {
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
+        }
+
+        if (common_atomic_dflash2_enabled(params_base) &&
+                (!spec || ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_RS ||
+                 llama_n_rs_seq(ctx_tgt) < uint32_t(params_base.speculative.draft.n_max) ||
+                 ctx_dft_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART)) {
+            SRV_ERR("%s", "budgeted DFlash2 requires bounded target rollback and removable draft KV\n");
+            return false;
         }
 
         if (spec) {
@@ -2981,11 +3005,23 @@ private:
         n_written = 0;
         std::vector<uint8_t> data_dft;
         std::vector<uint8_t> data_spec;
+        const bool managed = common_atomic_dflash2_enabled(params_base);
+        const size_t limit = llama_atomic_dflash2_slot_staging_bytes(params_base.n_ctx);
+        constexpr size_t header_bytes = 2 * sizeof(uint32_t) + 2 * sizeof(uint64_t);
         if (ctx_dft != nullptr) {
-            data_dft.resize(llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE));
+            const size_t draft_size = llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            if (managed && draft_size > limit - header_bytes) {
+                SLT_ERR(slot, "%s", "draft state exceeds the managed slot staging limit\n");
+                return false;
+            }
+            data_dft.resize(draft_size);
             llama_state_seq_get_data_ext(ctx_dft, data_dft.data(), data_dft.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
         }
         common_speculative_get_state(spec.get(), slot.id, data_spec);
+        if (managed && data_spec.size() > limit - header_bytes - data_dft.size()) {
+            SLT_ERR(slot, "%s", "draft appendix exceeds the managed slot staging limit\n");
+            return false;
+        }
         if (data_dft.empty() && data_spec.empty()) {
             return true;
         }
@@ -3021,6 +3057,10 @@ private:
             return 0;
         }
         const size_t n_avail = file_size - offset;
+        if (common_atomic_dflash2_enabled(params_base) && n_avail > llama_atomic_dflash2_slot_staging_bytes(params_base.n_ctx)) {
+            SLT_WRN(slot, "%s", "draft appendix exceeds the managed slot staging limit\n");
+            return 0;
+        }
         size_t n_read = 0;
         uint32_t magic   = 0;
         uint32_t version = 0;
@@ -3254,9 +3294,9 @@ private:
                         }
                     }
 
-                    if (params_base.engine_prefill_window && !is_yielding) {
+                    if (params_base.engine_budget && !is_yielding) {
                         llama_prefill_window_data window;
-                        if (llama_prefill_window_get(ctx_tgt, &window)) {
+                        if (llama_prefill_window_get(ctx_tgt, &window) && window.enabled) {
                             res->engine_memory["prefill_windows"] = window.windows;
                             res->engine_memory["prefill_window_tokens"] = window.tokens;
                             res->engine_memory["prefill_window_tails"] = window.tails;
@@ -4004,6 +4044,7 @@ private:
                             /* .result_q = */ spec_reject ? &slot.spec_draft_q : nullptr,
                             /* .temp     = */ slot.task->params.sampling.temp,
                             /* .seed     = */ slot.task->params.sampling.seed,
+                            /* .atomic_verify_row_cost = */ atomic_dflash_cost ? atomic_dflash_cost->row_cost() : -1.0f,
                         };
 
                         drafting.push_back(&slot);
@@ -4811,7 +4852,15 @@ private:
         // yield to the queue, so we can still handle metrics tasks while decoding
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
+        // In the budgeted single-slot profile, time only whole greedy target batches.
+        const bool measure_verify = atomic_dflash_cost && has_output && off == 0 && batch.view.size() == batch.size() &&
+                !batch.tokens[off].is_prompt && batch.slot_batched && batch.slot_batched->state == SLOT_STATE_GENERATING &&
+                batch.slot_batched->task->params.sampling.temp == 0.0f &&
+                (batch.slot_batched->n_remaining() == -1 ||
+                 batch.slot_batched->n_remaining() > params_base.speculative.draft.n_max);
+        int64_t verify_us = 0;
         queue_tasks.yield_to_queue([&]() {
+            const int64_t verify_start = measure_verify ? ggml_time_us() : 0;
             if (params_base.engine_budget && batch.tokens[off].is_prompt) {
                 // Managed mode has one slot. Use the same uncached prefill size
                 // for all of its slices, including a small final slice.
@@ -4825,7 +4874,13 @@ private:
             if (ret == 0 && has_output) {
                 llama_synchronize(ctx_tgt);
             }
+            if (measure_verify && ret == 0) {
+                verify_us = ggml_time_us() - verify_start;
+            }
         });
+        if (verify_us > 0) {
+            atomic_dflash_cost->observe(batch.view.size() - 1, verify_us);
+        }
 
         if (ret != 0) {
             {
@@ -5002,6 +5057,9 @@ private:
                 slot.state = SLOT_STATE_GENERATING;
 
                 if (slot.can_speculate()) {
+                    if (atomic_dflash_cost) {
+                        *atomic_dflash_cost = {};
+                    }
                     common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());
                 }
             } else if (slot.state != SLOT_STATE_GENERATING) {

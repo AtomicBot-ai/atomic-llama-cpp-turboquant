@@ -18,7 +18,7 @@ int main(int argc, char ** argv) {
     t.test("compact scheduler exact result and graph reuse", [&](testing & t) {
         std::array<float, 32> reference {};
         for (bool compact : {false, true}) {
-            ggml_backend_sched_ptr scheduler(compact ? ggml_backend_window_new(&backend, nullptr, 1, 8192, false) :
+            ggml_backend_sched_ptr scheduler(compact ? ggml_backend_window_new_compact(&backend, nullptr, 1, 8192, false) :
                     ggml_backend_sched_new(&backend, nullptr, 1, 8192, false, false));
             t.assert_true(bool(scheduler));
             for (int pass = 0; pass < 2; ++pass) {
@@ -70,7 +70,7 @@ int main(int argc, char ** argv) {
         };
         ggml_backend_t backends[] = {&dependent};
         for (bool compact : {false, true}) {
-            ggml_backend_sched_ptr scheduler(compact ? ggml_backend_window_new(backends, nullptr, 1, 8192, false) :
+            ggml_backend_sched_ptr scheduler(compact ? ggml_backend_window_new_compact(backends, nullptr, 1, 8192, false) :
                     ggml_backend_sched_new(backends, nullptr, 1, 8192, false, false));
             ggml_context_ptr ctx(ggml_init({16 * 1024 * 1024, nullptr, true}));
             auto * graph = ggml_new_graph_custom(ctx.get(), 8192, false);
@@ -92,6 +92,56 @@ int main(int argc, char ** argv) {
             ggml_backend_sched_reset(scheduler.get());
         }
         dependency_leaves.clear();
+    });
+    t.test("window scratch is shared and values survive a layer pause", [&](testing & t) {
+        const auto buft = ggml_backend_get_default_buffer_type(backend);
+        ggml_backend_buffer_ptr scratch(ggml_backend_buft_alloc_buffer(buft, 64 * 1024));
+        t.assert_true(bool(scratch));
+
+        std::array<ggml_context_ptr, 2> contexts;
+        std::array<ggml_backend_sched_ptr, 2> schedulers;
+        std::array<ggml_cgraph *, 2> graphs;
+        std::array<ggml_tensor *, 2> outputs;
+        for (size_t i = 0; i < contexts.size(); ++i) {
+            contexts[i].reset(ggml_init({2 * 1024 * 1024, nullptr, true}));
+            schedulers[i].reset(ggml_backend_window_new_compact(&backend, nullptr, 1, 8192, false));
+            t.assert_true(ggml_backend_window_share_scratch(schedulers[i].get(), scratch.get()));
+            auto * ctx = contexts[i].get();
+            auto * input = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 32);
+            ggml_set_input(input);
+            auto * temporary = ggml_scale(ctx, input, float(i + 2));
+            auto * keep = ggml_scale(ctx, temporary, 3.0f);
+            ggml_set_name(keep, "l_last-0");
+            outputs[i] = ggml_scale(ctx, keep, 5.0f);
+            ggml_set_output(outputs[i]);
+            graphs[i] = ggml_new_graph_custom(ctx, 8192, false);
+            ggml_build_forward_expand(graphs[i], outputs[i]);
+            t.assert_true(ggml_backend_window_alloc(schedulers[i].get(), graphs[i], 8192));
+            t.assert_true(temporary->buffer == scratch.get());
+            t.assert_true(keep->buffer != scratch.get() && outputs[i]->buffer != scratch.get());
+            std::array<float, 32> values;
+            values.fill(float(i + 1));
+            ggml_backend_tensor_set(input, values.data(), 0, sizeof(values));
+        }
+
+        struct pause {
+            ggml_backend_sched_t scheduler;
+            ggml_cgraph * graph;
+            ggml_status status = GGML_STATUS_FAILED;
+        } nested{schedulers[1].get(), graphs[1]};
+        ggml_backend_sched_set_eval_callback(schedulers[0].get(), [](ggml_tensor * node, bool ask, void * user) {
+            if (ask) { return std::strcmp(node->name, "l_last-0") == 0; }
+            auto & state = *static_cast<pause *>(user);
+            state.status = ggml_backend_sched_graph_compute(state.scheduler, state.graph);
+            return state.status == GGML_STATUS_SUCCESS;
+        }, &nested);
+        t.assert_true(ggml_backend_sched_graph_compute(schedulers[0].get(), graphs[0]) == GGML_STATUS_SUCCESS);
+        t.assert_true(nested.status == GGML_STATUS_SUCCESS);
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            std::array<float, 32> values;
+            ggml_backend_tensor_get(outputs[i], values.data(), 0, sizeof(values));
+            for (float value : values) { t.assert_true(value == float((i + 1) * (i + 2) * 15)); }
+        }
     });
     return t.summary();
 }

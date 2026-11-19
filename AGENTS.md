@@ -1,6 +1,6 @@
-# atomic-turbine contributor instructions
+# atomic-engine contributor instructions
 
-These instructions apply throughout this fork. atomic-turbine extends llama.cpp with budgeted expert streaming. Keep the fork easy to update from upstream.
+These instructions apply throughout this fork. atomic-engine extends llama.cpp with budgeted expert streaming. Keep the fork easy to update from upstream.
 
 ## Preserve existing functionality first
 

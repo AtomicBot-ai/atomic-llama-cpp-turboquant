@@ -9,6 +9,9 @@
 #include "ngram-map.h"
 #include "ngram-mod.h"
 #include "sampling.h"
+#include "atomic-budget.h"
+#include "atomic-dflash-depth.h"
+#include "../src/llama-atomic.h"
 
 #include <algorithm>
 #include <cassert>
@@ -1012,6 +1015,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     // DFlash2 probabilistic drafting: one generator per sequence and the seed it was last seeded with (-1: reseed)
     std::vector<std::mt19937> dflash2_rng;
     std::vector<int64_t>      dflash2_seed;
+    std::unique_ptr<common_atomic_dflash_depth> atomic_depth; // experimental single-slot path
 
     // draft-dspark: the draft carries a Markov head and uses an anchor-first block layout
     const bool is_dspark;
@@ -1066,6 +1070,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
         selector_top_k = llama_model_dflash_selector_top_k(model_dft);
         is_dflash2     = selector_top_k > 0;
+        if (is_dflash2 && this->params.atomic_adaptive_dflash) {
+            GGML_ASSERT(n_seq == 1 && this->params.n_max <= int32_t(common_atomic_dflash_depth::capacity));
+            atomic_depth = std::make_unique<common_atomic_dflash_depth>();
+        }
         dflash2_rng.resize(n_seq);
         dflash2_seed.assign(n_seq, -1);
         char lilicorr_meta[32] = {};
@@ -1185,6 +1193,9 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
         // reseed per request rather than per round, or two identical requests differ
         dflash2_seed[seq_id] = -1;
+        if (atomic_depth) {
+            *atomic_depth = {};
+        }
 
         const int32_t N = (int32_t) prompt.size();
         if (N <= 0) {
@@ -1387,6 +1398,8 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
                 // DFlash2 can instead sample each step and hand q to the verifier for rejection sampling
                 const bool sample = is_dflash2 && params.probabilistic && dp.result_q;
+                const bool adapt = atomic_depth && !is_lilicorr && dp.temp == 0.0f && !sample;
+                std::array<float, common_atomic_dflash_depth::capacity> confidence;
 
                 // greedy keeps temperature 1, sampling uses the target's
                 const float temp = sample ? dp.temp : 1.0f;
@@ -1408,7 +1421,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
                     predecessor = (int32_t) std::distance(scores,
                             std::max_element(scores, scores + top_k));
-                    if (params.p_min > 0.0f || sample) {
+                    if (params.p_min > 0.0f || sample || adapt) {
                         // softmax(scores / temp) at the argmax, i.e. 1 / sum(exp((s_k - s_max) / temp))
                         probs.resize(top_k);
                         float sum = 0.0f;
@@ -1418,6 +1431,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                         }
                         if (1.0f / sum < params.p_min) {
                             break;
+                        }
+                        if (adapt) {
+                            const float peak = 1.0f / sum;
+                            confidence[result.size()] = std::isfinite(peak) ? peak : 0.0f;
                         }
                         for (int32_t k = 0; k < top_k; ++k) {
                             probs[k] /= sum;
@@ -1454,6 +1471,14 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                     result.clear();
                     if (sample) {
                         dp.result_q->clear();
+                    }
+                }
+                if (adapt) {
+                    const size_t offered = dp.n_max > 0 ? std::min(result.size(), (size_t) dp.n_max) : result.size();
+                    if (offered >= (size_t) params.n_min) {
+                        // Only the returned prefix enters the target batch and routes experts.
+                        result.resize(atomic_depth->choose(confidence.data(), offered, params.n_min, dp.atomic_verify_row_cost));
+                        SPC_DBG("adaptive DFlash2 depth: offered=%zu retained=%zu\n", offered, result.size());
                     }
                 }
                 continue;
@@ -1518,8 +1543,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         }
     }
 
-    void accept(llama_seq_id /*seq_id*/, uint16_t /*n_accepted*/, bool /*is_other*/) override {
-        // noop
+    void accept(llama_seq_id /*seq_id*/, uint16_t n_accepted, bool is_other) override {
+        if (atomic_depth && !is_other) {
+            atomic_depth->observe(n_accepted);
+        }
     }
 };
 
@@ -2856,7 +2883,11 @@ common_speculative_init_result::common_speculative_init_result(
         model_path = params.speculative.draft.mparams.path;
         LOG_INF("%s: loading draft model '%s'\n", __func__, model_path.c_str());
 
-        llama_model * model_dft = common_model_load(params.speculative.draft.mparams.get_paths(), mparams);
+        // The target already qualified the managed profile. These are the
+        // derived draft parameters, which can have a different microbatch.
+        llama_model * model_dft = params.engine_budget ?
+            llama_atomic_dflash2_load(model_tgt, model_path.c_str(), mparams) :
+            common_model_load(params.speculative.draft.mparams.get_paths(), mparams);
         if (model_dft == NULL) {
             LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
             return;

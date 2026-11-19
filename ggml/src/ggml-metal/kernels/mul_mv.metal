@@ -3428,3 +3428,123 @@ template [[host_name("kernel_mul_mv_id_iq2_s_f32")]]   kernel kernel_mul_mv_id_t
 template [[host_name("kernel_mul_mv_id_iq4_nl_f32")]]  kernel kernel_mul_mv_id_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_iq4_nl_f32_impl <N_R0_IQ4_NL>>>;
 template [[host_name("kernel_mul_mv_id_iq4_xs_f32")]]  kernel kernel_mul_mv_id_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_iq4_xs_f32_impl <N_R0_IQ4_XS>>>;
 template [[host_name("kernel_mul_mv_id_tq2_0_f32")]]   kernel kernel_mul_mv_id_t kernel_mul_mv_id<mmv_fn<kernel_mul_mv_tq2_0_f32_impl  <N_R0_TQ2_0>>>;
+
+// Address routing wrapper copied from kernel_mul_mv_id at
+// 3f8c243108faca78efb5433e0a2e70850e8f7a70. Only expert base lookup differs.
+// On upstream updates, track route indexing, split-K, launch geometry and args
+// in that wrapper. The FP32 dispatch/arithmetic functions remain shared.
+template<mul_mv_disp_fn_t disp_fn>
+kernel void kernel_mul_mv_address(
+        constant ggml_metal_kargs_mul_mv_id & args,
+        device const char * src0s,
+        device const char * src1,
+        device       char * dst,
+        device const char * ids,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiitg[[thread_index_in_threadgroup]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    const int iid1 = tgpig.z/args.nei0;
+    const int idx  = tgpig.z%args.nei0;
+
+    tgpig.z = 0;
+
+    const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
+
+    const int64_t i11 = idx % args.ne11;
+    const int64_t i12 = iid1;
+
+    const int64_t i1 = idx;
+    const int64_t i2 = i12;
+
+    device char * dst_cur = dst + (i1*args.ne0 + i2*args.ne1*args.ne0)*sizeof(float);
+
+    if (i02 == -1) {
+        device float * dst_f32 = (device float *) dst_cur;
+        const ushort nth = ntg.x*ntg.y*ntg.z;
+        for (int i0 = tiitg; i0 < args.ne0; i0 += nth) {
+            dst_f32[i0] = 0.0f;
+        }
+        return;
+    }
+
+    device const char * src0_cur = reinterpret_cast<device const char *>(((device const ulong *)src0s)[i02]);
+    device const char * src1_cur = src1  + i11*args.nb11 + i12*args.nb12;
+
+    ggml_metal_kargs_mul_mv args0 = {
+        /*.ne00 =*/ args.ne00,
+        /*.ne01 =*/ args.ne01,
+        /*.ne02 =*/ 1, // args.ne02,
+        /*.nb00 =*/ args.nb00,
+        /*.nb01 =*/ args.nb01,
+        /*.nb02 =*/ args.nb02,
+        /*.nb03 =*/ args.nb02, // args.ne02 == 1
+        /*.ne10 =*/ args.ne10,
+        /*.ne11 =*/ 1, // args.ne11,
+        /*.ne12 =*/ 1, // args.ne12,
+        /*.nb10 =*/ args.nb10,
+        /*.nb11 =*/ args.nb11,
+        /*.nb12 =*/ args.nb12,
+        /*.nb13 =*/ args.nb12, // ne12 == 1
+        /*.ne0  =*/ args.ne0,
+        /*.ne1  =*/ 1, // args.ne1,
+        /*.nr0  =*/ args.nr0,
+        /*.r2   =*/ 1,
+        /*.r3   =*/ 1,
+    };
+
+    disp_fn(
+        args0,
+        /* src0 */ src0_cur,
+        /* src1 */ src1_cur,
+        /* dst  */ dst_cur,
+        shmem,
+        tgpig,
+        tiitg,
+        tiisg,
+        sgitg);
+}
+
+typedef decltype(kernel_mul_mv_address<mmv_fn<kernel_mul_mv_t_t_disp<float, float>>>) kernel_mul_mv_address_t;
+
+typedef decltype(kernel_mul_mv_address<mmv_fn<kernel_mul_mv_t_t_4_disp<float, float4, float, float4>>>) kernel_mul_mv_address_4_t;
+
+template [[host_name("kernel_mul_mv_id_f32_f32_address")]]     kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_t_t_disp<float, float>>>;
+template [[host_name("kernel_mul_mv_id_f16_f32_address")]]     kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_t_t_disp<half,  float>>>;
+#if defined(GGML_METAL_HAS_BF16)
+template [[host_name("kernel_mul_mv_id_bf16_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_t_t_disp<bfloat, float>>>;
+#endif
+template [[host_name("kernel_mul_mv_id_f32_f32_4_address")]]   kernel kernel_mul_mv_address_4_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_t_t_4_disp<float, float4, float, float4>>>;
+template [[host_name("kernel_mul_mv_id_f16_f32_4_address")]]   kernel kernel_mul_mv_address_4_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_t_t_4_disp<half,  half4,  float, float4>>>;
+#if defined(GGML_METAL_HAS_BF16)
+template [[host_name("kernel_mul_mv_id_bf16_f32_4_address")]]  kernel kernel_mul_mv_address_4_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_t_t_4_disp<bfloat, bfloat4, float, float4>>>;
+#endif
+
+template [[host_name("kernel_mul_mv_id_q8_0_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_q8_0_f32_impl<N_R0_Q8_0>>>;
+
+template [[host_name("kernel_mul_mv_id_q1_0_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_q1_0_f32_impl<N_R0_Q1_0>>>;
+template [[host_name("kernel_mul_mv_id_q2_0_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_q2_0_f32_impl<N_R0_Q2_0>>>;
+template [[host_name("kernel_mul_mv_id_q4_0_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<mul_vec_q_n_f32_impl<block_q4_0, N_R0_Q4_0>>>;
+template [[host_name("kernel_mul_mv_id_q4_1_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<mul_vec_q_n_f32_impl<block_q4_1, N_R0_Q4_1>>>;
+template [[host_name("kernel_mul_mv_id_q5_0_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<mul_vec_q_n_f32_impl<block_q5_0, N_R0_Q5_0>>>;
+template [[host_name("kernel_mul_mv_id_q5_1_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<mul_vec_q_n_f32_impl<block_q5_1, N_R0_Q5_1>>>;
+
+template [[host_name("kernel_mul_mv_id_mxfp4_f32_address")]]   kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_mxfp4_f32_impl<N_R0_MXFP4>>>;
+
+template [[host_name("kernel_mul_mv_id_q2_K_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_q2_K_f32_impl   <N_R0_Q2_K>>>;
+template [[host_name("kernel_mul_mv_id_q3_K_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_q3_K_f32_impl   <N_R0_Q3_K>>>;
+template [[host_name("kernel_mul_mv_id_q4_K_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_q4_K_f32_impl   <N_R0_Q4_K>>>;
+template [[host_name("kernel_mul_mv_id_q5_K_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_q5_K_f32_impl   <N_R0_Q5_K>>>;
+template [[host_name("kernel_mul_mv_id_q6_K_f32_address")]]    kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_q6_K_f32_impl   <N_R0_Q6_K>>>;
+template [[host_name("kernel_mul_mv_id_iq1_s_f32_address")]]   kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq1_s_f32_disp<ggml_metal_kargs_mul_mv>>>;
+template [[host_name("kernel_mul_mv_id_iq1_m_f32_address")]]   kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq1_m_f32_disp<ggml_metal_kargs_mul_mv>>>;
+template [[host_name("kernel_mul_mv_id_iq2_xxs_f32_address")]] kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq2_xxs_f32_disp<ggml_metal_kargs_mul_mv>>>;
+template [[host_name("kernel_mul_mv_id_iq2_xs_f32_address")]]  kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq2_xs_f32_disp<ggml_metal_kargs_mul_mv>>>;
+template [[host_name("kernel_mul_mv_id_iq3_xxs_f32_address")]] kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq3_xxs_f32_disp<ggml_metal_kargs_mul_mv>>>;
+template [[host_name("kernel_mul_mv_id_iq3_s_f32_address")]]   kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq3_s_f32_disp<ggml_metal_kargs_mul_mv>>>;
+template [[host_name("kernel_mul_mv_id_iq2_s_f32_address")]]   kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq2_s_f32_disp<ggml_metal_kargs_mul_mv>>>;
+template [[host_name("kernel_mul_mv_id_iq4_nl_f32_address")]]  kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq4_nl_f32_impl <N_R0_IQ4_NL>>>;
+template [[host_name("kernel_mul_mv_id_iq4_xs_f32_address")]]  kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq4_xs_f32_impl <N_R0_IQ4_XS>>>;
+template [[host_name("kernel_mul_mv_id_tq2_0_f32_address")]]   kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_tq2_0_f32_impl  <N_R0_TQ2_0>>>;

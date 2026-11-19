@@ -110,6 +110,42 @@ int main(int argc, char ** argv) {
         t.assert_equal("reservation rolled back", size_t(0), budget->snapshot(domain).used());
         t.assert_equal("not reported as freed payload", size_t(0), budget->snapshot(domain).released);
     });
+    t.test("size-aware reclaim receives rounded request without legacy fallback", [&](testing & t) {
+        auto budget = std::make_shared<llama_memory_budget>(65536, 0, true);
+        struct state {
+            ggml_backend_buffer_t old = nullptr;
+            size_t bytes = 0;
+            llama_memory_domain domain = llama_memory_domain::device;
+            int calls = 0;
+            bool deny = false;
+        } data;
+        int legacy_calls = 0;
+        const llama_memory_reclaimer reclaim {[](void * user, llama_memory_domain domain, size_t bytes) {
+            auto & s = *static_cast<state *>(user);
+            s.domain = domain; s.bytes = bytes; ++s.calls;
+            if (!s.deny) { ggml_backend_buffer_free(s.old); s.old = nullptr; }
+        }, &data};
+        llama_allocation_scope scope(budget, llama_memory_category::state, [&] { ++legacy_calls; }, {}, reclaim);
+        data.old = ggml_backend_alloc_buffer(cpu.get(), 100);
+        t.assert_true("first buffer admitted", data.old != nullptr);
+        t.assert_equal("no callback with sufficient capacity", data.calls, 0);
+        {
+            ggml_backend_buffer_ptr next(ggml_backend_alloc_buffer(cpu.get(), 100));
+            t.assert_true("sized reclaim admits replacement", next && !data.old);
+            t.assert_equal("one reclaim call", data.calls, 1);
+            t.assert_equal("full rounded charge delivered", data.bytes, size_t(65536));
+            t.assert_true("correct memory domain", data.domain == domain);
+        }
+        data.old = ggml_backend_alloc_buffer(cpu.get(), 100);
+        data.deny = true;
+        ggml_backend_buffer_ptr denied(ggml_backend_alloc_buffer(cpu.get(), 1));
+        t.assert_true("refusal leaves allocation denied", !denied && data.old);
+        t.assert_equal("no destructive legacy fallback", legacy_calls, 0);
+        t.assert_equal("denial keeps original charge", budget->snapshot(domain).used(), size_t(65536));
+        ggml_backend_buffer_free(data.old); data.old = nullptr;
+        t.assert_equal("all buffers released", budget->snapshot(domain).used(), size_t(0));
+        t.assert_equal("bounded high water", budget->snapshot(domain).high_water, size_t(65536));
+    });
     t.test("scope nesting and reclaim", [&](testing & t) {
         auto budget = std::make_shared<llama_memory_budget>(65536, 0, true);
         ggml_backend_buffer_t old = nullptr;

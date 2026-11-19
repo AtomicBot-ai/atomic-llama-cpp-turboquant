@@ -441,4 +441,4 @@ if (TARGET gguf-model-data)
     target_compile_definitions(test-export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
 
-include(atomic-turbine.cmake)
+include(atomic-engine.cmake)

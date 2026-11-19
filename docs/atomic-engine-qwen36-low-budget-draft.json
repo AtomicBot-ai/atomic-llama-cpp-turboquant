@@ -1,0 +1,1092 @@
+{
+  "date": "2026-11-19",
+  "device": "Apple M4 Max, 48 GiB unified memory",
+  "target": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+  "draft_bf16": "qwen35-dflash2.gguf",
+  "compact_draft": {
+    "path": ".work/models/qwen35-dflash2-q4_0-selector-bf16.gguf",
+    "sha256": "b10bf2b5ee8d1a7955570512e84e8a50b937b519855ed7a4d113abb178bfca26",
+    "bytes": 490170112
+  },
+  "working_binary_sha256": "ef174f84441b8577366ee3a4a757e4c2c940d92ade6eec55efc882a49788b1d0",
+  "experiment_binary_sha256": "c42a4d4471b50d507c5dadf806880f17c675287f55f43bba2ebe01d54816aa17",
+  "fixture": "atomic-engine-qwen35-metal-residency.json#prompt_token_ids",
+  "prompt_sha256_le_u32": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+  "server_args": [
+    "-c",
+    "4096",
+    "-b",
+    "4096",
+    "-ub",
+    "8",
+    "-np",
+    "1",
+    "-t",
+    "8",
+    "-tb",
+    "8",
+    "-ngl",
+    "99",
+    "-ctk",
+    "bf16",
+    "-ctv",
+    "bf16",
+    "-fit",
+    "off",
+    "--cache-ram",
+    "0",
+    "--ctx-checkpoints",
+    "0",
+    "--no-warmup",
+    "--metrics",
+    "--no-webui",
+    "--host",
+    "127.0.0.1"
+  ],
+  "protocol": "Single-slot native Metal. Fresh process per case. Warm 15 -> 8 and 4000 -> 8, then three uncached 4000 -> 64 greedy requests, seed 42, ignore EOS. TTFT is measured on the client; decode TPS=63/(last-first token time); request time ends at last token. Medians per metric independently. All cases enable prefill path counters. The experimental binary changes only profile acceptance and residency selection, not computation. All experimental cases request GQA8. The legacy 8 GiB BF16 override bypasses the calibrated layer profile and does not select grouped attention. The production default uses ordinary attention. No output logits were captured in this study.",
+  "serial_output_ids": [
+    364,
+    411,
+    271,
+    248068,
+    271,
+    248069,
+    271,
+    57590,
+    13,
+    561,
+    6511,
+    314,
+    9338,
+    369,
+    11751,
+    13,
+    561,
+    17593,
+    4108,
+    5134,
+    421,
+    279,
+    6511,
+    314,
+    9338,
+    369,
+    11751,
+    13,
+    561,
+    17593,
+    4108,
+    5134,
+    421,
+    279,
+    6511,
+    314,
+    9338,
+    369,
+    11751,
+    13,
+    561,
+    17593,
+    4108,
+    5134,
+    421,
+    279,
+    6511,
+    314,
+    9338,
+    369,
+    11751,
+    13,
+    561,
+    17593,
+    4108,
+    5134,
+    421,
+    279,
+    6511,
+    314,
+    9338,
+    369,
+    11751,
+    13
+  ],
+  "draft_output_ids": [
+    364,
+    411,
+    271,
+    248068,
+    198,
+    8160,
+    579,
+    264,
+    7047,
+    1817,
+    25,
+    271,
+    16,
+    13,
+    220,
+    2972,
+    2014,
+    53983,
+    2570,
+    5396,
+    64700,
+    198,
+    256,
+    471,
+    561,
+    1156,
+    5529,
+    264,
+    1248,
+    1103,
+    314,
+    7189,
+    318,
+    15,
+    15,
+    15,
+    310,
+    220,
+    16,
+    15,
+    15,
+    8,
+    494,
+    264,
+    328,
+    2482,
+    17593,
+    3158,
+    198,
+    256,
+    471,
+    561,
+    17593,
+    4108,
+    20335,
+    5134,
+    25,
+    328,
+    760,
+    17593,
+    4108,
+    5134,
+    421,
+    279
+  ],
+  "first_greedy_divergence_1_based": 5,
+  "rows": [
+    {
+      "budget_gib": 8,
+      "case": "8-base",
+      "build": "experiment",
+      "weights": "none",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 2,
+      "medians": {
+        "ttft_s": 2.5722892920020968,
+        "tps": 33.137623371408175,
+        "request_s": 4.539663125004154
+      },
+      "trials": [
+        {
+          "ttft_s": 2.5722892920020968,
+          "tps": 34.59788844416669,
+          "request_s": 4.393209667003248,
+          "peak_bytes": 8589919498,
+          "disk_read_bytes": 0,
+          "draft_n": 0,
+          "accepted": 0,
+          "reference_match": {
+            "serial": true,
+            "draft": false
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54"
+        },
+        {
+          "ttft_s": 2.562627082981635,
+          "tps": 27.552309659783187,
+          "request_s": 4.849186749954242,
+          "peak_bytes": 8589919498,
+          "disk_read_bytes": 31850496,
+          "draft_n": 0,
+          "accepted": 0,
+          "reference_match": {
+            "serial": true,
+            "draft": false
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54"
+        },
+        {
+          "ttft_s": 2.6385008330107667,
+          "tps": 33.137623371408175,
+          "request_s": 4.539663125004154,
+          "peak_bytes": 8589919498,
+          "disk_read_bytes": 31580160,
+          "draft_n": 0,
+          "accepted": 0,
+          "reference_match": {
+            "serial": true,
+            "draft": false
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 7293409352
+    },
+    {
+      "budget_gib": 8,
+      "case": "8-legacy",
+      "build": "experiment",
+      "weights": "BF16",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": false,
+      "direct_layers": 0,
+      "medians": {
+        "ttft_s": 3.3045592079870403,
+        "tps": 36.08805572211108,
+        "request_s": 5.050289165985305
+      },
+      "trials": [
+        {
+          "ttft_s": 3.3045592079870403,
+          "tps": 36.08805572211108,
+          "request_s": 5.050289165985305,
+          "peak_bytes": 8589934506,
+          "disk_read_bytes": 288210944,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 3.3881892500212416,
+          "tps": 22.928379579428512,
+          "request_s": 6.135875792009756,
+          "peak_bytes": 8589934506,
+          "disk_read_bytes": 7536640,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 3.2561989160021767,
+          "tps": 36.8089601503746,
+          "request_s": 4.967738708015531,
+          "peak_bytes": 8589934506,
+          "disk_read_bytes": 262144,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 6713202352
+    },
+    {
+      "budget_gib": 8,
+      "case": "8-1",
+      "build": "experiment",
+      "weights": "compact",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 1,
+      "medians": {
+        "ttft_s": 2.7315635419799946,
+        "tps": 45.85390617989812,
+        "request_s": 4.105492291972041
+      },
+      "trials": [
+        {
+          "ttft_s": 2.6523801250150427,
+          "tps": 46.07908299336418,
+          "request_s": 4.0195948330219835,
+          "peak_bytes": 8589934514,
+          "disk_read_bytes": 0,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.7315635419799946,
+          "tps": 45.85390617989812,
+          "request_s": 4.105492291972041,
+          "peak_bytes": 8589934514,
+          "disk_read_bytes": 0,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.8481212909682654,
+          "tps": 45.71518825725578,
+          "request_s": 4.226219083007891,
+          "peak_bytes": 8589934514,
+          "disk_read_bytes": 0,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 6713054968
+    },
+    {
+      "budget_gib": 8,
+      "case": "8-2",
+      "build": "experiment",
+      "weights": "compact",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 2,
+      "medians": {
+        "ttft_s": 4.381120125006419,
+        "tps": 40.70018202804098,
+        "request_s": 5.929024750017561
+      },
+      "trials": [
+        {
+          "ttft_s": 4.381120125006419,
+          "tps": 40.70018202804098,
+          "request_s": 5.929024750017561,
+          "peak_bytes": 8589934354,
+          "disk_read_bytes": 0,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 39007027200,
+          "prefill_workers": 3,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 4.330749124987051,
+          "tps": 40.990934153561184,
+          "request_s": 5.867674332985189,
+          "peak_bytes": 8589934354,
+          "disk_read_bytes": 0,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 39007027200,
+          "prefill_workers": 3,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 4.43535145901842,
+          "tps": 39.96140025550865,
+          "request_s": 6.01187279203441,
+          "peak_bytes": 8589934354,
+          "disk_read_bytes": 0,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 39007027200,
+          "prefill_workers": 3,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 6697113312
+    },
+    {
+      "budget_gib": 10,
+      "case": "10-base",
+      "build": "experiment",
+      "weights": "BF16",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 4,
+      "medians": {
+        "ttft_s": 2.791523583000526,
+        "tps": 51.9184324339067,
+        "request_s": 4.008404667023569
+      },
+      "trials": [
+        {
+          "ttft_s": 2.7378720410051756,
+          "tps": 39.02349586114405,
+          "request_s": 4.35228404100053,
+          "peak_bytes": 10737418018,
+          "disk_read_bytes": 564649984,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.791523583000526,
+          "tps": 52.17021541590564,
+          "request_s": 3.9991091660340317,
+          "peak_bytes": 10737418018,
+          "disk_read_bytes": 1084915712,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.7949627920170315,
+          "tps": 51.9184324339067,
+          "request_s": 4.008404667023569,
+          "peak_bytes": 10737418018,
+          "disk_read_bytes": 690544640,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 8863800544
+    },
+    {
+      "budget_gib": 10,
+      "case": "10-4",
+      "build": "experiment",
+      "weights": "compact",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 4,
+      "medians": {
+        "ttft_s": 3.4722474589943886,
+        "tps": 49.65570401854917,
+        "request_s": 4.848568666027859
+      },
+      "trials": [
+        {
+          "ttft_s": 3.5956127080135047,
+          "tps": 50.281096950798215,
+          "request_s": 4.848568666027859,
+          "peak_bytes": 10737403426,
+          "disk_read_bytes": 718487552,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 3.4722474589943886,
+          "tps": 28.139192076859782,
+          "request_s": 5.711117708997335,
+          "peak_bytes": 10737403426,
+          "disk_read_bytes": 232595456,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 3.222162374993786,
+          "tps": 49.65570401854917,
+          "request_s": 4.49089879199164,
+          "peak_bytes": 10737403426,
+          "disk_read_bytes": 1417789440,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 8871107784
+    },
+    {
+      "budget_gib": 10,
+      "case": "10-5",
+      "build": "experiment",
+      "weights": "compact",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 5,
+      "medians": {
+        "ttft_s": 2.934239708003588,
+        "tps": 54.31907408995296,
+        "request_s": 4.117265084001701
+      },
+      "trials": [
+        {
+          "ttft_s": 2.812149584002327,
+          "tps": 55.30119162818497,
+          "request_s": 3.951365542015992,
+          "peak_bytes": 10737418082,
+          "disk_read_bytes": 2386755584,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.9574514999985695,
+          "tps": 54.31907408995296,
+          "request_s": 4.117265084001701,
+          "peak_bytes": 10737418082,
+          "disk_read_bytes": 5455880192,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.934239708003588,
+          "tps": 51.00519533279092,
+          "request_s": 4.169407999957912,
+          "peak_bytes": 10737418082,
+          "disk_read_bytes": 3411542016,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 8854543632
+    },
+    {
+      "budget_gib": 10,
+      "case": "10-depth4",
+      "build": "experiment",
+      "weights": "BF16",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 4,
+      "medians": {
+        "ttft_s": 2.8681521250400692,
+        "tps": 54.34937916058561,
+        "request_s": 4.027319000044372
+      },
+      "trials": [
+        {
+          "ttft_s": 2.965986208000686,
+          "tps": 49.80425642710837,
+          "request_s": 4.230938332970254,
+          "peak_bytes": 10737413122,
+          "disk_read_bytes": 1122091008,
+          "draft_n": 59,
+          "accepted": 48,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.8681521250400692,
+          "tps": 54.34937916058561,
+          "request_s": 4.027319000044372,
+          "peak_bytes": 10737413122,
+          "disk_read_bytes": 358711296,
+          "draft_n": 59,
+          "accepted": 48,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.664809415990021,
+          "tps": 54.95564528951478,
+          "request_s": 3.8111884579993784,
+          "peak_bytes": 10737413122,
+          "disk_read_bytes": 1205387264,
+          "draft_n": 59,
+          "accepted": 48,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 8863014088
+    },
+    {
+      "budget_gib": 12,
+      "case": "12-base",
+      "build": "experiment",
+      "weights": "BF16",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 9,
+      "medians": {
+        "ttft_s": 2.9830686249770224,
+        "tps": 53.45190229960493,
+        "request_s": 4.18852320802398
+      },
+      "trials": [
+        {
+          "ttft_s": 3.0185817499877885,
+          "tps": 53.45190229960493,
+          "request_s": 4.197211457998492,
+          "peak_bytes": 12884901138,
+          "disk_read_bytes": 18232254464,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.9830686249770224,
+          "tps": 53.654566137348574,
+          "request_s": 4.157246417016722,
+          "peak_bytes": 12884901138,
+          "disk_read_bytes": 14750728192,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.9626497920253314,
+          "tps": 51.39192936056739,
+          "request_s": 4.18852320802398,
+          "peak_bytes": 12884901138,
+          "disk_read_bytes": 15240863744,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 10992640712
+    },
+    {
+      "budget_gib": 12,
+      "case": "12-9",
+      "build": "experiment",
+      "weights": "compact",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 9,
+      "medians": {
+        "ttft_s": 3.5259649999788962,
+        "tps": 49.23844218278472,
+        "request_s": 4.8276758340070955
+      },
+      "trials": [
+        {
+          "ttft_s": 3.6350599590223283,
+          "tps": 52.8250556792267,
+          "request_s": 4.8276758340070955,
+          "peak_bytes": 12884900562,
+          "disk_read_bytes": 17777270784,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 3.5259649999788962,
+          "tps": 33.72586267095961,
+          "request_s": 5.393967624986544,
+          "peak_bytes": 12884900562,
+          "disk_read_bytes": 13792821248,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 3.367360499978531,
+          "tps": 49.23844218278472,
+          "request_s": 4.646848583011888,
+          "peak_bytes": 12884900562,
+          "disk_read_bytes": 14054801408,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 11024425720
+    },
+    {
+      "budget_gib": 12,
+      "case": "12-10",
+      "build": "experiment",
+      "weights": "compact",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 10,
+      "medians": {
+        "ttft_s": 2.9630968749988824,
+        "tps": 52.691649406692164,
+        "request_s": 4.158732250041794
+      },
+      "trials": [
+        {
+          "ttft_s": 2.9630968749988824,
+          "tps": 52.691649406692164,
+          "request_s": 4.158732250041794,
+          "peak_bytes": 12884900690,
+          "disk_read_bytes": 18302164992,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.883944250002969,
+          "tps": 54.26413648496561,
+          "request_s": 4.044932041957509,
+          "peak_bytes": 12884900690,
+          "disk_read_bytes": 14288338944,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 3.027668042050209,
+          "tps": 51.96477190076382,
+          "request_s": 4.2400278330314904,
+          "peak_bytes": 12884900690,
+          "disk_read_bytes": 15939215360,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 11004322576
+    },
+    {
+      "budget_gib": 12,
+      "case": "12-depth4",
+      "build": "experiment",
+      "weights": "BF16",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 9,
+      "medians": {
+        "ttft_s": 2.9193167919875123,
+        "tps": 55.440441693425235,
+        "request_s": 4.055671374953818
+      },
+      "trials": [
+        {
+          "ttft_s": 3.039687958022114,
+          "tps": 50.71358408109426,
+          "request_s": 4.281958665989805,
+          "peak_bytes": 12884877698,
+          "disk_read_bytes": 18511077376,
+          "draft_n": 59,
+          "accepted": 48,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.898236207955051,
+          "tps": 55.71155035017834,
+          "request_s": 4.0290609580115415,
+          "peak_bytes": 12884877698,
+          "disk_read_bytes": 14916435968,
+          "draft_n": 59,
+          "accepted": 48,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.9193167919875123,
+          "tps": 55.440441693425235,
+          "request_s": 4.055671374953818,
+          "peak_bytes": 12884877698,
+          "disk_read_bytes": 15441977344,
+          "draft_n": 59,
+          "accepted": 48,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 10998473392
+    },
+    {
+      "budget_gib": 8,
+      "case": "8-prodcompact",
+      "build": "working",
+      "weights": "compact",
+      "gqa8_requested": true,
+      "gqa8_profile_eligible": true,
+      "direct_layers": 1,
+      "medians": {
+        "ttft_s": 2.635483959049452,
+        "tps": 45.20859189342732,
+        "request_s": 4.020651500031818
+      },
+      "trials": [
+        {
+          "ttft_s": 2.6122731659561396,
+          "tps": 45.20859189342732,
+          "request_s": 4.005813582974952,
+          "peak_bytes": 8589934514,
+          "disk_read_bytes": 127008768,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.6425865839701146,
+          "tps": 44.97797017449681,
+          "request_s": 4.0432722920086235,
+          "peak_bytes": 8589934514,
+          "disk_read_bytes": 14745600,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        },
+        {
+          "ttft_s": 2.635483959049452,
+          "tps": 45.4818627610348,
+          "request_s": 4.020651500031818,
+          "peak_bytes": 8589934514,
+          "disk_read_bytes": 0,
+          "draft_n": 79,
+          "accepted": 49,
+          "reference_match": {
+            "serial": false,
+            "draft": true
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "ce3fd9f5baab3c97a5552990193da35d032c8c148fd453839af99df73c3ad0fa"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 6719182608
+    },
+    {
+      "budget_gib": 8,
+      "case": "8-prodstock",
+      "build": "working",
+      "weights": "none",
+      "gqa8_requested": false,
+      "gqa8_profile_eligible": false,
+      "direct_layers": 2,
+      "medians": {
+        "ttft_s": 2.6075760000385344,
+        "tps": 33.08510171415285,
+        "request_s": 4.504915583005641
+      },
+      "trials": [
+        {
+          "ttft_s": 2.541652375017293,
+          "tps": 33.08510171415285,
+          "request_s": 4.445832708035596,
+          "peak_bytes": 8589919498,
+          "disk_read_bytes": 0,
+          "draft_n": 0,
+          "accepted": 0,
+          "reference_match": {
+            "serial": true,
+            "draft": false
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54"
+        },
+        {
+          "ttft_s": 2.6075760000385344,
+          "tps": 32.31233202757621,
+          "request_s": 4.557296000013594,
+          "peak_bytes": 8589919498,
+          "disk_read_bytes": 0,
+          "draft_n": 0,
+          "accepted": 0,
+          "reference_match": {
+            "serial": true,
+            "draft": false
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54"
+        },
+        {
+          "ttft_s": 2.6854524580412544,
+          "tps": 34.62559869204997,
+          "request_s": 4.504915583005641,
+          "peak_bytes": 8589919498,
+          "disk_read_bytes": 0,
+          "draft_n": 0,
+          "accepted": 0,
+          "reference_match": {
+            "serial": true,
+            "draft": false
+          },
+          "prefill_expert_bytes": 19503513600,
+          "prefill_workers": 4,
+          "ids_sha256_le_u32": "7aeff8b99ae7d86066c1a5265831e69a5ecc951a01afd50eb724d0ea9d0bcf54"
+        }
+      ],
+      "physical_lifetime_peak_bytes": 7284709352
+    }
+  ]
+}

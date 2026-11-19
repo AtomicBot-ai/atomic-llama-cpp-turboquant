@@ -7,8 +7,8 @@
 #include <stdexcept>
 
 llama_allocation_scope::llama_allocation_scope(std::shared_ptr<llama_memory_budget> budget, llama_memory_category category,
-        std::function<void()> reclaim, llama_discrete_buffer_types discrete) :
-    budget(std::move(budget)), category(category), reclaim(std::move(reclaim)), discrete(discrete),
+        std::function<void()> reclaim, llama_discrete_buffer_types discrete, llama_memory_reclaimer sized_reclaim) :
+    budget(std::move(budget)), category(category), reclaim(std::move(reclaim)), discrete(discrete), sized_reclaim(sized_reclaim),
     previous(ggml_backend_set_alloc_observer(this->budget ?
         ggml_backend_alloc_observer{reserve, commit, release, this} : ggml_backend_alloc_observer{})) {}
 llama_allocation_scope::~llama_allocation_scope() { ggml_backend_set_alloc_observer(previous); }
@@ -36,8 +36,9 @@ void * llama_allocation_scope::reserve(ggml_backend_buffer_type_t buft, size_t s
         if (size > std::numeric_limits<size_t>::max() - granularity) { return nullptr; }
         const size_t charge = (size + granularity - 1) / granularity * granularity;
         auto ticket = scope.budget->reserve(domain, scope.category, charge);
-        if (!ticket && scope.reclaim) {
-            scope.reclaim();
+        if (!ticket && (scope.sized_reclaim.reclaim || scope.reclaim)) {
+            if (scope.sized_reclaim.reclaim) { scope.sized_reclaim.reclaim(scope.sized_reclaim.user, domain, charge); }
+            else { scope.reclaim(); }
             ticket = scope.budget->reserve(domain, scope.category, charge);
         }
         if (!ticket) {

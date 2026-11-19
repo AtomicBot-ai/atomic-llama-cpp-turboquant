@@ -1,4 +1,6 @@
 #include "testing.h"
+#include "test-expert-publication.h"
+#include "test-expert-prefetch.h"
 #include "../src/llama-expert-executor.h"
 #include "../src/llama-memory-contract.h"
 #include "../src/llama-expert-route-index.h"
@@ -7,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -98,6 +101,340 @@ int main(int argc, char ** argv) {
     ggml_backend_ptr cpu(ggml_backend_init_by_name("CPU", nullptr));
     if (!device || !cpu) { return 1; }
     const size_t cap = 384 * 1024;
+
+#if defined(__APPLE__)
+    if (std::string(backend_name) == "MTL0") {
+        test_expert_publication(t, device);
+        test_expert_publication_service(t);
+        test_expert_publication_pipeline(t, device);
+        t.test("portable prefetch priority four candidates failure cleanup", [&](testing & t) { test_portable_prefetch(t,4); });
+        t.test("portable prefetch priority eight candidates failure cleanup", [&](testing & t) { test_portable_prefetch(t,8); });
+        auto combined_test = [&](testing & t, bool pipeline, bool compact = false, bool recycle = false, const char * architecture = nullptr, bool quantized = false) {
+            struct env_guard {
+                std::string old;
+                bool present;
+                env_guard(bool automatic) : present(std::getenv("LLAMA_EXPERIMENTAL_METAL_MOE") != nullptr) {
+                    if (present) { old = std::getenv("LLAMA_EXPERIMENTAL_METAL_MOE"); }
+                    if (automatic) { unsetenv("LLAMA_EXPERIMENTAL_METAL_MOE"); }
+                    else { setenv("LLAMA_EXPERIMENTAL_METAL_MOE", "1", 1); }
+                }
+                ~env_guard() {
+                    if (present) { setenv("LLAMA_EXPERIMENTAL_METAL_MOE", old.c_str(), 1); }
+                    else { unsetenv("LLAMA_EXPERIMENTAL_METAL_MOE"); }
+                }
+            } env(architecture != nullptr);
+            struct pipeline_env_guard {
+                std::string old;
+                bool present;
+                pipeline_env_guard(bool enabled) : present(std::getenv("LLAMA_EXPERIMENTAL_METAL_MOE_PIPELINE") != nullptr) {
+                    if (present) { old = std::getenv("LLAMA_EXPERIMENTAL_METAL_MOE_PIPELINE"); }
+                    if (enabled) { setenv("LLAMA_EXPERIMENTAL_METAL_MOE_PIPELINE", "1", 1); }
+                    else { unsetenv("LLAMA_EXPERIMENTAL_METAL_MOE_PIPELINE"); }
+                }
+                ~pipeline_env_guard() {
+                    if (present) { setenv("LLAMA_EXPERIMENTAL_METAL_MOE_PIPELINE", old.c_str(), 1); }
+                    else { unsetenv("LLAMA_EXPERIMENTAL_METAL_MOE_PIPELINE"); }
+                }
+            } pipeline_env(pipeline);
+            struct compact_env_guard {
+                std::string old;
+                bool present;
+                compact_env_guard(bool enabled) : present(std::getenv("LLAMA_EXPERIMENTAL_EXPERT_COMPACT") != nullptr) {
+                    if (present) { old = std::getenv("LLAMA_EXPERIMENTAL_EXPERT_COMPACT"); }
+                    if (enabled) { setenv("LLAMA_EXPERIMENTAL_EXPERT_COMPACT", "1", 1); }
+                    else { unsetenv("LLAMA_EXPERIMENTAL_EXPERT_COMPACT"); }
+                }
+                ~compact_env_guard() {
+                    if (present) { setenv("LLAMA_EXPERIMENTAL_EXPERT_COMPACT", old.c_str(), 1); }
+                    else { unsetenv("LLAMA_EXPERIMENTAL_EXPERT_COMPACT"); }
+                }
+            } compact_env(compact);
+            struct recycle_env_guard {
+                std::string old;
+                bool present;
+                recycle_env_guard(bool enabled) : present(std::getenv("LLAMA_EXPERIMENTAL_EXPERT_RECYCLE") != nullptr) {
+                    if (present) { old = std::getenv("LLAMA_EXPERIMENTAL_EXPERT_RECYCLE"); }
+                    if (enabled) { setenv("LLAMA_EXPERIMENTAL_EXPERT_RECYCLE", "1", 1); }
+                    else { unsetenv("LLAMA_EXPERIMENTAL_EXPERT_RECYCLE"); }
+                }
+                ~recycle_env_guard() {
+                    if (present) { setenv("LLAMA_EXPERIMENTAL_EXPERT_RECYCLE", old.c_str(), 1); }
+                    else { unsetenv("LLAMA_EXPERIMENTAL_EXPERT_RECYCLE"); }
+                }
+            } recycle_env(recycle);
+            // 192x192 FP32 slices occupy 192 KiB instead of a 256 KiB slot.
+            const int width = quantized ? 256 : compact ? 192 : 64;
+            const auto path = fs::temp_directory_path() / ("test-combined-moe-" +
+                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".gguf");
+            struct cleanup { fs::path path; ~cleanup() { std::error_code ec; fs::remove(path, ec); } } cleanup_file{path};
+            ggml_context_ptr weights(ggml_init({8 * 1024 * 1024, nullptr, false}));
+            std::array<ggml_tensor *, 3> w;
+            const char * names[] = {"blk.0.ffn_up_exps.weight", "blk.0.ffn_gate_exps.weight", "blk.0.ffn_down_exps.weight"};
+            gguf_context_ptr meta(gguf_init_empty());
+            gguf_set_val_str(meta.get(), "general.architecture", architecture ? architecture : "qwen4exp");
+            for (size_t k = 0; k < w.size(); ++k) {
+                const ggml_type types[] = {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K};
+                w[k] = ggml_new_tensor_3d(weights.get(), quantized ? types[k] : GGML_TYPE_F32, width, width, 4);
+                ggml_set_name(w[k], names[k]);
+                std::vector<float> data(width * width * 4);
+                for (int i = 0; i < width * width * 4; ++i) { data[i] = float((i * 7 + k * 11) % 31) / 256.0f - 0.06f; }
+                if (quantized) { ggml_quantize_chunk(w[k]->type, data.data(), w[k]->data, 0, width*4, width, nullptr); }
+                else { std::memcpy(w[k]->data,data.data(),ggml_nbytes(w[k])); }
+                gguf_add_tensor(meta.get(), w[k]);
+            }
+            t.assert_true("fixture written", gguf_write_to_file(meta.get(), path.string().c_str(), false));
+            auto source = std::make_shared<llama_expert_source>(std::vector<std::string>{path.string()});
+            constexpr size_t budget = 64 * 1024 * 1024;
+            llama_expert_executor exec(source, {w[0], w[1], w[2]}, device, budget);
+            if (architecture) {
+                t.assert_true("automatic workspace deferred", !exec.combined_moe_enabled());
+                const auto floor = exec.stats().minimum_bytes;
+                exec.configure_acceleration();
+                t.assert_equal("optional acceleration does not increase floor", exec.stats().minimum_bytes, floor);
+                if (std::strcmp(architecture,"qwen4exp")==0) {
+                    const size_t payload = width*width*sizeof(float);
+                    const size_t allocation = ((payload+65535)/65536)*65536 + ggml_tensor_overhead();
+                    const size_t eight = llama_expert_lookahead::working_bytes(payload,true,8,true);
+                    const size_t four = llama_expert_lookahead::working_bytes(payload,true,4,true);
+                    const size_t no_prediction = floor + exec.stats().acceleration_bytes - eight + 2*allocation + 128*1024;
+                    t.assert_equal("auto starts with eight candidates",exec.stats().prefetch_candidates,size_t(8));
+                    t.assert_true("auto admits four-candidate budget",exec.resize(no_prediction+four+8192));
+                    t.assert_equal("auto shrinks to four candidates",exec.stats().prefetch_candidates,size_t(4));
+                    t.assert_true("auto admits demand-only budget",exec.resize(no_prediction));
+                    t.assert_equal("auto drops only prediction",exec.stats().prefetch_candidates,size_t(0));
+                    t.assert_true("demand-only retains combined capability",exec.combined_moe_enabled());
+                    t.assert_true("auto restores large budget",exec.resize(budget));
+                    t.assert_equal("auto restores eight candidates",exec.stats().prefetch_candidates,size_t(8));
+                }
+            }
+            t.assert_true("explicit capability enabled", exec.combined_moe_enabled());
+            const bool automatic_window = architecture && std::strcmp(architecture, "qwen4exp") == 0;
+            t.assert_equal("window qualifies automatic streaming families", exec.can_layer_window(), architecture != nullptr);
+            t.assert_true("incompatible preview rejected", !exec.set_early_read(true));
+            {
+                ggml_context_ptr shapes(ggml_init({16384, nullptr, true}));
+                auto * x = ggml_new_tensor_3d(shapes.get(), GGML_TYPE_F32, width, 1, 9);
+                auto * ids = ggml_new_tensor_2d(shapes.get(), GGML_TYPE_I32, 2, 9);
+                t.assert_true("long rows use ordinary path", exec.build_moe(shapes.get(), w[0], w[1], w[2], x, ids) == nullptr);
+            }
+            ggml_backend_ptr metal(ggml_backend_dev_init(device, nullptr));
+            for (int tokens : {1, 6, 8}) {
+                ggml_context_ptr graph_ctx(ggml_init({128 * 1024, nullptr, true}));
+                auto * x = ggml_new_tensor_3d(graph_ctx.get(), GGML_TYPE_F32, width, 1, tokens);
+                auto * ids = ggml_new_tensor_2d(graph_ctx.get(), GGML_TYPE_I32, 2, tokens);
+                auto * out = exec.build_moe(graph_ctx.get(), w[0], w[1], w[2], x, ids);
+                t.assert_true("qualified shape combined", out != nullptr);
+                if (!out) { return; }
+                auto * graph = ggml_new_graph_custom(graph_ctx.get(), 32, false);
+                ggml_build_forward_expand(graph, out);
+                ggml_backend_buffer_ptr buf(ggml_backend_alloc_ctx_tensors(graph_ctx.get(), cpu.get()));
+                std::vector<float> input(width * tokens);
+                std::vector<int32_t> selected(2 * tokens);
+                for (size_t i = 0; i < input.size(); ++i) { input[i] = float(int(i % 23) - 11) / 16.0f; }
+                for (size_t i = 0; i < selected.size(); ++i) { selected[i] = (i + i / 2) % 4; }
+                ggml_backend_tensor_set(x, input.data(), 0, input.size() * sizeof(float));
+                ggml_backend_tensor_set(ids, selected.data(), 0, selected.size() * sizeof(int32_t));
+
+                ggml_context_ptr reference(ggml_init({128 * 1024, nullptr, true}));
+                auto * rx = ggml_dup_tensor(reference.get(), x);
+                auto * ri = ggml_dup_tensor(reference.get(), ids);
+                std::array<ggml_tensor *, 3> rw;
+                for (size_t k = 0; k < rw.size(); ++k) { rw[k] = ggml_dup_tensor(reference.get(), w[k]); }
+                auto * ru = ggml_mul_mat_id(reference.get(), rw[0], rx, ri);
+                auto * rg = ggml_mul_mat_id(reference.get(), rw[1], rx, ri);
+                auto * ra = ggml_swiglu_split(reference.get(), rg, ru);
+                auto * ry = ggml_mul_mat_id(reference.get(), rw[2], ra, ri);
+                auto * ref_graph = ggml_new_graph_custom(reference.get(), 32, false);
+                ggml_build_forward_expand(ref_graph, ry);
+                ggml_backend_buffer_ptr rb(ggml_backend_alloc_ctx_tensors(reference.get(), metal.get()));
+                for (size_t k = 0; k < rw.size(); ++k) { ggml_backend_tensor_set(rw[k], w[k]->data, 0, ggml_nbytes(w[k])); }
+                ggml_backend_tensor_set(rx, input.data(), 0, input.size() * sizeof(float));
+                ggml_backend_tensor_set(ri, selected.data(), 0, selected.size() * sizeof(int32_t));
+                t.assert_equal("reference executes", ggml_backend_graph_compute(metal.get(), ref_graph), GGML_STATUS_SUCCESS);
+                std::vector<float> expected(width * 2 * tokens), actual(expected.size());
+                ggml_backend_tensor_get(ry, expected.data(), 0, expected.size() * sizeof(float));
+                auto prime_one = [&]() {
+                    const std::vector<int32_t> one(selected.size(), 0);
+                    ggml_backend_tensor_set(ids, one.data(), 0, one.size() * sizeof(int32_t));
+                    t.assert_equal("resident seed executes", ggml_backend_graph_compute(cpu.get(), graph), GGML_STATUS_SUCCESS);
+                    t.assert_true("resident seed healthy", exec.error() == nullptr);
+                    ggml_backend_tensor_set(ids, selected.data(), 0, selected.size() * sizeof(int32_t));
+                };
+                if (pipeline && tokens == 1) { prime_one(); }
+                for (int repeat = 0; repeat < 2; ++repeat) {
+                    t.assert_equal("combined executes", ggml_backend_graph_compute(cpu.get(), graph), GGML_STATUS_SUCCESS);
+                    t.assert_true("executor healthy", exec.error() == nullptr);
+                    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+                    t.assert_true("FP32 Metal reference exact", std::memcmp(expected.data(), actual.data(), actual.size() * sizeof(float)) == 0);
+                    t.assert_equal("all leases released", exec.stats().store.pinned_entries, size_t(0));
+                    t.assert_true("within shared budget", exec.stats().memory.high_water <= budget);
+                    if (compact) {
+                        const auto cache = exec.stats().store;
+                        t.assert_true("every cached slice uses its compact size class", cache.entries > 0 &&
+                            cache.resident_bytes == cache.entries * (192 * 1024 + ggml_tensor_overhead()));
+                    }
+                }
+                if (automatic_window && tokens == 1) {
+                    const auto optional = exec.stats().acceleration_bytes;
+                    const auto completed = exec.stats().combined_moe;
+                    t.assert_true("automatic window admitted", exec.set_layer_window(budget));
+                    t.assert_true("combined capability paused", !exec.combined_moe_enabled());
+                    t.assert_true("prediction capabilities paused", !exec.moe_lookahead_enabled() && !exec.moe_graph_lookahead_enabled());
+                    t.assert_true("window rejects combined graph", exec.build_moe(graph_ctx.get(), w[0], w[1], w[2], x, ids) == nullptr);
+                    t.assert_equal("decode workspace retained", exec.stats().acceleration_bytes, optional);
+                    {
+                        ggml_context_ptr window_ctx(ggml_init({128 * 1024, nullptr, true}));
+                        auto * wx = ggml_dup_tensor(window_ctx.get(), x);
+                        auto * wi = ggml_dup_tensor(window_ctx.get(), ids);
+                        auto * wu = exec.build(window_ctx.get(), w[0], wx, wi);
+                        auto * wg = ggml_new_graph_custom(window_ctx.get(), 32, false);
+                        ggml_build_forward_expand(wg, wu);
+                        ggml_backend_buffer_ptr wb(ggml_backend_alloc_ctx_tensors(window_ctx.get(), cpu.get()));
+                        ggml_backend_tensor_set(wx, input.data(), 0, input.size() * sizeof(float));
+                        ggml_backend_tensor_set(wi, selected.data(), 0, selected.size() * sizeof(int32_t));
+                        t.assert_equal("window projection executes", ggml_backend_graph_compute(cpu.get(), wg), GGML_STATUS_SUCCESS);
+                        t.assert_true("window projection healthy", exec.error() == nullptr);
+                        std::vector<float> window_actual(expected.size()), window_expected(expected.size());
+                        ggml_backend_tensor_get(wu, window_actual.data(), 0, window_actual.size() * sizeof(float));
+                        ggml_backend_tensor_get(ru, window_expected.data(), 0, window_expected.size() * sizeof(float));
+                        t.assert_true("window projection FP32 exact", std::memcmp(window_actual.data(), window_expected.data(), window_actual.size() * sizeof(float)) == 0);
+                    }
+                    t.assert_equal("window does no combined work", exec.stats().combined_moe, completed);
+                    t.assert_equal("window releases leases", exec.stats().store.pinned_entries, size_t(0));
+                    t.assert_true("automatic window ends", exec.set_layer_window(0));
+                    t.assert_true("decode capabilities restored", exec.combined_moe_enabled() && exec.moe_lookahead_enabled() && exec.moe_graph_lookahead_enabled());
+                    t.assert_equal("cached combined graph survives window", ggml_backend_graph_compute(cpu.get(), graph), GGML_STATUS_SUCCESS);
+                    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+                    t.assert_true("resumed decode FP32 exact", std::memcmp(expected.data(), actual.data(), actual.size() * sizeof(float)) == 0);
+                    t.assert_equal("decode workspace not reallocated", exec.stats().acceleration_bytes, optional);
+                }
+                if (automatic_window && tokens == 6) {
+                    const std::array<const ggml_tensor *, 3> layer_weights{w[0], w[1], w[2]};
+                    t.assert_true("registered window geometry", exec.can_batch_window_layer(layer_weights));
+                    t.assert_true("window vector profile starts", exec.set_layer_window(budget, true));
+                    llama_expert_executor::window_leases pins;
+                    pins.reserve(12);
+                    const int64_t needed[] = {0, 1, 2, 3};
+                    exec.pin_window_experts(layer_weights, needed, 4, pins, true);
+                    t.assert_equal("layer union pins all projections", exec.stats().store.pinned_entries, size_t(12));
+                    ggml_context_ptr window_ctx(ggml_init({128 * 1024, nullptr, true}));
+                    auto * wx = ggml_dup_tensor(window_ctx.get(), x);
+                    auto * wi = ggml_dup_tensor(window_ctx.get(), ids);
+                    auto * wu = exec.build(window_ctx.get(), w[0], wx, wi);
+                    auto * wg = ggml_new_graph_custom(window_ctx.get(), 32, false);
+                    ggml_build_forward_expand(wg, wu);
+                    ggml_backend_buffer_ptr wb(ggml_backend_alloc_ctx_tensors(window_ctx.get(), cpu.get()));
+                    ggml_backend_tensor_set(wx, input.data(), 0, input.size() * sizeof(float));
+                    ggml_backend_tensor_set(wi, selected.data(), 0, selected.size() * sizeof(int32_t));
+                    llama_expert_profile_data profile;
+                    exec.set_profile(true);
+                    t.assert_equal("window vector executes", ggml_backend_graph_compute(cpu.get(), wg), GGML_STATUS_SUCCESS);
+                    t.assert_true("window vector healthy", exec.error() == nullptr);
+                    t.assert_true("address batch actually executed", exec.get_profile(profile) && profile.moe_batch_groups > 0);
+                    std::vector<float> window_actual(expected.size()), window_expected(expected.size());
+                    ggml_backend_tensor_get(wu, window_actual.data(), 0, window_actual.size() * sizeof(float));
+                    ggml_backend_tensor_get(ru, window_expected.data(), 0, window_expected.size() * sizeof(float));
+                    t.assert_true("window vector is FP32 exact", std::memcmp(window_actual.data(), window_expected.data(),
+                            window_actual.size() * sizeof(float)) == 0);
+                    pins.clear();
+                    t.assert_equal("window releases all layer pins", exec.stats().store.pinned_entries, size_t(0));
+                    exec.trim();
+                    t.assert_true("window can reuse idle demand readers", exec.can_pipeline_window());
+                    auto pending = exec.enqueue_window_experts(layer_weights, needed, 4);
+                    exec.drain_window_experts(pending, pins);
+                    t.assert_true("exact demand completed and released its batch", !pending && pins.size() == 12);
+                    t.assert_equal("queued window keeps all projections pinned", exec.stats().store.pinned_entries, size_t(12));
+                    pins.clear();
+                    exec.set_profile(false);
+                    t.assert_true("window vector profile ends", exec.set_layer_window(0));
+                }
+                if (architecture && tokens == 6) {
+                    t.assert_true("auto shrink to ordinary floor", exec.resize(exec.stats().minimum_bytes));
+                    t.assert_true("auto workspace released at floor", !exec.combined_moe_enabled());
+                    t.assert_true("auto floor respected", exec.stats().memory.used() <= exec.stats().memory.applied);
+                    t.assert_true("auto impossible shrink rejected", !exec.resize(exec.stats().minimum_bytes-1));
+                    t.assert_true("auto grow", exec.resize(budget));
+                    t.assert_true("auto capability restored", exec.combined_moe_enabled());
+                    // Old graph descriptors are intentionally invalid after auto resize.
+                } else if (pipeline && tokens == 6) {
+                    const auto before = exec.stats().moe_pipeline_groups;
+                    t.assert_true("minimum budget resize", exec.resize(exec.stats().minimum_bytes));
+                    t.assert_equal("sequential fallback executes", ggml_backend_graph_compute(cpu.get(), graph), GGML_STATUS_SUCCESS);
+                    t.assert_true("sequential fallback healthy", exec.error() == nullptr);
+                    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+                    t.assert_true("tight FP32 exact", std::memcmp(expected.data(), actual.data(), actual.size() * sizeof(float)) == 0);
+                    t.assert_equal("tight budget does not overlap", exec.stats().moe_pipeline_groups, before);
+                    t.assert_true("tight budget respected", exec.stats().memory.used() <= exec.stats().memory.applied);
+                    t.assert_equal("tight leases released", exec.stats().store.pinned_entries, size_t(0));
+                    t.assert_true("budget restored", exec.resize(budget));
+                }
+                if (tokens == 8) {
+                    exec.trim();
+                    const size_t empty = exec.stats().memory.used();
+                    if (pipeline) { prime_one(); }
+                    const auto before_failure = exec.stats().moe_pipeline_groups;
+                    fs::resize_file(path, 0);
+                    ggml_backend_graph_compute(cpu.get(), graph);
+                    t.assert_true("source failure latched", exec.error() != nullptr);
+                    if (pipeline) {
+                        t.assert_true("read failed after GPU submission", exec.stats().moe_pipeline_groups > before_failure);
+                    }
+                    t.assert_equal("failed leases released", exec.stats().store.pinned_entries, size_t(0));
+                    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+                    t.assert_true("failed output cleared", std::all_of(actual.begin(), actual.end(), [](float x) { return x == 0; }));
+                    exec.trim();
+                    t.assert_equal("failed buffers uncharged", exec.stats().memory.used(), empty);
+                }
+            }
+            t.assert_equal("successful MoE calls", exec.stats().combined_moe, uint64_t(pipeline ? (architecture ? 8 : 9) : 6) + uint64_t(automatic_window));
+            if (pipeline) {
+                t.assert_true("resident groups executed", exec.stats().moe_resident_starts > 0);
+                t.assert_true("read pipeline executed", exec.stats().moe_pipeline_groups > 0);
+            } else {
+                t.assert_equal("disabled pipeline did no work", exec.stats().moe_pipeline_groups, uint64_t(0));
+            }
+        };
+        t.test("combined FP32 MoE matches Metal and releases failed leases", [&](testing & t) { combined_test(t, false); });
+        t.test("pipelined FP32 MoE resident cold tight and failed reads", [&](testing & t) { combined_test(t, true); });
+        t.test("compact pipelined FP32 MoE cold hot tight and failed reads", [&](testing & t) { combined_test(t, true, true); });
+        t.test("recycled compact FP32 MoE cold hot tight and failed reads", [&](testing & t) { combined_test(t, true, true, true); });
+        t.test("portable Qwen mixed quantization queue resize failure", [&](testing & t) {
+            combined_test(t,true,false,false,"qwen35moe",true);
+        });
+        t.test("portable LFM mixed quantization queue resize failure", [&](testing & t) {
+            combined_test(t,true,false,false,"lfm2moe",true);
+        });
+        t.test("portable Flash FP32 queue resize failure", [&](testing & t) {
+            combined_test(t,true,false,false,"qwen4exp");
+        });
+        t.test("portable explicit auto overrides legacy flag", [&](testing & t) {
+            struct env_restore {
+                const char * name; bool present; std::string old;
+                env_restore(const char * n,const char * value):name(n),present(std::getenv(n)!=nullptr),old(present?std::getenv(n):""){setenv(n,value,1);}
+                ~env_restore(){if(present)setenv(name,old.c_str(),1);else unsetenv(name);}
+            } mode("LLAMA_MOE_STREAMING","auto"),legacy("LLAMA_EXPERIMENTAL_METAL_MOE","1");
+            fixture f(4,GGML_TYPE_F32,"qwen4exp");
+            llama_expert_executor exec(f.source,{f.weight},device,64*1024*1024);
+            t.assert_true("explicit auto selected",exec.automatic_acceleration());
+            t.assert_true("legacy eager allocation suppressed",!exec.combined_moe_enabled());
+        });
+        t.test("portable off retains ordinary execution", [&](testing & t) {
+            const char * value=std::getenv("LLAMA_MOE_STREAMING");
+            const std::string previous=value?value:"";const bool present=value;
+            setenv("LLAMA_MOE_STREAMING","off",1);
+            struct restore {bool present;std::string value;~restore(){if(present)setenv("LLAMA_MOE_STREAMING",value.c_str(),1);else unsetenv("LLAMA_MOE_STREAMING");}} restore{present,previous};
+            fixture f(4,GGML_TYPE_F32,"qwen35moe");
+            llama_expert_executor exec(f.source,{f.weight},device,64*1024*1024);
+            const auto before=exec.stats().memory.used();exec.configure_acceleration();
+            t.assert_true("off has no combined capability",!exec.combined_moe_enabled());
+            t.assert_equal("off has no optional allocation",exec.stats().memory.used(),before);
+            request req(exec,f,cpu.get(),false,1);
+            t.assert_equal("ordinary off graph executes",ggml_backend_graph_compute(cpu.get(),req.graph),GGML_STATUS_SUCCESS);
+            t.assert_true("ordinary off graph healthy",!exec.error());
+            t.assert_equal("off does no combined work",exec.stats().combined_moe,uint64_t(0));
+        });
+    }
+#endif
 
     auto routed = [&](testing & t, int tokens, bool concentrated = false, bool grouped = false) {
         for (bool per_slot : {false, true}) {

@@ -1286,9 +1286,11 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     if (params.engine_memory_auto && !params.engine_budget) {
         throw std::invalid_argument("--engine-memory-auto requires --engine-budget-mib");
     }
-    if (params.engine_budget && (params.fit_params || params.speculative.has_dft() ||
+    const bool budget_dflash2 = common_atomic_dflash2_enabled(params);
+    const bool has_speculative = params.speculative.has_dft() ||
         std::any_of(params.speculative.types.begin(), params.speculative.types.end(),
-            [](common_speculative_type type) { return type != COMMON_SPECULATIVE_TYPE_NONE; }) || !params.mmproj.path.empty())) {
+            [](common_speculative_type type) { return type != COMMON_SPECULATIVE_TYPE_NONE; });
+    if (params.engine_budget && (params.fit_params || (has_speculative && !budget_dflash2) || !params.mmproj.path.empty())) {
         throw std::invalid_argument("engine budget requires -fit off, no speculative decoding and no multimodal projector");
     }
     if (params.engine_ram_budget || params.engine_vram_budget) { common_atomic_discrete_validate(params); }
@@ -1301,6 +1303,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     pimpl->model.reset(model);
+    if (params.engine_qwen35_layers && !llama_atomic_qwen35_profile_set(model, params.engine_qwen35_layers) && budget_dflash2) {
+        throw std::invalid_argument("Qwen DFlash2 profile requires a fully offloaded Metal target");
+    }
+    if (budget_dflash2 && !llama_atomic_dflash2_enable(model)) {
+        throw std::invalid_argument("budgeted DFlash2 requires a qualified streamed Metal target and memory profile");
+    }
 
     if (model_only) {
         return;
@@ -1419,9 +1427,19 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     if (params.engine_prefill_window && !llama_prefill_window_set(lctx, true)) {
-        COM_ERR("%s", "prefill window requires a managed Qwen4Exp/Metal context\n");
+        COM_ERR("%s", "prefill window requires a supported managed Metal MoE context\n");
         pimpl->context.reset();
         return;
+    }
+    if (params.engine_budget) {
+        if (params.engine_prefill_window_disabled) {
+            llama_prefill_window_set(lctx, false);
+        } else if (!params.engine_memory_auto && !params.engine_prefill_window) {
+            llama_prefill_window_data window;
+            if (llama_prefill_window_get(lctx, &window) && window.enabled) {
+                COM_INF("%s", "wide Metal prefill: automatic admission for eligible prompts\n");
+            }
+        }
     }
 
     set_process_priority(params.cpuparams.priority);

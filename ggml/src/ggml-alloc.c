@@ -394,14 +394,17 @@ static size_t ggml_dyn_tallocr_max_size(struct ggml_dyn_tallocr * alloc, int chu
 
 struct vbuffer {
     ggml_backend_buffer_t chunks[GGML_VBUFFER_MAX_CHUNKS];
+    bool borrowed;
 };
 
 static void ggml_vbuffer_free(struct vbuffer * buf) {
     if (buf == NULL) {
         return;
     }
-    for (int i = 0; i < GGML_VBUFFER_MAX_CHUNKS; ++i) {
-        ggml_backend_buffer_free(buf->chunks[i]);
+    if (!buf->borrowed) {
+        for (int i = 0; i < GGML_VBUFFER_MAX_CHUNKS; ++i) {
+            ggml_backend_buffer_free(buf->chunks[i]);
+        }
     }
     free(buf);
 }
@@ -481,6 +484,7 @@ struct ggml_gallocr {
     struct vbuffer ** buffers; // [n_buffers]
     struct ggml_dyn_tallocr ** buf_tallocs; // [n_buffers]
     int n_buffers;
+    int window_shared_id; // zero for ordinary allocators; otherwise the extra allocator slot
 
     struct ggml_hash_set hash_set;
     struct hash_node * hash_values; // [hash_set.size]
@@ -530,6 +534,67 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
 
 ggml_gallocr_t ggml_gallocr_new(ggml_backend_buffer_type_t buft) {
     return ggml_gallocr_new_n(&buft, 1);
+}
+
+ggml_gallocr_t ggml_gallocr_window_new(ggml_backend_buffer_type_t * bufts, int n_bufts,
+        ggml_backend_buffer_t scratch) {
+    // The final type is identical to an earlier one but needs its own offsets.
+    const int shared = n_bufts - 1;
+    ggml_gallocr_t alloc = ggml_gallocr_new_n(bufts, n_bufts);
+    struct vbuffer * buffer = calloc(1, sizeof(*buffer));
+    if (!buffer) {
+        ggml_gallocr_free(alloc);
+        return NULL;
+    }
+    alloc->buf_tallocs[shared] = ggml_dyn_tallocr_new(ggml_backend_buft_get_alignment(bufts[shared]),
+            ggml_backend_buft_get_max_size(bufts[shared]));
+    buffer->chunks[0] = scratch;
+    buffer->borrowed = true;
+    alloc->buffers[shared] = buffer;
+    alloc->window_shared_id = shared;
+    return alloc;
+}
+
+// Reserve the same backing capacity for another window worker. The actual
+// graph still plans tensor offsets and lifetimes independently in each worker.
+bool ggml_gallocr_window_reserve_like(ggml_gallocr_t target, ggml_gallocr_t origin) {
+    const int shared = target->window_shared_id;
+    if (!shared || shared != origin->window_shared_id || target->n_buffers != origin->n_buffers ||
+            target->n_nodes || target->n_leafs) { return false; }
+    for (int i = 0; i < target->n_buffers; ++i) {
+        if (target->bufts[i] != origin->bufts[i] || !origin->buffers[i] ||
+                (i != shared && target->buffers[i])) { return false; }
+    }
+    if (!target->buffers[shared] || target->buffers[shared]->chunks[0] != origin->buffers[shared]->chunks[0]) {
+        return false;
+    }
+
+    for (int i = 0; i < target->n_buffers; ++i) {
+        if (i == shared) { continue; }
+        for (int j = 0; j < i; ++j) {
+            if (target->buf_tallocs[j] == target->buf_tallocs[i]) {
+                target->buffers[i] = target->buffers[j];
+                break;
+            }
+        }
+        if (target->buffers[i]) { continue; }
+        target->buffers[i] = ggml_vbuffer_alloc(target->bufts[i], origin->buf_tallocs[i],
+                GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+        if (!target->buffers[i]) {
+            // Walk backward so the owner of an aliased buffer is freed last.
+            for (int j = i - 1; j >= 0; --j) {
+                if (j == shared) { continue; }
+                bool owns = true;
+                for (int k = 0; k < j; ++k) {
+                    if (target->buf_tallocs[k] == target->buf_tallocs[j]) { owns = false; break; }
+                }
+                if (owns) { ggml_vbuffer_free(target->buffers[j]); }
+                target->buffers[j] = NULL;
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 void ggml_gallocr_free(ggml_gallocr_t galloc) {
@@ -651,6 +716,13 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
                 }
 
                 struct hash_node * p_hn = ggml_gallocr_hash_get(galloc, parent);
+                if (galloc->window_shared_id) {
+                    const int source_id = ggml_impl_is_view(parent) ?
+                        ggml_gallocr_hash_get(galloc, parent->view_src)->buffer_id : p_hn->buffer_id;
+                    if ((source_id == galloc->window_shared_id) != (buffer_id == galloc->window_shared_id)) {
+                        continue;
+                    }
+                }
                 if (p_hn->n_children == 1 && p_hn->n_views == 0) {
                     if (ggml_impl_is_view(parent)) {
                         struct ggml_tensor * view_src = parent->view_src;
@@ -920,6 +992,7 @@ static bool ggml_gallocr_reserve_n_impl(
             }
         }
         if (realloc) {
+            if (i == galloc->window_shared_id && i != 0) { return false; }
 #ifndef NDEBUG
             {
                 size_t cur_size = galloc->buffers[i] ? ggml_vbuffer_size(galloc->buffers[i]) : 0;

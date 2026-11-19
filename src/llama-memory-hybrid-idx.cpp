@@ -737,6 +737,20 @@ const llama_memory_hybrid_idx_context::kpool_state & llama_memory_hybrid_idx_con
     return *kpool_st;
 }
 
+uint32_t llama_memory_hybrid_idx_context::get_n_kpool_before(llama_seq_id seq, llama_pos last) const {
+    // During worst-case graph reservation both halves use the full budget.
+    if (sinfos_kpool.empty()) {
+        return get_n_kpool();
+    }
+    const auto & layout = mem->kpool_layout_get();
+    const auto & lane = layout.seqs.at(seq);
+    const size_t pool_tail = mem->get_kpool() - 1;
+    const auto end = std::upper_bound(lane.pools.begin(), lane.pools.end(), last,
+            [&](llama_pos pos, uint32_t start) { return pos < lane.cells[start + pool_tail].first; });
+    const auto pools = layout.n_pool_real - lane.pools.size() + (end - lane.pools.begin());
+    return kpool_pad(uint32_t(pools));
+}
+
 uint32_t llama_memory_hybrid_idx_context::get_n_kpool() const {
     return kpool_pad(kpool_cur().n_pool_real);
 }

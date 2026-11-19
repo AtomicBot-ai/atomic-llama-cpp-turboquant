@@ -2767,8 +2767,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--engine-prefill-window"},
-        "experimental Qwen4Exp/Metal prefill windows; fixed 8 GiB, ctx 4096, ubatch 8, one text slot; unsupported requests fall back",
-        [](common_params & params) { params.engine_prefill_window = true; }
+        "also allow legacy budgeted Metal prefill windows; eligible wide prefill is automatic",
+        [](common_params & params) {
+            params.engine_prefill_window = true;
+            params.engine_prefill_window_disabled = false;
+        }
+    ));
+    add_opt(common_arg(
+        {"--no-engine-prefill-window"},
+        "disable budgeted Metal prefill windows, including automatic wide prefill",
+        [](common_params & params) {
+            params.engine_prefill_window = false;
+            params.engine_prefill_window_disabled = true;
+        }
     ));
     add_opt(common_arg(
         {"--engine-memory-auto"},
@@ -4242,6 +4253,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 throw std::invalid_argument("invalid value");
             }
             params.speculative.draft.n_max = value;
+            params.speculative.draft.n_max_explicit = true;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MAX"));
     add_opt(common_arg(

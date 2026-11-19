@@ -1277,6 +1277,13 @@ struct ggml_backend_sched {
 
     ggml_backend_sched_eval_callback callback_eval;
     void * callback_eval_user_data;
+    ggml_backend_sched_eval_callback window_before;
+    void * window_before_data;
+    const char * window_fence_prefix;
+    bool window_shared_scratch;
+    bool window_batch_plan;
+    void * (*window_metal_host_base)(ggml_backend_buffer_t);
+    ggml_backend_buffer_t window_scratch_buffer;
 
     ggml_backend_sched_copy_callback callback_copy;
     void * callback_copy_user_data;
@@ -1845,6 +1852,9 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 if (src_backend_id != cur_backend_id && !ggml_backend_sched_buffer_supported(sched, src, cur_backend_id)) {
                     // create a copy of the input in the split's backend
                     if (tensor_id_copy(src_id, cur_backend_id, 0) == NULL) {
+                        if (sched->window_node_capacity) {
+                            window_check_graph_capacity(sched, 0, sched->n_copies);
+                        }
                         ggml_backend_t backend = sched->backends[cur_backend_id];
                         for (int c = 0; c < sched->n_copies; c++) {
                             struct ggml_tensor * tensor_copy = ggml_dup_tensor_layout(sched->ctx, src);
@@ -1950,7 +1960,29 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         struct ggml_backend_sched_split * split = &sched->splits[i];
         split->graph = ggml_graph_view(graph, split->i_start, split->i_end);
 
-        ggml_backend_graph_optimize(sched->backends[split->backend_id], &split->graph, &opt_params);
+        if (sched->window_fence_prefix) {
+            const size_t length = strlen(sched->window_fence_prefix);
+            int first = 0;
+            for (int j = 0; j < split->graph.n_nodes; ++j) {
+                if (strncmp(split->graph.nodes[j]->name, sched->window_fence_prefix, length) == 0) {
+                    // Keep the observation node itself fixed. A following
+                    // layer can read persistent state written by another graph.
+                    auto segment = ggml_graph_view(&split->graph, first, j);
+                    if (segment.n_nodes) {
+                        ggml_backend_graph_optimize(sched->backends[split->backend_id], &segment, &opt_params);
+                    }
+                    auto fence = ggml_graph_view(&split->graph, j, j + 1);
+                    ggml_backend_graph_optimize(sched->backends[split->backend_id], &fence, &opt_params);
+                    first = j + 1;
+                }
+            }
+            if (first < split->graph.n_nodes) {
+                auto segment = ggml_graph_view(&split->graph, first, split->graph.n_nodes);
+                ggml_backend_graph_optimize(sched->backends[split->backend_id], &segment, &opt_params);
+            }
+        } else {
+            ggml_backend_graph_optimize(sched->backends[split->backend_id], &split->graph, &opt_params);
+        }
     }
 
     // each dep is added to graph_copy as a GGML_OP_NONE node with the kept tensors as srcs
@@ -1984,6 +2016,9 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     struct ggml_cgraph * graph_copy = &sched->graph;
 
     int n_dep_nodes_added = 0;
+    std::vector<int> window_phases;
+    int window_phase = 0;
+    if (sched->window_shared_scratch) { window_phases.reserve(graph_size); }
 
     for (int i = 0; i < sched->n_splits; i++) {
         struct ggml_backend_sched_split * split = &sched->splits[i];
@@ -2005,17 +2040,20 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             // add a dependency to the input copy so that it is allocated at the start of the split
             sched->node_backend_ids[graph_copy->n_nodes] = split->backend_id;
             graph_copy->nodes[graph_copy->n_nodes++] = input_cpy;
+            if (sched->window_shared_scratch) { window_phases.insert(window_phases.end(), 2, window_phase); }
         }
 
         for (int j = split->i_start; j < split->i_end; j++) {
+            const auto * node = graph->nodes[j];
+            if (sched->window_shared_scratch) {
+                if (window_route_pause(node)) { ++window_phase; }
+                window_phases.push_back(window_phase);
+            }
             assert(graph_copy->size > graph_copy->n_nodes);
             sched->node_backend_ids[graph_copy->n_nodes] = tensor_backend_id(graph->nodes[j]);
             graph_copy->nodes[graph_copy->n_nodes++] = graph->nodes[j];
 
-            if (alloc_deps.empty()) {
-                continue;
-            }
-
+            if (alloc_deps.empty() && !sched->window_shared_scratch) { continue; }
             // add a dependency node so that the kept tensors are not freed before this node is computed
             auto it = alloc_deps.find(graph->nodes[j]);
             if (it != alloc_deps.end()) {
@@ -2028,9 +2066,11 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                     assert(graph_copy->size > graph_copy->n_nodes);
                     sched->node_backend_ids[graph_copy->n_nodes] = split->backend_id;
                     graph_copy->nodes[graph_copy->n_nodes++] = dep;
+                    if (sched->window_shared_scratch) { window_phases.push_back(window_phase); }
                     n_dep_nodes_added++;
                 }
             }
+            if (sched->window_shared_scratch && window_layer_pause(sched, node)) { ++window_phase; }
         }
     }
 
@@ -2079,9 +2119,14 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     for (int i = 0; i < sched->n_splits; ++i) {
         sched->splits[i].graph.uid = ggml_graph_next_uid();
     }
+    if (sched->window_shared_scratch) { window_classify_scratch(sched, window_phases); }
 }
 
 static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+    if (sched->window_shared_scratch) {
+        return ggml_gallocr_reserve_n(sched->galloc, &sched->graph, sched->node_backend_ids, sched->leaf_backend_ids) &&
+            ggml_gallocr_alloc_graph(sched->galloc, &sched->graph);
+    }
     bool backend_ids_changed = false;
     for (int i = 0; i < sched->graph.n_nodes; i++) {
         if (sched->node_backend_ids[i] != sched->prev_node_backend_ids[i] &&
@@ -2262,6 +2307,89 @@ static void ggml_backend_sched_prefetch_inputs(ggml_backend_sched_t sched, int s
     }
 }
 
+enum ggml_status ggml_backend_window_batch_step(ggml_backend_sched_t sched,
+        ggml_window_cursor * cursor, ggml_window_batch * batch, ggml_window_step step, ggml_tensor ** route) {
+    GGML_ASSERT(sched->window_batch_plan && sched->is_alloc && batch->metal == sched->backends[0]);
+    if (step == GGML_WINDOW_EXACT_LAYER_END && (!route || !*route)) { return GGML_STATUS_FAILED; }
+    auto flush = [&] { return batch->flush(batch->metal, &batch->submissions) == GGML_STATUS_SUCCESS; };
+    bool wrote_metal = false;
+    if (step == GGML_WINDOW_LAYER_END) {
+        // The coordinator already filled this custom op's output with the FFN.
+        if (cursor->split >= sched->n_splits) { return GGML_STATUS_FAILED; }
+        auto & split = sched->splits[cursor->split];
+        if (!cursor->copied || cursor->node >= split.graph.n_nodes ||
+                !route || split.graph.nodes[cursor->node] != *route) { return GGML_STATUS_FAILED; }
+        ++cursor->node;
+    }
+    while (cursor->split < sched->n_splits) {
+        auto & split = sched->splits[cursor->split];
+        auto * backend = sched->backends[split.backend_id];
+        const bool metal = backend == batch->metal;
+        int end = split.graph.n_nodes;
+        bool boundary = false;
+        for (int i = cursor->node; i < end; ++i) {
+            auto * node = split.graph.nodes[i];
+            if (window_route_pause(node)) {
+                if (metal || (step != GGML_WINDOW_ROUTES && step != GGML_WINDOW_ROUTE_FRONTIER)) {
+                    return GGML_STATUS_FAILED;
+                }
+                if (step == GGML_WINDOW_ROUTE_FRONTIER) { return GGML_STATUS_SUCCESS; }
+                *route = node;
+                end = i;
+                boundary = true;
+                break;
+            }
+            if ((step == GGML_WINDOW_EXACT_LAYER_END && node == *route) ||
+                    ((step == GGML_WINDOW_LAYER_END || step == GGML_WINDOW_DENSE_LAYER_END) && window_layer_pause(sched, node))) {
+                end = i + 1;
+                boundary = true;
+                break;
+            }
+        }
+        if (!cursor->copied) {
+            for (int i = 0; i < split.n_inputs; ++i) {
+                auto * input = split.inputs[i];
+                if (!sched->hv_tensor_requires_copy[hash_id(input)]) { continue; }
+                auto * dst = tensor_copy(input, split.backend_id, 0);
+                // Pending graphs of other workers cannot touch this upload.
+                // The layer-end callback supplies the completed host FFN result.
+                const bool worker_upload = metal && !wrote_metal && input->buffer && dst->buffer &&
+                        dst->buffer != sched->window_scratch_buffer &&
+                        ggml_backend_sched_get_tensor_backend(sched, input) != batch->metal &&
+                        ggml_backend_buffer_is_host(input->buffer);
+                if (worker_upload && (ggml_backend_buffer_is_host(dst->buffer) ||
+                        (step == GGML_WINDOW_LAYER_END && route && input == *route &&
+                         sched->window_metal_host_base && sched->window_metal_host_base(dst->buffer)))) {
+                    ggml_backend_tensor_copy(input, dst);
+                } else {
+                    if (!flush()) { return GGML_STATUS_FAILED; }
+                    ggml_backend_sched_copy_input(sched, &split, input);
+                }
+            }
+            cursor->copied = true;
+        }
+        if (end > cursor->node) {
+            auto view = ggml_graph_view(&split.graph, cursor->node, end);
+            if (metal) {
+                if (batch->append(batch->metal, &view) != GGML_STATUS_SUCCESS) { return GGML_STATUS_FAILED; }
+                wrote_metal = true;
+            } else if (std::any_of(view.nodes, view.nodes + view.n_nodes, [](const ggml_tensor * node) {
+                return !ggml_op_is_empty(node->op) && !ggml_is_empty(node);
+            })) {
+                if (!flush() || ggml_backend_graph_compute(backend, &view) != GGML_STATUS_SUCCESS) {
+                    return GGML_STATUS_FAILED;
+                }
+            }
+        }
+        cursor->node = end;
+        if (boundary) { return GGML_STATUS_SUCCESS; }
+        ++cursor->split;
+        cursor->node = 0;
+        cursor->copied = false;
+    }
+    return step == GGML_WINDOW_FINISH ? GGML_STATUS_SUCCESS : GGML_STATUS_FAILED;
+}
+
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
@@ -2293,7 +2421,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
         // after the copies above, which may read host memory reused by the copies of the next split
         // before the weights, whose copy callback may queue large uploads
-        ggml_backend_sched_prefetch_inputs(sched, split_id);
+        if (!sched->window_shared_scratch) { ggml_backend_sched_prefetch_inputs(sched, split_id); }
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
             struct ggml_tensor * input = split->inputs[input_id];
             if (ggml_backend_sched_is_host_weight(input) && sched->hv_tensor_requires_copy[hash_id(input)]) {
@@ -2312,13 +2440,21 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 struct ggml_tensor * t = split->graph.nodes[j0];
 
                 // check if the user needs data from this node
+                if (sched->window_before && sched->window_before(t, true, sched->window_before_data)) {
+                    ggml_backend_synchronize(split_backend);
+                    if (!sched->window_before(t, false, sched->window_before_data)) {
+                        return GGML_STATUS_ABORTED;
+                    }
+                }
                 bool need = sched->callback_eval(t, true, sched->callback_eval_user_data);
 
                 int j1 = j0;
 
                 // determine the range [j0, j1] of nodes that can be computed together
                 while (!need && j1 < split->graph.n_nodes - 1) {
-                    t = split->graph.nodes[++j1];
+                    t = split->graph.nodes[j1 + 1];
+                    if (sched->window_before && sched->window_before(t, true, sched->window_before_data)) { break; }
+                    ++j1;
                     need = sched->callback_eval(t, true, sched->callback_eval_user_data);
                 }
 

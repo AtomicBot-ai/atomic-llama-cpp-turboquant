@@ -1,0 +1,4478 @@
+{
+  "date": "2026-11-18",
+  "device": "Apple M4 Max, 48 GiB unified memory",
+  "binary_sha256": "18437dccebb8a509b1ffaaa85a98d3e189680ac7f2b7ab84bac0d7bf9d519118",
+  "lfm": {
+    "model": "LFM2.5-24B-A2B-AD-Q4_K_M",
+    "fixture": "atomic-engine-lfm-metal-grid.json#prompt_ids",
+    "calibration": "atomic-engine-lfm-residency-calibration-8-24gib.json",
+    "rollout_checks": {
+      "12-off": {
+        "requests": [
+          {
+            "ttft_s": 1.859058499976527,
+            "decode_tps": 50.016773124255195,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1858.053,
+              "prompt_per_token_ms": 0.46451325000000004,
+              "prompt_per_second": 2152.791120597744,
+              "predicted_n": 64,
+              "predicted_ms": 1259.636,
+              "predicted_per_token_ms": 19.994222222222223,
+              "predicted_per_second": 50.01444861848979
+            },
+            "disk_read_bytes": 3230339072,
+            "snapshots": [
+              {
+                "resident": 11215060992,
+                "footprint": 11352925016,
+                "disk_read": 12136873984,
+                "lifetime_footprint": 11361477416
+              },
+              {
+                "resident": 11224842240,
+                "footprint": 11362263920,
+                "disk_read": 15367213056,
+                "lifetime_footprint": 11364803440
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 12884901888,
+              "budget_applied_bytes": 12884901888,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 12881527192,
+              "budget_high_water_bytes": 12884881528,
+              "budget_released_bytes": 4345827088,
+              "prefill_window_tokens": 4000,
+              "prefill_window_tails": 1,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "WINDOW_WIDE 1 40 14251720704 1086856 712 1792246",
+              "WINDOW_WIDE_STAGING 4 0 14251720704"
+            ]
+          }
+        ],
+        "cap": 12,
+        "variant": "off",
+        "process_peaks": {
+          "resident": 11224727552,
+          "footprint": 11362149232,
+          "lifetime_footprint": 11364803440
+        },
+        "command": [
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+          "-m",
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+          "-c",
+          "4096",
+          "-b",
+          "4096",
+          "-ub",
+          "8",
+          "-np",
+          "1",
+          "-t",
+          "8",
+          "-tb",
+          "8",
+          "-ngl",
+          "99",
+          "-ctk",
+          "bf16",
+          "-ctv",
+          "bf16",
+          "-fit",
+          "off",
+          "--cache-ram",
+          "0",
+          "--ctx-checkpoints",
+          "0",
+          "--no-warmup",
+          "--metrics",
+          "--no-webui",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "59454",
+          "--engine-budget-mib",
+          "12288"
+        ]
+      },
+      "12-opt": {
+        "requests": [
+          {
+            "ttft_s": 1.853900459012948,
+            "decode_tps": 52.593631302653606,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1852.855,
+              "prompt_per_token_ms": 0.46321375,
+              "prompt_per_second": 2158.8305614848437,
+              "predicted_n": 64,
+              "predicted_ms": 1197.925,
+              "predicted_per_token_ms": 19.01468253968254,
+              "predicted_per_second": 52.590938497819145
+            },
+            "disk_read_bytes": 0,
+            "snapshots": [
+              {
+                "resident": 11215536128,
+                "footprint": 11353400152,
+                "disk_read": 39919616,
+                "lifetime_footprint": 11367687000
+              },
+              {
+                "resident": 11220647936,
+                "footprint": 11358086000,
+                "disk_read": 39919616,
+                "lifetime_footprint": 11367687000
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 12884901888,
+              "budget_applied_bytes": 12884901888,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 12882310344,
+              "budget_high_water_bytes": 12884901352,
+              "budget_released_bytes": 3495122736,
+              "prefill_window_tokens": 4000,
+              "prefill_window_tails": 1,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_PREFILL_RETAINED 883949568",
+              "WINDOW_WIDE 1 40 14251720704 857679 18 1792164",
+              "WINDOW_WIDE_STAGING 4 0 14251720704"
+            ]
+          },
+          {
+            "ttft_s": 2.0727049999986775,
+            "decode_tps": 52.066598027223534,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 2071.744,
+              "prompt_per_token_ms": 0.5179360000000001,
+              "prompt_per_second": 1930.7404775879645,
+              "predicted_n": 64,
+              "predicted_ms": 1210.104,
+              "predicted_per_token_ms": 19.208000000000002,
+              "predicted_per_second": 52.061640982923784
+            },
+            "disk_read_bytes": 0,
+            "snapshots": [
+              {
+                "resident": 11220680704,
+                "footprint": 11358118768,
+                "disk_read": 39919616,
+                "lifetime_footprint": 11367687000
+              },
+              {
+                "resident": 11226316800,
+                "footprint": 11363738480,
+                "disk_read": 39919616,
+                "lifetime_footprint": 11372782424
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 12884901888,
+              "budget_applied_bytes": 12884901888,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 12882310344,
+              "budget_high_water_bytes": 12884901352,
+              "budget_released_bytes": 6844909840,
+              "prefill_window_tokens": 8000,
+              "prefill_window_tails": 2,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_PREFILL_RETAINED 883949568",
+              "WINDOW_WIDE 1 40 14251720704 1124455 21143 1990089",
+              "WINDOW_WIDE_STAGING 4 0 14251720704"
+            ]
+          }
+        ],
+        "cap": 12,
+        "variant": "opt",
+        "process_peaks": {
+          "resident": 11226300416,
+          "footprint": 11363722096,
+          "lifetime_footprint": 11372782424
+        },
+        "command": [
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+          "-m",
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+          "-c",
+          "4096",
+          "-b",
+          "4096",
+          "-ub",
+          "8",
+          "-np",
+          "1",
+          "-t",
+          "8",
+          "-tb",
+          "8",
+          "-ngl",
+          "99",
+          "-ctk",
+          "bf16",
+          "-ctv",
+          "bf16",
+          "-fit",
+          "off",
+          "--cache-ram",
+          "0",
+          "--ctx-checkpoints",
+          "0",
+          "--no-warmup",
+          "--metrics",
+          "--no-webui",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "59492",
+          "--engine-budget-mib",
+          "12288"
+        ]
+      },
+      "16-retain": {
+        "requests": [
+          {
+            "ttft_s": 1.8817268330021761,
+            "decode_tps": 93.65459745935534,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1880.68,
+              "prompt_per_token_ms": 0.47017000000000003,
+              "prompt_per_second": 2126.890273730778,
+              "predicted_n": 64,
+              "predicted_ms": 672.733,
+              "predicted_per_token_ms": 10.678301587301586,
+              "predicted_per_second": 93.64785137640044
+            },
+            "disk_read_bytes": 0,
+            "snapshots": [
+              {
+                "resident": 14835793920,
+                "footprint": 14975348040,
+                "disk_read": 32854016,
+                "lifetime_footprint": 14975348040
+              },
+              {
+                "resident": 15513092096,
+                "footprint": 15652499312,
+                "disk_read": 32854016,
+                "lifetime_footprint": 15652826992
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 17179869184,
+              "budget_applied_bytes": 17179869184,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 17177243416,
+              "budget_high_water_bytes": 17179834424,
+              "budget_released_bytes": 2543143984,
+              "prefill_window_tokens": 4000,
+              "prefill_window_tails": 1,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_PREFILL_RETAINED 883949568",
+              "WINDOW_WIDE 1 40 14251720704 869092 21 1819761",
+              "WINDOW_WIDE_STAGING 4 0 14251720704"
+            ]
+          },
+          {
+            "ttft_s": 1.858387083048001,
+            "decode_tps": 95.10421481380564,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1857.398,
+              "prompt_per_token_ms": 0.46434949999999997,
+              "prompt_per_second": 2153.5502891679653,
+              "predicted_n": 64,
+              "predicted_ms": 662.473,
+              "predicted_per_token_ms": 10.515444444444444,
+              "predicted_per_second": 95.09821532349244
+            },
+            "disk_read_bytes": 0,
+            "snapshots": [
+              {
+                "resident": 15513124864,
+                "footprint": 15652532080,
+                "disk_read": 32854016,
+                "lifetime_footprint": 15652826992
+              },
+              {
+                "resident": 15519465472,
+                "footprint": 15658856304,
+                "disk_read": 32854016,
+                "lifetime_footprint": 15659233136
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 17179869184,
+              "budget_applied_bytes": 17179869184,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 17177243416,
+              "budget_high_water_bytes": 17179834424,
+              "budget_released_bytes": 5754497472,
+              "prefill_window_tokens": 8000,
+              "prefill_window_tails": 2,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_PREFILL_RETAINED 883949568",
+              "WINDOW_WIDE 1 40 14251720704 864969 18 1792531",
+              "WINDOW_WIDE_STAGING 4 0 14251720704"
+            ]
+          }
+        ],
+        "cap": 16,
+        "variant": "retain",
+        "process_peaks": {
+          "resident": 15519449088,
+          "footprint": 15658839920,
+          "lifetime_footprint": 15659233136
+        },
+        "command": [
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+          "-m",
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+          "-c",
+          "4096",
+          "-b",
+          "4096",
+          "-ub",
+          "8",
+          "-np",
+          "1",
+          "-t",
+          "8",
+          "-tb",
+          "8",
+          "-ngl",
+          "99",
+          "-ctk",
+          "bf16",
+          "-ctv",
+          "bf16",
+          "-fit",
+          "off",
+          "--cache-ram",
+          "0",
+          "--ctx-checkpoints",
+          "0",
+          "--no-warmup",
+          "--metrics",
+          "--no-webui",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "59526",
+          "--engine-budget-mib",
+          "16384"
+        ]
+      },
+      "18-retain": {
+        "requests": [
+          {
+            "ttft_s": 1.857489624992013,
+            "decode_tps": 132.46843361127446,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1856.38,
+              "prompt_per_token_ms": 0.46409500000000004,
+              "prompt_per_second": 2154.7312511447008,
+              "predicted_n": 64,
+              "predicted_ms": 475.659,
+              "predicted_per_token_ms": 7.550142857142857,
+              "predicted_per_second": 132.44782501750203
+            },
+            "disk_read_bytes": 135806976,
+            "snapshots": [
+              {
+                "resident": 15731474432,
+                "footprint": 15871504336,
+                "disk_read": 0,
+                "lifetime_footprint": 15871504336
+              },
+              {
+                "resident": 16225730560,
+                "footprint": 16365629848,
+                "disk_read": 135806976,
+                "lifetime_footprint": 16475353736
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 19327352832,
+              "budget_applied_bytes": 19327352832,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 17902890888,
+              "budget_high_water_bytes": 18911434376,
+              "budget_released_bytes": 1387991312,
+              "prefill_window_tokens": 4000,
+              "prefill_window_tails": 1,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_PREFILL_RETAINED 883949568",
+              "WINDOW_WIDE 1 40 14251720704 878766 11 1793825",
+              "WINDOW_WIDE_STAGING 4 0 14251720704"
+            ]
+          },
+          {
+            "ttft_s": 1.8969945840071887,
+            "decode_tps": 131.99339090983585,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1896.004,
+              "prompt_per_token_ms": 0.47400099999999995,
+              "prompt_per_second": 2109.7001905059274,
+              "predicted_n": 64,
+              "predicted_ms": 477.361,
+              "predicted_per_token_ms": 7.57715873015873,
+              "predicted_per_second": 131.9755908002539
+            },
+            "disk_read_bytes": 0,
+            "snapshots": [
+              {
+                "resident": 16225763328,
+                "footprint": 16365662616,
+                "disk_read": 135806976,
+                "lifetime_footprint": 16475353736
+              },
+              {
+                "resident": 16229662720,
+                "footprint": 16369562008,
+                "disk_read": 135806976,
+                "lifetime_footprint": 16475763336
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 19327352832,
+              "budget_applied_bytes": 19327352832,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 17902890888,
+              "budget_high_water_bytes": 18911434376,
+              "budget_released_bytes": 3263883792,
+              "prefill_window_tokens": 8000,
+              "prefill_window_tails": 2,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_PREFILL_RETAINED 883949568",
+              "WINDOW_WIDE 1 40 14251720704 863818 20 1844581",
+              "WINDOW_WIDE_STAGING 4 0 14251720704"
+            ]
+          }
+        ],
+        "cap": 18,
+        "variant": "retain",
+        "process_peaks": {
+          "resident": 16339795968,
+          "footprint": 16475763336,
+          "lifetime_footprint": 16475763336
+        },
+        "command": [
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+          "-m",
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+          "-c",
+          "4096",
+          "-b",
+          "4096",
+          "-ub",
+          "8",
+          "-np",
+          "1",
+          "-t",
+          "8",
+          "-tb",
+          "8",
+          "-ngl",
+          "99",
+          "-ctk",
+          "bf16",
+          "-ctv",
+          "bf16",
+          "-fit",
+          "off",
+          "--cache-ram",
+          "0",
+          "--ctx-checkpoints",
+          "0",
+          "--no-warmup",
+          "--metrics",
+          "--no-webui",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "59552",
+          "--engine-budget-mib",
+          "18432"
+        ]
+      },
+      "20-direct": {
+        "requests": [
+          {
+            "ttft_s": 1.8700951249920763,
+            "decode_tps": 128.24620012018943,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1869.007,
+              "prompt_per_token_ms": 0.46725175,
+              "prompt_per_second": 2140.1738998302308,
+              "predicted_n": 64,
+              "predicted_ms": 491.335,
+              "predicted_per_token_ms": 7.798968253968254,
+              "predicted_per_second": 128.2220887988847
+            },
+            "disk_read_bytes": 0,
+            "snapshots": [
+              {
+                "resident": 16214179840,
+                "footprint": 16354718008,
+                "disk_read": 77930496,
+                "lifetime_footprint": 16354718008
+              },
+              {
+                "resident": 16224976896,
+                "footprint": 16365072768,
+                "disk_read": 77930496,
+                "lifetime_footprint": 16473993840
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 21474836480,
+              "budget_applied_bytes": 21474836480,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 17902802568,
+              "budget_high_water_bytes": 18910320264,
+              "budget_released_bytes": 990740480,
+              "prefill_window_tokens": 4000,
+              "prefill_window_tails": 1,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_DIRECT_PREFILL 38",
+              "WINDOW_WIDE 0 40 0 0 0 1840120",
+              "WINDOW_WIDE_STAGING 4 0 0"
+            ]
+          }
+        ],
+        "cap": 20,
+        "variant": "direct",
+        "process_peaks": {
+          "resident": 16333635584,
+          "footprint": 16473977456,
+          "lifetime_footprint": 16473993840
+        },
+        "command": [
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+          "-m",
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+          "-c",
+          "4096",
+          "-b",
+          "4096",
+          "-ub",
+          "8",
+          "-np",
+          "1",
+          "-t",
+          "8",
+          "-tb",
+          "8",
+          "-ngl",
+          "99",
+          "-ctk",
+          "bf16",
+          "-ctv",
+          "bf16",
+          "-fit",
+          "off",
+          "--cache-ram",
+          "0",
+          "--ctx-checkpoints",
+          "0",
+          "--no-warmup",
+          "--metrics",
+          "--no-webui",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "59592",
+          "--engine-budget-mib",
+          "20480"
+        ]
+      },
+      "24-direct": {
+        "requests": [
+          {
+            "ttft_s": 1.875020916981157,
+            "decode_tps": 132.132292740734,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1873.927,
+              "prompt_per_token_ms": 0.46848175,
+              "prompt_per_second": 2134.5548679324224,
+              "predicted_n": 64,
+              "predicted_ms": 476.857,
+              "predicted_per_token_ms": 7.569158730158731,
+              "predicted_per_second": 132.11507852458914
+            },
+            "disk_read_bytes": 0,
+            "snapshots": [
+              {
+                "resident": 16216768512,
+                "footprint": 16357290272,
+                "disk_read": 16384,
+                "lifetime_footprint": 16357290272
+              },
+              {
+                "resident": 16224485376,
+                "footprint": 16364581224,
+                "disk_read": 16384,
+                "lifetime_footprint": 16474976856
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 25769803776,
+              "budget_applied_bytes": 25769803776,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 17902802568,
+              "budget_high_water_bytes": 18910320264,
+              "budget_released_bytes": 990740480,
+              "prefill_window_tokens": 4000,
+              "prefill_window_tails": 1,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_DIRECT_PREFILL 38",
+              "WINDOW_WIDE 0 40 0 0 0 1840650",
+              "WINDOW_WIDE_STAGING 4 0 0"
+            ]
+          },
+          {
+            "ttft_s": 1.9585616659605876,
+            "decode_tps": 132.06696928847597,
+            "timings": {
+              "cache_n": 0,
+              "prompt_n": 4000,
+              "prompt_ms": 1957.608,
+              "prompt_per_token_ms": 0.489402,
+              "prompt_per_second": 2043.309998733148,
+              "predicted_n": 64,
+              "predicted_ms": 477.109,
+              "predicted_per_token_ms": 7.57315873015873,
+              "predicted_per_second": 132.04529782502533
+            },
+            "disk_read_bytes": 0,
+            "snapshots": [
+              {
+                "resident": 16224518144,
+                "footprint": 16364613992,
+                "disk_read": 16384,
+                "lifetime_footprint": 16474976856
+              },
+              {
+                "resident": 16226435072,
+                "footprint": 16366530920,
+                "disk_read": 16384,
+                "lifetime_footprint": 16476926552
+              }
+            ],
+            "output_ids": [
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31592,
+              318,
+              17505,
+              229,
+              31536,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427,
+              31536,
+              318,
+              17505,
+              229,
+              31395,
+              34,
+              440,
+              9150,
+              5694,
+              49040,
+              3983,
+              52378,
+              20,
+              267,
+              13044,
+              61479,
+              20,
+              309,
+              10891,
+              13142,
+              22,
+              440,
+              6891,
+              4713,
+              374,
+              532,
+              13707,
+              355,
+              427
+            ],
+            "ledger": {
+              "budget_requested_bytes": 25769803776,
+              "budget_applied_bytes": 25769803776,
+              "budget_minimum_bytes": 3643876416,
+              "budget_used_bytes": 17902802568,
+              "budget_high_water_bytes": 18910320264,
+              "budget_released_bytes": 1981480960,
+              "prefill_window_tokens": 8000,
+              "prefill_window_tails": 2,
+              "prefill_window_fallbacks": 0,
+              "prefill_window_failed": 0
+            },
+            "profile": [
+              "LFM_DIRECT_PREFILL 38",
+              "WINDOW_WIDE 0 40 0 0 0 1927040",
+              "WINDOW_WIDE_STAGING 4 0 0"
+            ]
+          }
+        ],
+        "cap": 24,
+        "variant": "direct",
+        "process_peaks": {
+          "resident": 16336650240,
+          "footprint": 16476910168,
+          "lifetime_footprint": 16476926552
+        },
+        "command": [
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+          "-m",
+          "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+          "-c",
+          "4096",
+          "-b",
+          "4096",
+          "-ub",
+          "8",
+          "-np",
+          "1",
+          "-t",
+          "8",
+          "-tb",
+          "8",
+          "-ngl",
+          "99",
+          "-ctk",
+          "bf16",
+          "-ctv",
+          "bf16",
+          "-fit",
+          "off",
+          "--cache-ram",
+          "0",
+          "--ctx-checkpoints",
+          "0",
+          "--no-warmup",
+          "--metrics",
+          "--no-webui",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "59618",
+          "--engine-budget-mib",
+          "24576"
+        ]
+      }
+    },
+    "logits_against_calibration": {
+      "18": {
+        "production_sha256": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+        "calibration_stock_sha256": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+        "rows": 64,
+        "run": {
+          "requests": [
+            {
+              "ttft_s": 2.6098769580130465,
+              "decode_tps": 105.77221793028916,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 2608.876,
+                "prompt_per_token_ms": 0.6522190000000001,
+                "prompt_per_second": 1533.2273362168228,
+                "predicted_n": 64,
+                "predicted_ms": 595.677,
+                "predicted_per_token_ms": 9.455190476190477,
+                "predicted_per_second": 105.76201532038336
+              },
+              "disk_read_bytes": 481845248,
+              "snapshots": [
+                {
+                  "resident": 15731245056,
+                  "footprint": 15871160296,
+                  "disk_read": 14880133120,
+                  "lifetime_footprint": 15871160296
+                },
+                {
+                  "resident": 16224829440,
+                  "footprint": 16364581248,
+                  "disk_read": 15361978368,
+                  "lifetime_footprint": 16470684296
+                }
+              ],
+              "output_ids": [
+                4713,
+                374,
+                532,
+                13707,
+                355,
+                427,
+                31592,
+                318,
+                17505,
+                229,
+                31536,
+                34,
+                440,
+                9150,
+                5694,
+                49040,
+                3983,
+                52378,
+                20,
+                267,
+                13044,
+                61479,
+                20,
+                309,
+                10891,
+                13142,
+                22,
+                440,
+                6891,
+                4713,
+                374,
+                532,
+                13707,
+                355,
+                427,
+                31536,
+                318,
+                17505,
+                229,
+                31395,
+                34,
+                440,
+                9150,
+                5694,
+                49040,
+                3983,
+                52378,
+                20,
+                267,
+                13044,
+                61479,
+                20,
+                309,
+                10891,
+                13142,
+                22,
+                440,
+                6891,
+                4713,
+                374,
+                532,
+                13707,
+                355,
+                427
+              ],
+              "ledger": {
+                "budget_requested_bytes": 19327352832,
+                "budget_applied_bytes": 19327352832,
+                "budget_minimum_bytes": 3643876416,
+                "budget_used_bytes": 17902890888,
+                "budget_high_water_bytes": 18911434376,
+                "budget_released_bytes": 1387991312,
+                "prefill_window_tokens": 4000,
+                "prefill_window_tails": 1,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "LFM_PREFILL_RETAINED 883949568",
+                "WINDOW_WIDE 1 40 14251720704 899405 16 2556719",
+                "WINDOW_WIDE_STAGING 4 0 14251720704"
+              ]
+            }
+          ],
+          "cap": 18,
+          "kind": "capture",
+          "process_peaks": {
+            "resident": 16334651392,
+            "footprint": 16470684296,
+            "lifetime_footprint": 16470684296
+          },
+          "command": [
+            "/private/tmp/lfm-profile-rollout.8kC2/residency-capture-probe",
+            "-m",
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+            "-c",
+            "4096",
+            "-b",
+            "4096",
+            "-ub",
+            "8",
+            "-np",
+            "1",
+            "-t",
+            "8",
+            "-tb",
+            "8",
+            "-ngl",
+            "99",
+            "-ctk",
+            "bf16",
+            "-ctv",
+            "bf16",
+            "-fit",
+            "off",
+            "--cache-ram",
+            "0",
+            "--ctx-checkpoints",
+            "0",
+            "--no-warmup",
+            "--metrics",
+            "--no-webui",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "60461",
+            "--engine-budget-mib",
+            "18432"
+          ]
+        }
+      },
+      "24": {
+        "production_sha256": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+        "calibration_stock_sha256": "d160c91bba3a8eb24998d9b1bcb41125cb9061db01f1ba0b2c907aa024616a8f",
+        "rows": 64,
+        "run": {
+          "requests": [
+            {
+              "ttft_s": 2.399306582985446,
+              "decode_tps": 93.63270357837524,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 2398.239,
+                "prompt_per_token_ms": 0.5995597500000001,
+                "prompt_per_second": 1667.890481307326,
+                "predicted_n": 64,
+                "predicted_ms": 672.939,
+                "predicted_per_token_ms": 10.681571428571427,
+                "predicted_per_second": 93.6191839081997
+              },
+              "disk_read_bytes": 49152,
+              "snapshots": [
+                {
+                  "resident": 16215015424,
+                  "footprint": 16355422520,
+                  "disk_read": 42868736,
+                  "lifetime_footprint": 16355422520
+                },
+                {
+                  "resident": 16225697792,
+                  "footprint": 16365678976,
+                  "disk_read": 42917888,
+                  "lifetime_footprint": 16474272368
+                }
+              ],
+              "output_ids": [
+                4713,
+                374,
+                532,
+                13707,
+                355,
+                427,
+                31592,
+                318,
+                17505,
+                229,
+                31536,
+                34,
+                440,
+                9150,
+                5694,
+                49040,
+                3983,
+                52378,
+                20,
+                267,
+                13044,
+                61479,
+                20,
+                309,
+                10891,
+                13142,
+                22,
+                440,
+                6891,
+                4713,
+                374,
+                532,
+                13707,
+                355,
+                427,
+                31536,
+                318,
+                17505,
+                229,
+                31395,
+                34,
+                440,
+                9150,
+                5694,
+                49040,
+                3983,
+                52378,
+                20,
+                267,
+                13044,
+                61479,
+                20,
+                309,
+                10891,
+                13142,
+                22,
+                440,
+                6891,
+                4713,
+                374,
+                532,
+                13707,
+                355,
+                427
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 3643876416,
+                "budget_used_bytes": 17902802568,
+                "budget_high_water_bytes": 18910320264,
+                "budget_released_bytes": 990740480,
+                "prefill_window_tokens": 4000,
+                "prefill_window_tails": 1,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "LFM_DIRECT_PREFILL 38",
+                "WINDOW_WIDE 0 40 0 0 0 2366827",
+                "WINDOW_WIDE_STAGING 4 0 0"
+              ]
+            }
+          ],
+          "cap": 24,
+          "kind": "capture",
+          "process_peaks": {
+            "resident": 16334045184,
+            "footprint": 16474272368,
+            "lifetime_footprint": 16474272368
+          },
+          "command": [
+            "/private/tmp/lfm-profile-rollout.8kC2/residency-capture-probe",
+            "-m",
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+            "-c",
+            "4096",
+            "-b",
+            "4096",
+            "-ub",
+            "8",
+            "-np",
+            "1",
+            "-t",
+            "8",
+            "-tb",
+            "8",
+            "-ngl",
+            "99",
+            "-ctk",
+            "bf16",
+            "-ctv",
+            "bf16",
+            "-fit",
+            "off",
+            "--cache-ram",
+            "0",
+            "--ctx-checkpoints",
+            "0",
+            "--no-warmup",
+            "--metrics",
+            "--no-webui",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "60504",
+            "--engine-budget-mib",
+            "24576"
+          ]
+        }
+      }
+    },
+    "live_resize": {
+      "requests": [
+        {
+          "ttft_s": 3.01831008301815,
+          "decode_tps": 48.79875346466095,
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 4000,
+            "prompt_ms": 3017.304,
+            "prompt_per_token_ms": 0.754326,
+            "prompt_per_second": 1325.6867720322512,
+            "predicted_n": 64,
+            "predicted_ms": 1291.07,
+            "predicted_per_token_ms": 20.4931746031746,
+            "predicted_per_second": 48.79673449154577
+          },
+          "disk_read_bytes": 0,
+          "snapshots": [
+            {
+              "resident": 15733391360,
+              "footprint": 15873290192,
+              "disk_read": 16384,
+              "lifetime_footprint": 15873290192
+            },
+            {
+              "resident": 11239604224,
+              "footprint": 11374945064,
+              "disk_read": 16384,
+              "lifetime_footprint": 16474157656
+            }
+          ],
+          "output_ids": [
+            4713,
+            374,
+            532,
+            13707,
+            355,
+            427,
+            31592,
+            318,
+            17505,
+            229,
+            31536,
+            34,
+            440,
+            9150,
+            5694,
+            49040,
+            3983,
+            52378,
+            20,
+            267,
+            13044,
+            61479,
+            20,
+            309,
+            10891,
+            13142,
+            22,
+            440,
+            6891,
+            4713,
+            374,
+            532,
+            13707,
+            355,
+            427,
+            31536,
+            318,
+            17505,
+            229,
+            31395,
+            34,
+            440,
+            9150,
+            5694,
+            49040,
+            3983,
+            52378,
+            20,
+            267,
+            13044,
+            61479,
+            20,
+            309,
+            10891,
+            13142,
+            22,
+            440,
+            6891,
+            4713,
+            374,
+            532,
+            13707,
+            355,
+            427
+          ],
+          "ledger": {
+            "budget_requested_bytes": 12884901888,
+            "budget_applied_bytes": 12884901888,
+            "budget_minimum_bytes": 3633194048,
+            "budget_used_bytes": 12881660104,
+            "budget_high_water_bytes": 18911434376,
+            "budget_released_bytes": 8756349256,
+            "prefill_window_tokens": 4000,
+            "prefill_window_tails": 1,
+            "prefill_window_fallbacks": 0,
+            "prefill_window_failed": 0
+          },
+          "profile": [
+            "LFM_PREFILL_RETAINED 883949568",
+            "WINDOW_WIDE 1 40 14251720704 872999 20 2936832",
+            "WINDOW_WIDE_STAGING 4 0 14251720704",
+            "LFM_RESIZE 19327352832 17902890888 12884901888 10573584008"
+          ]
+        }
+      ],
+      "cap": 18,
+      "kind": "resize",
+      "process_peaks": {
+        "resident": 16338157568,
+        "footprint": 16474141272,
+        "lifetime_footprint": 16474157656
+      },
+      "command": [
+        "/private/tmp/lfm-profile-rollout.8kC2/residency-capture-probe",
+        "-m",
+        "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/lfm-24b/LFM2.5-24B-A2B-AD-Q4_K_M.gguf",
+        "-c",
+        "4096",
+        "-b",
+        "4096",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "8",
+        "-tb",
+        "8",
+        "-ngl",
+        "99",
+        "-ctk",
+        "bf16",
+        "-ctv",
+        "bf16",
+        "-fit",
+        "off",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--no-warmup",
+        "--metrics",
+        "--no-webui",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "60531",
+        "--engine-budget-mib",
+        "18432"
+      ],
+      "transition": {
+        "budget_before_bytes": 19327352832,
+        "used_before_bytes": 17902890888,
+        "budget_after_bytes": 12884901888,
+        "used_after_bytes": 10573584008
+      }
+    }
+  },
+  "qwen35": {
+    "model": "Qwen3.6-35B-A3B Q4_K_M",
+    "fixture": "atomic-engine-qwen35-metal-residency.json#prompt_token_ids",
+    "budget_gib": 24,
+    "opt_in": "LLAMA_QWEN35_PREFILL_RESIDENCY=1",
+    "draft_model": "local BF16 qwen35-dflash2.gguf",
+    "protocol": "Fresh production server for each timing leg, 15/8 plus 4000/8 warmups, three uncached greedy 4000/64 requests. TTFT ends at the first SSE token. Decode TPS is 63 / first-to-last interval. Logit captures use the same llama library with an instrumented server in separate processes.",
+    "results": {
+      "serial": {
+        "stock": {
+          "ttft_s": 3.249707499984652,
+          "decode_tps": 97.78256050782927,
+          "last_token_s": 3.893994166981429,
+          "ledger_peak_bytes": 25742864010,
+          "process_lifetime_physical_footprint_bytes": 23290070368,
+          "prefill_expert_read_bytes": [
+            19503513600,
+            19503513600,
+            19503513600
+          ],
+          "process_disk_read_bytes": [
+            19927883776,
+            19927891968,
+            19927891968
+          ],
+          "draft_tokens": [
+            0,
+            0,
+            0
+          ],
+          "accepted_draft_tokens": [
+            0,
+            0,
+            0
+          ]
+        },
+        "candidate": {
+          "ttft_s": 2.6853849169565365,
+          "decode_tps": 96.18814401326203,
+          "last_token_s": 3.3389092499855906,
+          "ledger_peak_bytes": 24697368202,
+          "process_lifetime_physical_footprint_bytes": 22229434952,
+          "prefill_expert_read_bytes": [
+            0,
+            0,
+            0
+          ],
+          "process_disk_read_bytes": [
+            0,
+            0,
+            0
+          ],
+          "draft_tokens": [
+            0,
+            0,
+            0
+          ],
+          "accepted_draft_tokens": [
+            0,
+            0,
+            0
+          ]
+        },
+        "logits": {
+          "compared_rows": 64,
+          "vocab": 248320,
+          "bitwise_equal_values": 15892480,
+          "bitwise_equal_rows": 64,
+          "equal_argmax_rows": 64,
+          "max_absolute_delta": 0.0,
+          "input_manifest": [
+            [
+              3999,
+              1970,
+              248320
+            ],
+            [
+              4000,
+              364,
+              248320
+            ],
+            [
+              4001,
+              411,
+              248320
+            ],
+            [
+              4002,
+              271,
+              248320
+            ],
+            [
+              4003,
+              248068,
+              248320
+            ],
+            [
+              4004,
+              271,
+              248320
+            ],
+            [
+              4005,
+              248069,
+              248320
+            ],
+            [
+              4006,
+              271,
+              248320
+            ],
+            [
+              4007,
+              57590,
+              248320
+            ],
+            [
+              4008,
+              13,
+              248320
+            ],
+            [
+              4009,
+              561,
+              248320
+            ],
+            [
+              4010,
+              6511,
+              248320
+            ],
+            [
+              4011,
+              314,
+              248320
+            ],
+            [
+              4012,
+              9338,
+              248320
+            ],
+            [
+              4013,
+              369,
+              248320
+            ],
+            [
+              4014,
+              11751,
+              248320
+            ],
+            [
+              4015,
+              13,
+              248320
+            ],
+            [
+              4016,
+              561,
+              248320
+            ],
+            [
+              4017,
+              17593,
+              248320
+            ],
+            [
+              4018,
+              4108,
+              248320
+            ],
+            [
+              4019,
+              5134,
+              248320
+            ],
+            [
+              4020,
+              421,
+              248320
+            ],
+            [
+              4021,
+              279,
+              248320
+            ],
+            [
+              4022,
+              6511,
+              248320
+            ],
+            [
+              4023,
+              314,
+              248320
+            ],
+            [
+              4024,
+              9338,
+              248320
+            ],
+            [
+              4025,
+              369,
+              248320
+            ],
+            [
+              4026,
+              11751,
+              248320
+            ],
+            [
+              4027,
+              13,
+              248320
+            ],
+            [
+              4028,
+              561,
+              248320
+            ],
+            [
+              4029,
+              17593,
+              248320
+            ],
+            [
+              4030,
+              4108,
+              248320
+            ],
+            [
+              4031,
+              5134,
+              248320
+            ],
+            [
+              4032,
+              421,
+              248320
+            ],
+            [
+              4033,
+              279,
+              248320
+            ],
+            [
+              4034,
+              6511,
+              248320
+            ],
+            [
+              4035,
+              314,
+              248320
+            ],
+            [
+              4036,
+              9338,
+              248320
+            ],
+            [
+              4037,
+              369,
+              248320
+            ],
+            [
+              4038,
+              11751,
+              248320
+            ],
+            [
+              4039,
+              13,
+              248320
+            ],
+            [
+              4040,
+              561,
+              248320
+            ],
+            [
+              4041,
+              17593,
+              248320
+            ],
+            [
+              4042,
+              4108,
+              248320
+            ],
+            [
+              4043,
+              5134,
+              248320
+            ],
+            [
+              4044,
+              421,
+              248320
+            ],
+            [
+              4045,
+              279,
+              248320
+            ],
+            [
+              4046,
+              6511,
+              248320
+            ],
+            [
+              4047,
+              314,
+              248320
+            ],
+            [
+              4048,
+              9338,
+              248320
+            ],
+            [
+              4049,
+              369,
+              248320
+            ],
+            [
+              4050,
+              11751,
+              248320
+            ],
+            [
+              4051,
+              13,
+              248320
+            ],
+            [
+              4052,
+              561,
+              248320
+            ],
+            [
+              4053,
+              17593,
+              248320
+            ],
+            [
+              4054,
+              4108,
+              248320
+            ],
+            [
+              4055,
+              5134,
+              248320
+            ],
+            [
+              4056,
+              421,
+              248320
+            ],
+            [
+              4057,
+              279,
+              248320
+            ],
+            [
+              4058,
+              6511,
+              248320
+            ],
+            [
+              4059,
+              314,
+              248320
+            ],
+            [
+              4060,
+              9338,
+              248320
+            ],
+            [
+              4061,
+              369,
+              248320
+            ],
+            [
+              4062,
+              11751,
+              248320
+            ]
+          ],
+          "stock_sha256": "db03e24a005f036f7bbefc9d5a7124c04da6f5bd775326ba5f17b96e10023bb0",
+          "candidate_sha256": "db03e24a005f036f7bbefc9d5a7124c04da6f5bd775326ba5f17b96e10023bb0"
+        },
+        "matching_output_tokens": true,
+        "stock_run": {
+          "mode": "serial",
+          "opt": "off",
+          "kind": "timed",
+          "requests": [
+            {
+              "ttft_s": 3.249707499984652,
+              "decode_tps": 97.78256050782927,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3249.667,
+                "prompt_per_token_ms": 0.81241675,
+                "prompt_per_second": 1230.8953502004977,
+                "predicted_n": 64,
+                "predicted_ms": 644.544,
+                "predicted_per_token_ms": 10.230857142857143,
+                "predicted_per_second": 97.74352100089365
+              },
+              "disk_read_bytes": 19927883776,
+              "snapshots": [
+                {
+                  "resident": 21123694592,
+                  "footprint": 22113272176,
+                  "disk_read": 41363406848,
+                  "lifetime_footprint": 23274046792
+                },
+                {
+                  "resident": 21128183808,
+                  "footprint": 22116794736,
+                  "disk_read": 61291290624,
+                  "lifetime_footprint": 23277552968
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                271,
+                248069,
+                271,
+                57590,
+                13,
+                561,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 3982244930,
+                "budget_used_bytes": 23496388234,
+                "budget_high_water_bytes": 25742864010,
+                "budget_released_bytes": 4459397120,
+                "prefill_window_tokens": 8000,
+                "prefill_window_tails": 2,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "WINDOW_WIDE 1 40 19503513600 3149533 766055 2419507",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            },
+            {
+              "ttft_s": 3.2120167079847306,
+              "decode_tps": 97.31890915824592,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3211.844,
+                "prompt_per_token_ms": 0.802961,
+                "prompt_per_second": 1245.3904984177314,
+                "predicted_n": 64,
+                "predicted_ms": 647.562,
+                "predicted_per_token_ms": 10.278761904761906,
+                "predicted_per_second": 97.2879816913284
+              },
+              "disk_read_bytes": 19927891968,
+              "snapshots": [
+                {
+                  "resident": 21128216576,
+                  "footprint": 22116794736,
+                  "disk_read": 61291290624,
+                  "lifetime_footprint": 23277552968
+                },
+                {
+                  "resident": 21137833984,
+                  "footprint": 22125379952,
+                  "disk_read": 81219182592,
+                  "lifetime_footprint": 23286089032
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                271,
+                248069,
+                271,
+                57590,
+                13,
+                561,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 3982244930,
+                "budget_used_bytes": 23496388234,
+                "budget_high_water_bytes": 25742864010,
+                "budget_released_bytes": 6689095680,
+                "prefill_window_tokens": 12000,
+                "prefill_window_tails": 3,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "WINDOW_WIDE 1 40 19503513600 3112474 738471 2409734",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            },
+            {
+              "ttft_s": 3.438183000020217,
+              "decode_tps": 98.09452689361395,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3437.821,
+                "prompt_per_token_ms": 0.85945525,
+                "prompt_per_second": 1163.5277113031773,
+                "predicted_n": 64,
+                "predicted_ms": 642.408,
+                "predicted_per_token_ms": 10.19695238095238,
+                "predicted_per_second": 98.06851720401987
+              },
+              "disk_read_bytes": 19927891968,
+              "snapshots": [
+                {
+                  "resident": 21137850368,
+                  "footprint": 22125379952,
+                  "disk_read": 81219182592,
+                  "lifetime_footprint": 23286089032
+                },
+                {
+                  "resident": 21138079744,
+                  "footprint": 22129328520,
+                  "disk_read": 101147074560,
+                  "lifetime_footprint": 23290070368
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                271,
+                248069,
+                271,
+                57590,
+                13,
+                561,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 3982244930,
+                "budget_used_bytes": 23496388234,
+                "budget_high_water_bytes": 25742864010,
+                "budget_released_bytes": 8918794240,
+                "prefill_window_tokens": 16000,
+                "prefill_window_tails": 4,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "WINDOW_WIDE 1 40 19503513600 3335431 958195 2413321",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            }
+          ],
+          "environment_overrides": {
+            "ATOMIC_WINDOW_PROFILE": "1"
+          },
+          "process_peaks": {
+            "resident": 22301868032,
+            "footprint": 23290070368,
+            "lifetime_footprint": 23290070368
+          },
+          "command": [
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+            "-m",
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/qwen-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+            "-c",
+            "4096",
+            "-b",
+            "4096",
+            "-ub",
+            "8",
+            "-np",
+            "1",
+            "-t",
+            "8",
+            "-tb",
+            "8",
+            "-ngl",
+            "99",
+            "-ctk",
+            "bf16",
+            "-ctv",
+            "bf16",
+            "-fit",
+            "off",
+            "--cache-ram",
+            "0",
+            "--ctx-checkpoints",
+            "0",
+            "--no-warmup",
+            "--metrics",
+            "--no-webui",
+            "--host",
+            "127.0.0.1",
+            "--engine-budget-mib",
+            "24576",
+            "--port",
+            "59819",
+            "--spec-type",
+            "none"
+          ]
+        },
+        "candidate_run": {
+          "mode": "serial",
+          "opt": "on",
+          "kind": "timed",
+          "requests": [
+            {
+              "ttft_s": 2.5632854999857955,
+              "decode_tps": 94.12795328953327,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 2562.4,
+                "prompt_per_token_ms": 0.6406000000000001,
+                "prompt_per_second": 1561.0365282547612,
+                "predicted_n": 64,
+                "predicted_ms": 669.473,
+                "predicted_per_token_ms": 10.626555555555555,
+                "predicted_per_second": 94.10386976024425
+              },
+              "disk_read_bytes": 0,
+              "snapshots": [
+                {
+                  "resident": 21755101184,
+                  "footprint": 22107308376,
+                  "disk_read": 21260849152,
+                  "lifetime_footprint": 22222996016
+                },
+                {
+                  "resident": 21316665344,
+                  "footprint": 22109356400,
+                  "disk_read": 21260849152,
+                  "lifetime_footprint": 22224994864
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                271,
+                248069,
+                271,
+                57590,
+                13,
+                561,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 3982244930,
+                "budget_used_bytes": 23496388234,
+                "budget_high_water_bytes": 24697368202,
+                "budget_released_bytes": 2368405504,
+                "prefill_window_tokens": 8000,
+                "prefill_window_tails": 2,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "QWEN35_DIRECT_PREFILL 40",
+                "WINDOW_WIDE 0 40 0 0 0 2515743",
+                "WINDOW_WIDE_STAGING 4 0 0"
+              ]
+            },
+            {
+              "ttft_s": 2.6853849169565365,
+              "decode_tps": 96.40038911481383,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 2684.523,
+                "prompt_per_token_ms": 0.67113075,
+                "prompt_per_second": 1490.0226222684626,
+                "predicted_n": 64,
+                "predicted_ms": 653.614,
+                "predicted_per_token_ms": 10.374825396825397,
+                "predicted_per_second": 96.3871642896266
+              },
+              "disk_read_bytes": 0,
+              "snapshots": [
+                {
+                  "resident": 21316681728,
+                  "footprint": 22109356400,
+                  "disk_read": 21260849152,
+                  "lifetime_footprint": 22224994864
+                },
+                {
+                  "resident": 21324087296,
+                  "footprint": 22113681776,
+                  "disk_read": 21260849152,
+                  "lifetime_footprint": 22229385800
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                271,
+                248069,
+                271,
+                57590,
+                13,
+                561,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 3982244930,
+                "budget_used_bytes": 23496388234,
+                "budget_high_water_bytes": 24697368202,
+                "budget_released_bytes": 3552608256,
+                "prefill_window_tokens": 12000,
+                "prefill_window_tails": 3,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "QWEN35_DIRECT_PREFILL 40",
+                "WINDOW_WIDE 0 40 0 0 0 2639010",
+                "WINDOW_WIDE_STAGING 4 0 0"
+              ]
+            },
+            {
+              "ttft_s": 2.783844666031655,
+              "decode_tps": 96.18814401326203,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 2783.008,
+                "prompt_per_token_ms": 0.6957519999999999,
+                "prompt_per_second": 1437.2937483471121,
+                "predicted_n": 64,
+                "predicted_ms": 655.049,
+                "predicted_per_token_ms": 10.397603174603175,
+                "predicted_per_second": 96.17601126022635
+              },
+              "disk_read_bytes": 0,
+              "snapshots": [
+                {
+                  "resident": 21324103680,
+                  "footprint": 22113681776,
+                  "disk_read": 21260849152,
+                  "lifetime_footprint": 22229385800
+                },
+                {
+                  "resident": 21324578816,
+                  "footprint": 22113665392,
+                  "disk_read": 21260849152,
+                  "lifetime_footprint": 22229434952
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                271,
+                248069,
+                271,
+                57590,
+                13,
+                561,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13,
+                561,
+                17593,
+                4108,
+                5134,
+                421,
+                279,
+                6511,
+                314,
+                9338,
+                369,
+                11751,
+                13
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 3982244930,
+                "budget_used_bytes": 23496388234,
+                "budget_high_water_bytes": 24697368202,
+                "budget_released_bytes": 4736811008,
+                "prefill_window_tokens": 16000,
+                "prefill_window_tails": 4,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "QWEN35_DIRECT_PREFILL 40",
+                "WINDOW_WIDE 0 40 0 0 0 2738240",
+                "WINDOW_WIDE_STAGING 4 0 0"
+              ]
+            }
+          ],
+          "environment_overrides": {
+            "ATOMIC_WINDOW_PROFILE": "1",
+            "LLAMA_QWEN35_PREFILL_RESIDENCY": "1"
+          },
+          "process_peaks": {
+            "resident": 22064922624,
+            "footprint": 22229434952,
+            "lifetime_footprint": 22229434952
+          },
+          "command": [
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+            "-m",
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/qwen-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+            "-c",
+            "4096",
+            "-b",
+            "4096",
+            "-ub",
+            "8",
+            "-np",
+            "1",
+            "-t",
+            "8",
+            "-tb",
+            "8",
+            "-ngl",
+            "99",
+            "-ctk",
+            "bf16",
+            "-ctv",
+            "bf16",
+            "-fit",
+            "off",
+            "--cache-ram",
+            "0",
+            "--ctx-checkpoints",
+            "0",
+            "--no-warmup",
+            "--metrics",
+            "--no-webui",
+            "--host",
+            "127.0.0.1",
+            "--engine-budget-mib",
+            "24576",
+            "--port",
+            "59939",
+            "--spec-type",
+            "none"
+          ]
+        }
+      },
+      "draft": {
+        "stock": {
+          "ttft_s": 3.701047791983001,
+          "decode_tps": 112.33767887532274,
+          "last_token_s": 4.378071957966313,
+          "ledger_peak_bytes": 25733133266,
+          "process_lifetime_physical_footprint_bytes": 23115613224,
+          "prefill_expert_read_bytes": [
+            19503513600,
+            19503513600,
+            19503513600
+          ],
+          "process_disk_read_bytes": [
+            19927883776,
+            19927891968,
+            19927891968
+          ],
+          "draft_tokens": [
+            79,
+            79,
+            79
+          ],
+          "accepted_draft_tokens": [
+            49,
+            49,
+            49
+          ]
+        },
+        "candidate": {
+          "ttft_s": 3.3570280830026604,
+          "decode_tps": 129.40290827954195,
+          "last_token_s": 3.843879583000671,
+          "ledger_peak_bytes": 25733133266,
+          "process_lifetime_physical_footprint_bytes": 23505388992,
+          "prefill_expert_read_bytes": [
+            19503513600,
+            19503513600,
+            19503513600
+          ],
+          "process_disk_read_bytes": [
+            19927883776,
+            19927891968,
+            19927891968
+          ],
+          "draft_tokens": [
+            79,
+            79,
+            79
+          ],
+          "accepted_draft_tokens": [
+            49,
+            49,
+            49
+          ]
+        },
+        "logits": {
+          "compared_rows": 94,
+          "vocab": 248320,
+          "bitwise_equal_values": 23342080,
+          "bitwise_equal_rows": 94,
+          "equal_argmax_rows": 94,
+          "max_absolute_delta": 0.0,
+          "input_manifest": [
+            [
+              3999,
+              1970,
+              248320
+            ],
+            [
+              4000,
+              364,
+              248320
+            ],
+            [
+              4001,
+              411,
+              248320
+            ],
+            [
+              4002,
+              21254,
+              248320
+            ],
+            [
+              4003,
+              369,
+              248320
+            ],
+            [
+              4004,
+              443,
+              248320
+            ],
+            [
+              4005,
+              15,
+              248320
+            ],
+            [
+              4006,
+              16,
+              248320
+            ],
+            [
+              4002,
+              271,
+              248320
+            ],
+            [
+              4003,
+              6269,
+              248320
+            ],
+            [
+              4004,
+              220,
+              248320
+            ],
+            [
+              4005,
+              15,
+              248320
+            ],
+            [
+              4006,
+              16,
+              248320
+            ],
+            [
+              4007,
+              20,
+              248320
+            ],
+            [
+              4008,
+              25,
+              248320
+            ],
+            [
+              4003,
+              248068,
+              248320
+            ],
+            [
+              4004,
+              198,
+              248320
+            ],
+            [
+              4005,
+              760,
+              248320
+            ],
+            [
+              4006,
+              17631,
+              248320
+            ],
+            [
+              4007,
+              7803,
+              248320
+            ],
+            [
+              4008,
+              369,
+              248320
+            ],
+            [
+              4009,
+              2708,
+              248320
+            ],
+            [
+              4005,
+              8160,
+              248320
+            ],
+            [
+              4006,
+              579,
+              248320
+            ],
+            [
+              4007,
+              264,
+              248320
+            ],
+            [
+              4008,
+              7047,
+              248320
+            ],
+            [
+              4009,
+              1817,
+              248320
+            ],
+            [
+              4010,
+              25,
+              248320
+            ],
+            [
+              4011,
+              271,
+              248320
+            ],
+            [
+              4012,
+              16,
+              248320
+            ],
+            [
+              4013,
+              13,
+              248320
+            ],
+            [
+              4014,
+              220,
+              248320
+            ],
+            [
+              4015,
+              2972,
+              248320
+            ],
+            [
+              4016,
+              2014,
+              248320
+            ],
+            [
+              4017,
+              53983,
+              248320
+            ],
+            [
+              4018,
+              2570,
+              248320
+            ],
+            [
+              4019,
+              5396,
+              248320
+            ],
+            [
+              4020,
+              64700,
+              248320
+            ],
+            [
+              4021,
+              198,
+              248320
+            ],
+            [
+              4022,
+              256,
+              248320
+            ],
+            [
+              4023,
+              471,
+              248320
+            ],
+            [
+              4024,
+              561,
+              248320
+            ],
+            [
+              4025,
+              1156,
+              248320
+            ],
+            [
+              4026,
+              5529,
+              248320
+            ],
+            [
+              4027,
+              264,
+              248320
+            ],
+            [
+              4028,
+              1248,
+              248320
+            ],
+            [
+              4029,
+              2002,
+              248320
+            ],
+            [
+              4030,
+              314,
+              248320
+            ],
+            [
+              4031,
+              264,
+              248320
+            ],
+            [
+              4032,
+              328,
+              248320
+            ],
+            [
+              4029,
+              1103,
+              248320
+            ],
+            [
+              4030,
+              314,
+              248320
+            ],
+            [
+              4031,
+              7189,
+              248320
+            ],
+            [
+              4032,
+              318,
+              248320
+            ],
+            [
+              4033,
+              15,
+              248320
+            ],
+            [
+              4034,
+              1,
+              248320
+            ],
+            [
+              4035,
+              318,
+              248320
+            ],
+            [
+              4034,
+              15,
+              248320
+            ],
+            [
+              4035,
+              15,
+              248320
+            ],
+            [
+              4036,
+              310,
+              248320
+            ],
+            [
+              4037,
+              220,
+              248320
+            ],
+            [
+              4038,
+              16,
+              248320
+            ],
+            [
+              4039,
+              15,
+              248320
+            ],
+            [
+              4040,
+              15,
+              248320
+            ],
+            [
+              4041,
+              8,
+              248320
+            ],
+            [
+              4042,
+              494,
+              248320
+            ],
+            [
+              4043,
+              264,
+              248320
+            ],
+            [
+              4044,
+              8831,
+              248320
+            ],
+            [
+              4045,
+              2002,
+              248320
+            ],
+            [
+              4046,
+              17593,
+              248320
+            ],
+            [
+              4047,
+              13,
+              248320
+            ],
+            [
+              4044,
+              328,
+              248320
+            ],
+            [
+              4045,
+              2482,
+              248320
+            ],
+            [
+              4046,
+              17593,
+              248320
+            ],
+            [
+              4047,
+              3158,
+              248320
+            ],
+            [
+              4048,
+              198,
+              248320
+            ],
+            [
+              4049,
+              256,
+              248320
+            ],
+            [
+              4050,
+              471,
+              248320
+            ],
+            [
+              4051,
+              561,
+              248320
+            ],
+            [
+              4052,
+              17593,
+              248320
+            ],
+            [
+              4053,
+              4108,
+              248320
+            ],
+            [
+              4054,
+              20335,
+              248320
+            ],
+            [
+              4055,
+              5134,
+              248320
+            ],
+            [
+              4056,
+              25,
+              248320
+            ],
+            [
+              4057,
+              328,
+              248320
+            ],
+            [
+              4058,
+              760,
+              248320
+            ],
+            [
+              4059,
+              6511,
+              248320
+            ],
+            [
+              4060,
+              314,
+              248320
+            ],
+            [
+              4061,
+              9338,
+              248320
+            ],
+            [
+              4062,
+              369,
+              248320
+            ],
+            [
+              4059,
+              17593,
+              248320
+            ],
+            [
+              4060,
+              4108,
+              248320
+            ],
+            [
+              4061,
+              5134,
+              248320
+            ],
+            [
+              4062,
+              421,
+              248320
+            ]
+          ],
+          "stock_sha256": "89d974c5455d317dbbbf270f7ecad0472469d978e8a36e04dfa48c03f7c6b505",
+          "candidate_sha256": "89d974c5455d317dbbbf270f7ecad0472469d978e8a36e04dfa48c03f7c6b505"
+        },
+        "matching_output_tokens": true,
+        "stock_run": {
+          "mode": "draft",
+          "opt": "off",
+          "kind": "timed",
+          "requests": [
+            {
+              "ttft_s": 3.701047791983001,
+              "decode_tps": 93.05428545301424,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3699.87,
+                "prompt_per_token_ms": 0.9249674999999999,
+                "prompt_per_second": 1081.1190663455743,
+                "predicted_n": 64,
+                "predicted_ms": 677.192,
+                "predicted_per_token_ms": 10.749079365079366,
+                "predicted_per_second": 93.03122305047904,
+                "draft_n": 79,
+                "draft_n_accepted": 49
+              },
+              "disk_read_bytes": 19927883776,
+              "snapshots": [
+                {
+                  "resident": 21408235520,
+                  "footprint": 22447227464,
+                  "disk_read": 40563638272,
+                  "lifetime_footprint": 22954951888
+                },
+                {
+                  "resident": 22074867712,
+                  "footprint": 23111173160,
+                  "disk_read": 60491522048,
+                  "lifetime_footprint": 23111173160
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                198,
+                8160,
+                579,
+                264,
+                7047,
+                1817,
+                25,
+                271,
+                16,
+                13,
+                220,
+                2972,
+                2014,
+                53983,
+                2570,
+                5396,
+                64700,
+                198,
+                256,
+                471,
+                561,
+                1156,
+                5529,
+                264,
+                1248,
+                1103,
+                314,
+                7189,
+                318,
+                15,
+                15,
+                15,
+                310,
+                220,
+                16,
+                15,
+                15,
+                8,
+                494,
+                264,
+                328,
+                2482,
+                17593,
+                3158,
+                198,
+                256,
+                471,
+                561,
+                17593,
+                4108,
+                20335,
+                5134,
+                25,
+                328,
+                760,
+                17593,
+                4108,
+                5134,
+                421,
+                279
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 6319848514,
+                "budget_used_bytes": 25029258626,
+                "budget_high_water_bytes": 25733133266,
+                "budget_released_bytes": 5111823120,
+                "prefill_window_tokens": 8000,
+                "prefill_window_tails": 2,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "WINDOW_WIDE 1 40 19503513600 3517939 1048649 2506250",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            },
+            {
+              "ttft_s": 3.963634332991205,
+              "decode_tps": 115.35667414092174,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3962.518,
+                "prompt_per_token_ms": 0.9906295,
+                "prompt_per_second": 1009.4591368417758,
+                "predicted_n": 64,
+                "predicted_ms": 546.128,
+                "predicted_per_token_ms": 8.668698412698413,
+                "predicted_per_second": 115.3575718512876,
+                "draft_n": 79,
+                "draft_n_accepted": 49
+              },
+              "disk_read_bytes": 19927891968,
+              "snapshots": [
+                {
+                  "resident": 22074900480,
+                  "footprint": 23111189544,
+                  "disk_read": 60491522048,
+                  "lifetime_footprint": 23111189544
+                },
+                {
+                  "resident": 22076227584,
+                  "footprint": 23115613224,
+                  "disk_read": 80419414016,
+                  "lifetime_footprint": 23115613224
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                198,
+                8160,
+                579,
+                264,
+                7047,
+                1817,
+                25,
+                271,
+                16,
+                13,
+                220,
+                2972,
+                2014,
+                53983,
+                2570,
+                5396,
+                64700,
+                198,
+                256,
+                471,
+                561,
+                1156,
+                5529,
+                264,
+                1248,
+                1103,
+                314,
+                7189,
+                318,
+                15,
+                15,
+                15,
+                310,
+                220,
+                16,
+                15,
+                15,
+                8,
+                494,
+                264,
+                328,
+                2482,
+                17593,
+                3158,
+                198,
+                256,
+                471,
+                561,
+                17593,
+                4108,
+                20335,
+                5134,
+                25,
+                328,
+                760,
+                17593,
+                4108,
+                5134,
+                421,
+                279
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 6319848514,
+                "budget_used_bytes": 25029258626,
+                "budget_high_water_bytes": 25733133266,
+                "budget_released_bytes": 8347214016,
+                "prefill_window_tokens": 12000,
+                "prefill_window_tails": 3,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "WINDOW_WIDE 1 40 19503513600 3779569 1307654 2508612",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            },
+            {
+              "ttft_s": 3.4583604999934323,
+              "decode_tps": 112.33767887532274,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3457.482,
+                "prompt_per_token_ms": 0.8643705,
+                "prompt_per_second": 1156.9113013458928,
+                "predicted_n": 64,
+                "predicted_ms": 560.773,
+                "predicted_per_token_ms": 8.90115873015873,
+                "predicted_per_second": 112.34492388185593,
+                "draft_n": 79,
+                "draft_n_accepted": 49
+              },
+              "disk_read_bytes": 19927891968,
+              "snapshots": [
+                {
+                  "resident": 22076243968,
+                  "footprint": 23115613224,
+                  "disk_read": 80419414016,
+                  "lifetime_footprint": 23115613224
+                },
+                {
+                  "resident": 22084124672,
+                  "footprint": 23119512616,
+                  "disk_read": 100347305984,
+                  "lifetime_footprint": 23119512616
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                198,
+                8160,
+                579,
+                264,
+                7047,
+                1817,
+                25,
+                271,
+                16,
+                13,
+                220,
+                2972,
+                2014,
+                53983,
+                2570,
+                5396,
+                64700,
+                198,
+                256,
+                471,
+                561,
+                1156,
+                5529,
+                264,
+                1248,
+                1103,
+                314,
+                7189,
+                318,
+                15,
+                15,
+                15,
+                310,
+                220,
+                16,
+                15,
+                15,
+                8,
+                494,
+                264,
+                328,
+                2482,
+                17593,
+                3158,
+                198,
+                256,
+                471,
+                561,
+                17593,
+                4108,
+                20335,
+                5134,
+                25,
+                328,
+                760,
+                17593,
+                4108,
+                5134,
+                421,
+                279
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 6319848514,
+                "budget_used_bytes": 25029258626,
+                "budget_high_water_bytes": 25733133266,
+                "budget_released_bytes": 11582604912,
+                "prefill_window_tokens": 16000,
+                "prefill_window_tails": 4,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "WINDOW_WIDE 1 40 19503513600 3245788 579037 2716893",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            }
+          ],
+          "environment_overrides": {
+            "ATOMIC_WINDOW_PROFILE": "1"
+          },
+          "process_peaks": {
+            "resident": 22471147520,
+            "footprint": 23074407416,
+            "lifetime_footprint": 23115613224
+          },
+          "command": [
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+            "-m",
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/qwen-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+            "-c",
+            "4096",
+            "-b",
+            "4096",
+            "-ub",
+            "8",
+            "-np",
+            "1",
+            "-t",
+            "8",
+            "-tb",
+            "8",
+            "-ngl",
+            "99",
+            "-ctk",
+            "bf16",
+            "-ctv",
+            "bf16",
+            "-fit",
+            "off",
+            "--cache-ram",
+            "0",
+            "--ctx-checkpoints",
+            "0",
+            "--no-warmup",
+            "--metrics",
+            "--no-webui",
+            "--host",
+            "127.0.0.1",
+            "--engine-budget-mib",
+            "24576",
+            "--port",
+            "60017",
+            "--spec-type",
+            "draft-dflash",
+            "-ngld",
+            "99",
+            "--spec-draft-n-max",
+            "6",
+            "--spec-draft-n-ubatch",
+            "128",
+            "-md",
+            "/private/tmp/atomic-qwen35-dflash2/qwen35-dflash2.gguf"
+          ]
+        },
+        "candidate_run": {
+          "mode": "draft",
+          "opt": "on",
+          "kind": "timed",
+          "requests": [
+            {
+              "ttft_s": 3.3624579169554636,
+              "decode_tps": 126.36372762301146,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3361.312,
+                "prompt_per_token_ms": 0.840328,
+                "prompt_per_second": 1190.011519311507,
+                "predicted_n": 64,
+                "predicted_ms": 498.618,
+                "predicted_per_token_ms": 7.914571428571429,
+                "predicted_per_second": 126.34922926970145,
+                "draft_n": 79,
+                "draft_n_accepted": 49
+              },
+              "disk_read_bytes": 19927883776,
+              "snapshots": [
+                {
+                  "resident": 22443589632,
+                  "footprint": 23181346024,
+                  "disk_read": 40668786688,
+                  "lifetime_footprint": 23181346024
+                },
+                {
+                  "resident": 22267494400,
+                  "footprint": 23501325760,
+                  "disk_read": 60596670464,
+                  "lifetime_footprint": 23501325760
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                198,
+                8160,
+                579,
+                264,
+                7047,
+                1817,
+                25,
+                271,
+                16,
+                13,
+                220,
+                2972,
+                2014,
+                53983,
+                2570,
+                5396,
+                64700,
+                198,
+                256,
+                471,
+                561,
+                1156,
+                5529,
+                264,
+                1248,
+                1103,
+                314,
+                7189,
+                318,
+                15,
+                15,
+                15,
+                310,
+                220,
+                16,
+                15,
+                15,
+                8,
+                494,
+                264,
+                328,
+                2482,
+                17593,
+                3158,
+                198,
+                256,
+                471,
+                561,
+                17593,
+                4108,
+                20335,
+                5134,
+                25,
+                328,
+                760,
+                17593,
+                4108,
+                5134,
+                421,
+                279
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 6319848514,
+                "budget_used_bytes": 25435858818,
+                "budget_high_water_bytes": 25733133266,
+                "budget_released_bytes": 3764749200,
+                "prefill_window_tokens": 8000,
+                "prefill_window_tails": 2,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "QWEN35_PREFILL_RETAINED 1044381696",
+                "WINDOW_WIDE 1 40 19503513600 3187059 710311 2513361",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            },
+            {
+              "ttft_s": 3.3358598339837044,
+              "decode_tps": 131.03405560685505,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3334.845,
+                "prompt_per_token_ms": 0.8337112499999999,
+                "prompt_per_second": 1199.4560466828295,
+                "predicted_n": 64,
+                "predicted_ms": 480.785,
+                "predicted_per_token_ms": 7.631507936507937,
+                "predicted_per_second": 131.03570202897345,
+                "draft_n": 79,
+                "draft_n_accepted": 49
+              },
+              "disk_read_bytes": 19927891968,
+              "snapshots": [
+                {
+                  "resident": 22267609088,
+                  "footprint": 23501342144,
+                  "disk_read": 60596670464,
+                  "lifetime_footprint": 23501342144
+                },
+                {
+                  "resident": 22273785856,
+                  "footprint": 23505388992,
+                  "disk_read": 80524562432,
+                  "lifetime_footprint": 23505388992
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                198,
+                8160,
+                579,
+                264,
+                7047,
+                1817,
+                25,
+                271,
+                16,
+                13,
+                220,
+                2972,
+                2014,
+                53983,
+                2570,
+                5396,
+                64700,
+                198,
+                256,
+                471,
+                561,
+                1156,
+                5529,
+                264,
+                1248,
+                1103,
+                314,
+                7189,
+                318,
+                15,
+                15,
+                15,
+                310,
+                220,
+                16,
+                15,
+                15,
+                8,
+                494,
+                264,
+                328,
+                2482,
+                17593,
+                3158,
+                198,
+                256,
+                471,
+                561,
+                17593,
+                4108,
+                20335,
+                5134,
+                25,
+                328,
+                760,
+                17593,
+                4108,
+                5134,
+                421,
+                279
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 6319848514,
+                "budget_used_bytes": 25435858818,
+                "budget_high_water_bytes": 25733133266,
+                "budget_released_bytes": 6361863776,
+                "prefill_window_tokens": 12000,
+                "prefill_window_tails": 3,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "QWEN35_PREFILL_RETAINED 1044381696",
+                "WINDOW_WIDE 1 40 19503513600 3161152 657564 2540080",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            },
+            {
+              "ttft_s": 3.3570280830026604,
+              "decode_tps": 129.40290827954195,
+              "timings": {
+                "cache_n": 0,
+                "prompt_n": 4000,
+                "prompt_ms": 3356.129,
+                "prompt_per_token_ms": 0.8390322499999999,
+                "prompt_per_second": 1191.8493001907852,
+                "predicted_n": 64,
+                "predicted_ms": 486.845,
+                "predicted_per_token_ms": 7.727698412698413,
+                "predicted_per_second": 129.40463597243476,
+                "draft_n": 79,
+                "draft_n_accepted": 49
+              },
+              "disk_read_bytes": 19927891968,
+              "snapshots": [
+                {
+                  "resident": 22273802240,
+                  "footprint": 23505388992,
+                  "disk_read": 80524562432,
+                  "lifetime_footprint": 23505388992
+                },
+                {
+                  "resident": 22275211264,
+                  "footprint": 23505421760,
+                  "disk_read": 100452454400,
+                  "lifetime_footprint": 23505421760
+                }
+              ],
+              "output_ids": [
+                364,
+                411,
+                271,
+                248068,
+                198,
+                8160,
+                579,
+                264,
+                7047,
+                1817,
+                25,
+                271,
+                16,
+                13,
+                220,
+                2972,
+                2014,
+                53983,
+                2570,
+                5396,
+                64700,
+                198,
+                256,
+                471,
+                561,
+                1156,
+                5529,
+                264,
+                1248,
+                1103,
+                314,
+                7189,
+                318,
+                15,
+                15,
+                15,
+                310,
+                220,
+                16,
+                15,
+                15,
+                8,
+                494,
+                264,
+                328,
+                2482,
+                17593,
+                3158,
+                198,
+                256,
+                471,
+                561,
+                17593,
+                4108,
+                20335,
+                5134,
+                25,
+                328,
+                760,
+                17593,
+                4108,
+                5134,
+                421,
+                279
+              ],
+              "ledger": {
+                "budget_requested_bytes": 25769803776,
+                "budget_applied_bytes": 25769803776,
+                "budget_minimum_bytes": 6319848514,
+                "budget_used_bytes": 25435858818,
+                "budget_high_water_bytes": 25733133266,
+                "budget_released_bytes": 8958978352,
+                "prefill_window_tokens": 16000,
+                "prefill_window_tails": 4,
+                "prefill_window_fallbacks": 0,
+                "prefill_window_failed": 0
+              },
+              "profile": [
+                "QWEN35_PREFILL_RETAINED 1044381696",
+                "WINDOW_WIDE 1 40 19503513600 3181822 629018 2590175",
+                "WINDOW_WIDE_STAGING 4 0 19503513600"
+              ]
+            }
+          ],
+          "environment_overrides": {
+            "ATOMIC_WINDOW_PROFILE": "1",
+            "LLAMA_QWEN35_PREFILL_RESIDENCY": "1"
+          },
+          "process_peaks": {
+            "resident": 22516760576,
+            "footprint": 23475340712,
+            "lifetime_footprint": 23505388992
+          },
+          "command": [
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+            "-m",
+            "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/mantis/models/models/qwen-35b/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+            "-c",
+            "4096",
+            "-b",
+            "4096",
+            "-ub",
+            "8",
+            "-np",
+            "1",
+            "-t",
+            "8",
+            "-tb",
+            "8",
+            "-ngl",
+            "99",
+            "-ctk",
+            "bf16",
+            "-ctv",
+            "bf16",
+            "-fit",
+            "off",
+            "--cache-ram",
+            "0",
+            "--ctx-checkpoints",
+            "0",
+            "--no-warmup",
+            "--metrics",
+            "--no-webui",
+            "--host",
+            "127.0.0.1",
+            "--engine-budget-mib",
+            "24576",
+            "--port",
+            "60084",
+            "--spec-type",
+            "draft-dflash",
+            "-ngld",
+            "99",
+            "--spec-draft-n-max",
+            "6",
+            "--spec-draft-n-ubatch",
+            "128",
+            "-md",
+            "/private/tmp/atomic-qwen35-dflash2/qwen35-dflash2.gguf"
+          ]
+        }
+      }
+    }
+  }
+}

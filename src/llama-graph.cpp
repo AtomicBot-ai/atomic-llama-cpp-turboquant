@@ -1,6 +1,7 @@
 #include "llama-graph.h"
 #include "llama-expert-executor.h"
 #include "llama-memory-contract.h"
+#include "../ggml/src/ggml-atomic-attention.h"
 
 #include "llama-impl.h"
 #include "llama-model.h"
@@ -1404,7 +1405,7 @@ bool llm_graph_input_sampling::can_reuse(const llm_graph_params & params) {
 // llm_graph_result
 //
 
-llm_graph_result::llm_graph_result(int64_t max_nodes) : max_nodes(max_nodes) {
+llm_graph_result::llm_graph_result(int64_t max_nodes, void * external_meta) : max_nodes(max_nodes), external_meta(external_meta) {
     reset();
 
     const char * LLAMA_GRAPH_RESULT_DEBUG = getenv("LLAMA_GRAPH_RESULT_DEBUG");
@@ -1443,15 +1444,15 @@ void llm_graph_result::reset() {
     hdmd_inputs.clear();
 
     const size_t meta_size = ggml_tensor_overhead()*max_nodes + ggml_graph_overhead_custom(max_nodes, false);
-    if (meta_size != buf_compute_meta_size) {
+    if (!external_meta && meta_size != buf_compute_meta_size) {
         // not make_unique: it would zero the whole reserve and make its pages resident
         buf_compute_meta.reset(new uint8_t[meta_size]);
         buf_compute_meta_size = meta_size;
     }
 
     ggml_init_params params = {
-        /*.mem_size   =*/ buf_compute_meta_size,
-        /*.mem_buffer =*/ buf_compute_meta.get(),
+        /*.mem_size   =*/ meta_size,
+        /*.mem_buffer =*/ external_meta ? external_meta : buf_compute_meta.get(),
         /*.no_alloc   =*/ true,
     };
 
@@ -1593,6 +1594,9 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     cross            (params.cross),
     moe_cache        (params.moe_cache),
     expert_executor  (params.expert_executor),
+    expert_graph_lookahead(params.expert_graph_lookahead),
+    grouped_attention_variant(params.grouped_attention_variant),
+    prefill_expert_weights(params.prefill_expert_weights),
     prec_policy      (params.prec_policy),
     hdmd             (params.hdmd),
     layer_inp_dev    (params.layer_inp_dev),
@@ -2286,6 +2290,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * selected_experts_in,
          ggml_tensor * post_exp_norm,
                float   post_exp_norm_eps) const {
+    if (prefill_expert_weights && il >= 0 && il < n_layer) {
+        const auto & weights = prefill_expert_weights[il];
+        GGML_ASSERT(weights[0] && weights[1] && weights[2]);
+        gate_exps = weights[0];
+        up_exps   = weights[1];
+        down_exps = weights[2];
+    } else if (expert_executor && (model.arch == LLM_ARCH_LFM2MOE ||
+            (model.memory_contract && model.memory_contract->qwen35_profile_layers))) {
+        if (const auto * resident = expert_executor->resident_layer(il)) {
+            gate_exps = (*resident)[0];
+            up_exps   = (*resident)[1];
+            down_exps = (*resident)[2];
+        }
+    }
+    // Executor descriptors survive graph rebuilds. Only a publication emitted
+    // by this call may reorder shared work, including after adapter/fallback changes.
+    published_moe_for_shared = nullptr;
     const llm_arch arch = model.arch;
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
@@ -2463,6 +2484,36 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // the experts selected by mm_ids, up to the down projection, from the MoE cache if cached
     // ids are the selected experts, for the biases and scales
     auto build_experts = [&](ggml_tensor * cur, ggml_tensor * ids, ggml_tensor * mm_ids, bool cached) {
+        // A private streaming capability owns the complete routed FP32 FFN.
+        // Keep router, shared FFN, weighting and reduction in the original graph.
+        if (expert_executor && ((expert_executor->combined_moe_enabled() && n_outputs == ubatch.n_tokens) ||
+                expert_executor->fused_window_moe_enabled()) && !mm_ids &&
+                loras->empty() && !gate_up_exps && !up_exps_b && !gate_exps_b &&
+                !up_exps_s && !gate_exps_s && !down_exps_s && type_op == LLM_FFN_SILU &&
+                (il < 0 || hparams.swiglu_clamp_exp[il] <= 1e-6f) &&
+                (!hdmd || (!hdmd->rot.count(up_exps) && !hdmd->rot.count(gate_exps) && !hdmd->rot.count(down_exps))) &&
+                (!prec_policy || (prec_policy->prec_acc.empty() && prec_policy->prec_src1.empty()))) {
+            const ggml_tensor * next_router = nullptr;
+            std::array<const ggml_tensor *, 3> next_weights{};
+            if ((arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_QWEN35MOE) && expert_executor->moe_lookahead_enabled() &&
+                    il >= 0 && il + 1 < int(hparams.n_layer())) {
+                const auto & next = model.layers[il + 1];
+                if (!next.ffn_exp_probs_b && !next.ffn_gate_inp_b) {
+                    next_router = next.ffn_gate_inp;
+                    next_weights = {next.ffn_up_exps, next.ffn_gate_exps, next.ffn_down_exps};
+                }
+            }
+            if (auto * combined = expert_executor->build_moe(ctx0, up_exps, gate_exps, down_exps, cur, ids,
+                    next_router, next_weights, expert_graph_lookahead && il >= 0 && il < int(hparams.n_layer()) ? sched : nullptr)) {
+                if (expert_executor->moe_route_published(combined->src[1])) {
+                    ggml_build_forward_expand(gf, combined->src[1]);
+                    if (expert_executor->moe_shared_publication(up_exps)) published_moe_for_shared = up_exps;
+                }
+                ggml_backend_sched_set_tensor_backend(sched, combined, backend_cpu);
+                cb(combined, "ffn_moe_down", il);
+                return combined;
+            }
+        }
         ggml_tensor * up = nullptr;
 
         if (gate_up_exps) {
@@ -3087,6 +3138,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         } else {
             cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
                                       hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+        }
+        if (grouped_attention_variant && !kv_rows) {
+            cur->op_params[GGML_ATOMIC_FA_VARIANT] = grouped_attention_variant;
         }
         res->add_fused_node({kv_rows ? LLM_FUSED_OP_FLASH_ATTN_KV_ROWS : LLM_FUSED_OP_FLASH_ATTN, cur, il});
 

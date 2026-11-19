@@ -1,4 +1,5 @@
 #include "ggml-metal-expert.h"
+#include "ggml-metal-route-publication.h"
 #include "ggml-metal.h"
 
 #include "ggml-impl.h"
@@ -1034,7 +1035,76 @@ static bool ggml_backend_metal_last_graph_timing(ggml_backend_t backend, uint64_
     return ggml_metal_last_graph_timing((ggml_metal_t) backend->context, gpu_ns, buffers);
 }
 
+static enum ggml_status ggml_backend_metal_compute_graph_prefix(ggml_backend_t backend, ggml_cgraph * graph, int nodes) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+    return ggml_metal_graph_compute_prefix((ggml_metal_t) backend->context, graph, nodes);
+}
+
+static bool ggml_backend_metal_wait_graph_prefix(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+    return ggml_metal_wait_graph_prefix((ggml_metal_t) backend->context);
+}
+
+// Private v1 contract: a host-visible I64 table holds pointers to leased,
+// separately allocated expert tensors. The table and every lease must outlive
+// graph completion. Only the backend interprets the address-routing marker.
+static bool ggml_backend_metal_expert_addresses_v1(ggml_tensor * op, ggml_tensor * table) {
+    if (!op || op->op != GGML_OP_MUL_MAT_ID || !table || table->type != GGML_TYPE_I64 ||
+        table->ne[0] < 1 || table->ne[0] > GGML_METAL_EXPERT_ADDRESS_LIMIT || table->ne[1] != 1 || table->ne[2] != 1 ||
+        !table->data || !ggml_backend_metal_buffer_get_host_base(table->buffer) || op->src[1]->ne[2] != 1) { return false; }
+    const auto * refs = static_cast<const uint64_t *>(table->data);
+    for (int64_t i = 0; i < table->ne[0]; ++i) {
+        const auto * tensor = reinterpret_cast<const ggml_tensor *>(uintptr_t(refs[i]));
+        if (!tensor || !tensor->buffer || !ggml_backend_buffer_is_metal(tensor->buffer) || tensor->type != op->src[0]->type || tensor->ne[2] != 1 ||
+            tensor->ne[0] != op->src[0]->ne[0] || tensor->ne[1] != op->src[0]->ne[1]) { return false; }
+    }
+    op->src[3] = table;
+    op->op_params[0] = 0x41544144;
+    return true;
+}
+
+// Mark a dedicated contiguous route copy. Scheduler copies preserve op_params.
+static bool ggml_backend_metal_route_attach(ggml_tensor * node, void * channel,
+        void (*arm)(void *, uint64_t, uint64_t, size_t), void * user, uint64_t generation) {
+    if (!node || node->op != GGML_OP_CONT || node->type != GGML_TYPE_I32 || !ggml_is_contiguous(node) ||
+        ggml_nelements(node) < 1 || ggml_nelements(node) > GGML_METAL_ROUTE_MAX_IDS || !channel || !arm) return false;
+    struct params { int32_t marker, reserved; void * channel; decltype(arm) callback; void * user; uint64_t generation; };
+    static_assert(sizeof(params) <= GGML_MAX_OP_PARAMS, "route marker must fit op_params");
+    const params p{GGML_METAL_ROUTE_MARKER, 0, channel, arm, user, generation};
+    memcpy(node->op_params, &p, sizeof(p));
+    return true;
+}
+static void * ggml_backend_metal_route_create(ggml_backend_t backend) {
+    return ggml_backend_is_metal(backend) ? ggml_metal_route_create(ggml_backend_get_device(backend)->context) : nullptr;
+}
+static const ggml_metal_route_api route_api = {
+    65536, ggml_backend_metal_route_create, ggml_metal_route_destroy,
+    ggml_backend_metal_route_attach, ggml_metal_route_read,
+};
+
 static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    if (strcmp(name, "ggml_backend_metal_window_append") == 0) {
+        return (void *) +[](ggml_backend_t backend, ggml_cgraph * graph) {
+            return ggml_metal_window_append((ggml_metal_t) backend->context, graph);
+        };
+    }
+    if (strcmp(name, "ggml_backend_metal_window_flush") == 0) {
+        return (void *) +[](ggml_backend_t backend, uint64_t * submissions) {
+            return ggml_metal_window_flush((ggml_metal_t) backend->context, submissions);
+        };
+    }
+    if (strcmp(name, "ggml_backend_metal_route_publication_v1") == 0) {
+        return (void *) &route_api;
+    }
+    if (strcmp(name, "ggml_backend_metal_expert_addresses_v1") == 0) {
+        return (void *) ggml_backend_metal_expert_addresses_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_compute_graph_prefix") == 0) {
+        return (void *) ggml_backend_metal_compute_graph_prefix;
+    }
+    if (strcmp(name, "ggml_backend_metal_wait_graph_prefix") == 0) {
+        return (void *) ggml_backend_metal_wait_graph_prefix;
+    }
     if (strcmp(name, "ggml_backend_metal_prepare_single_expert") == 0) {
         return (void *) ggml_backend_metal_prepare_single_expert;
     }

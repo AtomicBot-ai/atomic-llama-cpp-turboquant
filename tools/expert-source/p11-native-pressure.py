@@ -41,7 +41,7 @@ def main():
         parser.error("server and model files must exist")
 
     prompt = (Path(__file__).resolve().parents[2] /
-              "docs/atomic-turbine-completion.txt").read_text()
+              "docs/atomic-engine-completion.txt").read_text()
     budget = 5120 * MIB
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))

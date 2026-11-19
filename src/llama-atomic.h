@@ -6,7 +6,7 @@
 #include "llama-expert-trace.h"
 #include "llama-expert-profile.h"
 
-// Idle-only opt-in and counters. Unsupported requests use ordinary scheduling.
+// Idle-only override and counters for managed Metal prefill windows.
 // On a window compute failure, discard the context (partially advanced state).
 struct llama_prefill_window_data {
     bool enabled = false, failed = false;
@@ -23,6 +23,13 @@ LLAMA_API llama_model * llama_load_discrete_model(const char * path, llama_model
 // Idle-only profiling control/snapshot. Enabling resets cumulative phase times.
 LLAMA_API bool llama_expert_profile_set(struct llama_context * ctx, bool enabled);
 LLAMA_API bool llama_expert_profile_get(const struct llama_context * ctx, llama_expert_profile_data * result);
+LLAMA_API bool llama_atomic_qwen35_profile_set(struct llama_model * target, uint32_t layers);
+LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target);
+constexpr size_t llama_atomic_dflash2_slot_staging_bytes(uint32_t context) {
+    return size_t(context == 4096 ? 128 : 32) << 20;
+}
+LLAMA_API struct llama_model * llama_atomic_dflash2_load(
+        struct llama_model * target, const char * path, struct llama_model_params params);
 // Idle-only diagnostic control for bounded known-route reads during GPU work.
 // Defaults on for LFM/Qwen3.5 MoE Metal matrix waves; falls back when headroom is low.
 LLAMA_API bool llama_expert_read_overlap_set(struct llama_context * ctx, bool enabled);
@@ -59,6 +66,11 @@ struct llama_expert_streaming_data {
     size_t requested, applied, used, high_water, minimum_bytes;
     uint64_t hits, misses, evictions, logical_read_bytes, projections, matmuls;
     uint64_t buffer_allocations, buffer_reuses, submissions;
+    uint64_t packed_reads, packed_reuses;
+    uint64_t parallel_batches, parallel_reads;
+    uint64_t combined_moe;
+    uint64_t moe_pipeline_groups, moe_resident_starts;
+    uint64_t reclaim_calls, reclaim_evictions, reclaim_bytes;
 };
 LLAMA_API bool llama_get_expert_streaming_stats(const struct llama_context * ctx, llama_expert_streaming_data * result);
 

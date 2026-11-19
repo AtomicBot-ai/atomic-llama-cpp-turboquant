@@ -35,12 +35,37 @@ using llama_expert_read_probe = bool (*)(void * user, int fd, size_t offset, voi
 
 class llama_expert_source {
 public:
+    struct packed_group {
+        size_t file_offset;
+        size_t stride; // three original slices followed by their CRC32
+        size_t experts;
+    };
+    struct packed_slice {
+        const packed_group * group = nullptr;
+        size_t offset = 0;
+    };
+
     explicit llama_expert_source(const std::vector<std::string> & paths);
     ~llama_expert_source();
 
     const std::string & architecture() const;
     const std::vector<llama_expert_tensor_info> & tensors() const;
     const llama_expert_tensor_info & tensor(const std::string & name) const;
+    // Configure before sharing the source. Missing files leave GGUF reads active.
+    bool open_expert_pack(const std::string & path);
+    size_t packed_stride() const;
+    packed_slice packed_location(size_t tensor_index) const;
+    void read_packed_expert(const packed_group & group, int64_t expert, void * dst);
+    bool advise_packed_expert(const packed_group & group, int64_t expert);
+    // Exact demand reads into independently admitted, unpublished host buffers.
+    // The calling thread retains ownership of every destination until return.
+    struct read_request {
+        const llama_expert_tensor_info * tensor = nullptr;
+        int64_t expert = 0;
+        void * destination = nullptr;
+    };
+    void read_experts(const read_request * requests, size_t count, bool speculative = false,
+                    bool concurrent_demand = false, bool adjacent_ranges = false);
     // Best-effort macOS file-cache hint for one known demand expert. No user
     // buffer, published weight, offset change or validation bypass. False means
     // unsupported, invalid or declined; demand must still use read_expert.

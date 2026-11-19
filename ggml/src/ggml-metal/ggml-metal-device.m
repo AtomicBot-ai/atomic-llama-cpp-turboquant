@@ -831,12 +831,16 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_compile_pipeline(ggml_
 
 struct ggml_metal_encoder {
     id<MTLComputeCommandEncoder> obj;
+    id<MTLCommandBuffer> cmd_buf; // borrowed for the encoder lifetime
+    bool concurrent;
 };
 
 ggml_metal_encoder_t ggml_metal_encoder_init(ggml_metal_cmd_buf_t cmd_buf_raw, bool concurrent) {
     ggml_metal_encoder_t res = calloc(1, sizeof(struct ggml_metal_encoder));
 
     id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>) cmd_buf_raw;
+    res->cmd_buf = cmd_buf;
+    res->concurrent = concurrent;
 
     if (concurrent) {
         res->obj = [cmd_buf computeCommandEncoderWithDispatchType: MTLDispatchTypeConcurrent];
@@ -887,6 +891,17 @@ void ggml_metal_encoder_set_threadgroup_memory_size(ggml_metal_encoder_t encoder
     [encoder->obj setThreadgroupMemoryLength:size atIndex:idx];
 }
 
+void ggml_metal_encoder_set_expert_addresses(ggml_metal_encoder_t encoder, const struct ggml_metal_buffer_id * buffers, size_t n);
+void ggml_metal_encoder_set_expert_addresses(ggml_metal_encoder_t encoder, const struct ggml_metal_buffer_id * buffers, size_t n) {
+    GGML_ASSERT(n > 0 && n <= GGML_METAL_EXPERT_ADDRESS_LIMIT);
+    uint64_t addresses[GGML_METAL_EXPERT_ADDRESS_LIMIT];
+    for (size_t i = 0; i < n; ++i) {
+        id<MTLBuffer> buffer = (__bridge id<MTLBuffer>) buffers[i].metal;
+        addresses[i] = buffer.gpuAddress + buffers[i].offs;
+        [encoder->obj useResource:buffer usage:MTLResourceUsageRead];
+    }
+    [encoder->obj setBytes:addresses length:n*sizeof(uint64_t) atIndex:1];
+}
 void ggml_metal_encoder_dispatch_threadgroups(ggml_metal_encoder_t encoder, int tg0, int tg1, int tg2, int tptg0, int tptg1, int tptg2) {
     [encoder->obj dispatchThreadgroups:MTLSizeMake(tg0, tg1, tg2) threadsPerThreadgroup:MTLSizeMake(tptg0, tptg1, tptg2)];
 }
@@ -2783,3 +2798,7 @@ struct ggml_metal_buffer_id ggml_metal_buffer_get_id(ggml_metal_buffer_t buf, co
 }
 
 #include "ggml-metal-expert-buffer.m.inc"
+
+void ggml_metal_encoder_publish_routes(ggml_metal_encoder_t, struct ggml_metal_buffer_id, void *,
+        void (*)(void *, uint64_t, uint64_t, size_t), void *, uint64_t, size_t);
+#include "ggml-metal-route-publication.m.inc"

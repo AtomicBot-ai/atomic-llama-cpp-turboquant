@@ -10,6 +10,9 @@
 // Like other control objects, it is covered by the runtime envelope.
 struct llama_context_budget {
     llama_prefill_window_data prefill_window;
+    bool prefill_window_wide_default = false;
+    uint32_t partial_wide_min = 0;
+    bool prefill_window_legacy = false;
     std::shared_ptr<void> budget_session;
     mutable std::mutex budget_mutex;
     size_t budget_requested = 0;

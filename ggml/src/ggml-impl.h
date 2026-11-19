@@ -32,6 +32,9 @@ void ggml_print_backtrace(void);
 
 uint64_t ggml_graph_next_uid(void);
 
+// A caller-owned, no-alloc arena may release unused pages after graph build.
+GGML_API bool ggml_trim_external_context(struct ggml_context * ctx, size_t bytes);
+
 #ifndef MIN
 #    define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif

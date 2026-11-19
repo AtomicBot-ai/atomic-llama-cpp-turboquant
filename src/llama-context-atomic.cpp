@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "llama-qwen35-metal-profile.h"
 #include "llama-io.h"
 #include "llama-mmap.h"
 #include "llama-context-budget.h"
@@ -9,8 +10,84 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <exception>
 #include <stdexcept>
+
+bool llama_atomic_qwen35_profile_set(llama_model * target, uint32_t layers) {
+    if (!target || !target->memory_contract || target->memory_contract->discrete.device ||
+            !target->expert_source || target->arch != LLM_ARCH_QWEN35MOE || target->ftype() != LLAMA_FTYPE_MOSTLY_Q4_K_M ||
+            target->hparams.n_layer() != 40 || !layers || layers > 40) { return false; }
+    const auto device = target->dev_output();
+    if (!device || std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "MTL")) { return false; }
+    for (uint32_t i = 0; i < target->hparams.n_layer(); ++i) {
+        const auto & layer = target->layers[i];
+        if (target->dev_layer(i) != device || !target->streamed_experts.count(layer.ffn_gate_exps) ||
+                !target->streamed_experts.count(layer.ffn_up_exps) || !target->streamed_experts.count(layer.ffn_down_exps) ||
+                layer.ffn_gate_exps->type != GGML_TYPE_Q4_K || layer.ffn_up_exps->type != GGML_TYPE_Q4_K ||
+                (layer.ffn_down_exps->type != GGML_TYPE_Q4_K && layer.ffn_down_exps->type != GGML_TYPE_Q6_K)) { return false; }
+    }
+    auto & contract = *target->memory_contract;
+    const size_t cap = contract.ledger->snapshot(llama_memory_domain::host).requested;
+    contract.qwen35_profile_layers = layers;
+    contract.qwen35_fast_prefill_default = llama_qwen35_fast_prefill_default(cap);
+    const char * grouped = std::getenv("LLAMA_QWEN35_GQA8");
+    contract.qwen35_grouped_attention = grouped ? !std::strcmp(grouped, "1") :
+            contract.qwen35_fast_prefill_default && (cap >= (size_t(10) << 30) || layers == 1);
+    return true;
+}
+
+bool llama_atomic_dflash2_enable(llama_model * target) {
+    if (!target || !target->memory_contract || target->memory_contract->discrete.device || !target->expert_source) {
+        return false;
+    }
+    const size_t cap = target->memory_contract->ledger->snapshot(llama_memory_domain::host).requested;
+    const auto & hp = target->hparams;
+    const bool flash = cap == (size_t(18) << 30) && target->arch == LLM_ARCH_QWEN4EXP &&
+        hp.n_layer() == 48 && target->streamed_ple;
+    const bool qwen35 = (target->memory_contract->qwen35_profile_layers || cap == (size_t(8) << 30)) && target->arch == LLM_ARCH_QWEN35MOE &&
+        hp.n_layer() == 40 && hp.n_embd == 2048 && hp.n_expert == 256 && hp.n_expert_used_max() == 8;
+    const auto device = target->dev_output();
+    if ((!flash && !qwen35) || !device || std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "MTL") != 0) {
+        return false;
+    }
+    // One file action at a time on the inference thread. Reserve the bounded
+    // host staging for saving or loading the draft appendix before evaluation.
+    auto & contract = *target->memory_contract;
+    contract.draft_slot_staging = contract.ledger->reserve(llama_memory_domain::host,
+            llama_memory_category::io, llama_atomic_dflash2_slot_staging_bytes(qwen35 ? 4096 : 1024));
+    if (!contract.draft_slot_staging) { return false; }
+    if (qwen35 && contract.qwen35_profile_layers == 40 &&
+            (cap == (size_t(24) << 30) || cap == (size_t(26) << 30))) {
+        const char * mode = std::getenv("LLAMA_QWEN35_RESIDENT_VERIFY");
+        if (mode) {
+            contract.qwen35_grouped_attention = !std::strcmp(mode, "1");
+            contract.qwen35_resident_verify = contract.qwen35_grouped_attention || !std::strcmp(mode, "exact");
+        } else {
+            contract.qwen35_resident_verify = contract.qwen35_fast_prefill_default;
+        }
+    }
+    contract.dflash2_target = true;
+    return true;
+}
+
+llama_model * llama_atomic_dflash2_load(llama_model * target, const char * path, llama_model_params params) {
+    if (!target || !target->memory_contract || !target->memory_contract->dflash2_target) { return nullptr; }
+    auto ledger = target->memory_contract->ledger;
+    llama_allocation_scope admission(ledger, llama_memory_category::drafter);
+    params.memory_budget_size = 0;
+    params.load_mode = LLAMA_LOAD_MODE_NONE;
+    params.use_extra_bufts = false;
+    std::unique_ptr<llama_model> draft(llama_model_load_from_file(path, params));
+    if (!draft || draft->arch != LLM_ARCH_DFLASH || !draft->hparams.dflash_selector_top_k ||
+            draft->vocab.n_tokens() != target->vocab.n_tokens() || draft->hparams.n_embd != target->hparams.n_embd ||
+            draft->target_layer_ids.empty() || std::any_of(draft->target_layer_ids.begin(), draft->target_layer_ids.end(),
+                [&](int32_t i) { return i < 0 || uint32_t(i) >= target->hparams.n_layer(); })) {
+        return nullptr;
+    }
+    draft->memory_contract = std::make_shared<llama_memory_contract>(ledger);
+    return draft.release();
+}
 
 bool llama_atomic_prefix_supported(const llama_context * ctx) {
 #if defined(__linux__)
@@ -157,7 +234,11 @@ bool llama_context::expert_streaming_stats(llama_expert_streaming_data & result)
     if (!expert_executor) { return false; }
     const auto s = expert_executor->stats();
     result = {s.memory.requested, s.memory.applied, s.memory.used(), s.memory.high_water, s.minimum_bytes,
-              s.store.hits, s.store.misses, s.store.evictions, s.store.logical_read_bytes, s.projections, s.matmuls, s.store.buffer_allocations, s.store.buffer_reuses, s.submissions};
+            s.store.hits, s.store.misses, s.store.evictions, s.store.logical_read_bytes, s.projections, s.matmuls,
+            s.store.buffer_allocations, s.store.buffer_reuses, s.submissions, s.store.packed_reads, s.store.packed_reuses,
+            s.store.parallel_batches, s.store.parallel_reads, s.combined_moe,
+            s.moe_pipeline_groups, s.moe_resident_starts,
+            s.store.reclaim_calls, s.store.reclaim_evictions, s.store.reclaim_bytes};
     return true;
 }
 
@@ -268,6 +349,9 @@ bool llama_context::apply_memory_budget() {
     }
     if (budget_control->budget_status != LLAMA_BUDGET_PENDING) { return budget_control->budget_status != LLAMA_BUDGET_REJECTED; }
     ggml_backend_sched_synchronize(sched.get());
+    if (expert_executor->automatic_acceleration()) {
+        reset_expert_graphs();
+    }
     const bool applied = expert_executor->resize(budget_control->budget_requested);
     budget_control->budget_completed_id = budget_control->budget_request_id;
     budget_control->budget_status = applied ? LLAMA_BUDGET_APPLIED : LLAMA_BUDGET_REJECTED;

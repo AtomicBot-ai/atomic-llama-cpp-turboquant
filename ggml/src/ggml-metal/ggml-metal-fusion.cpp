@@ -1,4 +1,5 @@
 #include "ggml-metal-fusion.h"
+#include "ggml-metal-route-publication.h"
 
 #include "ggml-metal-common.h"
 #include "ggml-metal-device.h"
@@ -1227,7 +1228,8 @@ const ggml_metal_fusion * ggml_metal_fusion_next(
         bool ok = true;
         for (int j = 0; j < n_ops; j++) {
             nodes[j] = gf->nodes[node_idxs[idx + j]];
-            if (nodes[j]->op != fusion.ops[j]) {
+            if (nodes[j]->op != fusion.ops[j] ||
+                (nodes[j]->op == GGML_OP_CONT && nodes[j]->op_params[0] == GGML_METAL_ROUTE_MARKER)) {
                 ok = false;
                 break;
             }

@@ -7,7 +7,7 @@
 #include "nlohmann/json.hpp"
 #include "preview-trace.h"
 
-#ifdef ATOMIC_TURBINE_IO_URING_PROBE
+#ifdef ATOMIC_ENGINE_IO_URING_PROBE
 #include "uring-read-probe.h"
 #endif
 
@@ -57,7 +57,7 @@ struct cuda_prefill_resize {
     bool worker = false;
     bool cancel = false;
     size_t boundaries = 0;
-#ifdef ATOMIC_TURBINE_IO_URING_PROBE
+#ifdef ATOMIC_ENGINE_IO_URING_PROBE
     std::unique_ptr<uring_read_probe> uring;
     uring_read_result read_result;
 
@@ -69,7 +69,7 @@ struct cuda_prefill_resize {
 #endif
 
     bool arm(llama_context * ctx) {
-#ifdef ATOMIC_TURBINE_IO_URING_PROBE
+#ifdef ATOMIC_ENGINE_IO_URING_PROBE
         if (uring) {
             return llama_discrete_prefill_probe_set(ctx, nullptr, boundary, this, false, submitted_read);
         }
@@ -95,7 +95,7 @@ struct cuda_prefill_resize {
             const size_t staging = self.read_staging.load(std::memory_order_acquire);
             const auto before = discrete_budget_snapshot(*self.contract);
             const bool rearm = self.worker
-#ifdef ATOMIC_TURBINE_IO_URING_PROBE
+#ifdef ATOMIC_ENGINE_IO_URING_PROBE
                 || self.uring
 #endif
                 ;
@@ -116,7 +116,7 @@ struct cuda_prefill_resize {
                 {"mid_read_requests", requests},
                 {"applied", applied}, {"before", before}, {"after", discrete_budget_snapshot(*self.contract)},
                 {"seconds", elapsed}, {"device_free_before", free_before}, {"device_free_after", free_after}});
-#ifdef ATOMIC_TURBINE_IO_URING_PROBE
+#ifdef ATOMIC_ENGINE_IO_URING_PROBE
             if (self.uring) {
                 const auto & result = self.read_result;
                 self.events.back()["uring_read"] = {{"result", result.read}, {"expected_bytes", result.expected_bytes},
@@ -871,9 +871,9 @@ int main(int argc, char ** argv) {
         if (cuda_uring_read && (!cuda_prefill_resize_probe || !cuda_worker_read.empty())) {
             throw std::invalid_argument("--cuda-uring-read requires --cuda-prefill-resize-probe and excludes --cuda-worker-read");
         }
-#ifndef ATOMIC_TURBINE_IO_URING_PROBE
+#ifndef ATOMIC_ENGINE_IO_URING_PROBE
         if (cuda_uring_read) {
-            throw std::invalid_argument("--cuda-uring-read requires a build with ATOMIC_TURBINE_IO_URING_PROBE=ON");
+            throw std::invalid_argument("--cuda-uring-read requires a build with ATOMIC_ENGINE_IO_URING_PROBE=ON");
         }
 #endif
         if (cuda_resize_probe && (!cuda_expert_streaming || ram_mib != 4096 || vram_mib != 2048 ||
@@ -1141,7 +1141,7 @@ int main(int argc, char ** argv) {
                 prefill_budget.device = devices[0];
                 prefill_budget.cancel = cuda_worker_read == "cancel" || cuda_uring_read;
                 prefill_budget.worker = !cuda_worker_read.empty();
-#ifdef ATOMIC_TURBINE_IO_URING_PROBE
+#ifdef ATOMIC_ENGINE_IO_URING_PROBE
                 if (cuda_uring_read) {
                     prefill_budget.uring = std::make_unique<uring_read_probe>();
                 }

@@ -1,5 +1,6 @@
 #include "testing.h"
 #include "../src/llama-expert-store.h"
+#include "../src/llama-expert-lookahead.h"
 #include "../ggml/src/ggml-backend-impl.h"
 #include "ggml-cpp.h"
 
@@ -31,7 +32,7 @@ struct fixture {
 
     static float weight(int expert, int row, int col) { return (expert + 1) * 10.0f + row - col * 0.125f; }
 
-    fixture(bool mixed_layout = false, bool larger_alternate = false, const char * architecture = "qwen3moe", int experts = 4) {
+    fixture(bool mixed_layout = false, bool larger_alternate = false, const char * architecture = "qwen3moe", int experts = 4, bool gate = false) {
         const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
         path = fs::temp_directory_path() / ("test-expert-store-" + std::to_string(now) + ".gguf");
         ggml_context_ptr ctx(ggml_init({size_t(16384 + experts * 2048), nullptr, false}));
@@ -46,6 +47,12 @@ struct fixture {
             }
         }
         gguf_add_tensor(meta.get(), tensor);
+        if (gate) {
+            auto * gate_tensor = ggml_dup_tensor(ctx.get(), tensor);
+            ggml_set_name(gate_tensor, "blk.0.ffn_gate_exps.weight");
+            std::memcpy(gate_tensor->data, tensor->data, ggml_nbytes(tensor));
+            gguf_add_tensor(meta.get(), gate_tensor);
+        }
         if (mixed_layout) {
             const int rows = larger_alternate ? 16 : 8;
             auto * alternate = ggml_new_tensor_3d(ctx.get(), GGML_TYPE_F16, 32, rows, experts);
@@ -140,6 +147,51 @@ int main(int argc, char ** argv) {
         t.assert_equal("bounded peak", size_t(64), budget->snapshot(domain::host).high_water);
         tickets.clear();
         t.assert_equal("reservation rollback", size_t(0), budget->snapshot(domain::host).used());
+    });
+    t.test("selective reclaim preserves pinned and unrelated experts", [&](testing & t) {
+        fixture f;
+        const size_t resident = fixture::expert_bytes + ggml_tensor_overhead();
+        const size_t cap = 4 * resident + fixture::expert_bytes;
+        auto budget = std::make_shared<llama_memory_budget>(cap, 0, true);
+        llama_expert_store store(f.source(), budget, backend.get(), domain::host, 64);
+        auto pinned = store.acquire(fixture::name, 0);
+        const auto generation = pinned.generation();
+        for (int expert : {1, 2, 3}) { store.acquire(fixture::name, expert); }
+        const auto initial = store.stats();
+        const size_t free = cap - budget->snapshot(domain::host).used();
+        t.assert_true("wrong domain does not reclaim", !store.reclaim_to_fit(domain::device, cap));
+        t.assert_true("existing free space retained", store.reclaim_to_fit(domain::host, free));
+        t.assert_equal("no needless eviction", store.stats().evictions, initial.evictions);
+        t.assert_true("impossible reservation does not flush", !store.reclaim_to_fit(domain::host, cap + 1));
+        t.assert_equal("impossible request kept entries", store.stats().entries, size_t(4));
+        t.assert_true("shortfall reclaimed", store.reclaim_to_fit(domain::host, free + 1));
+        t.assert_equal("one victim suffices", store.stats().reclaim_evictions, uint64_t(1));
+        t.assert_true("oldest unpinned victim", !store.contains(fixture::name, 1));
+        t.assert_true("unrelated hot entries retained", store.contains(fixture::name, 2) && store.contains(fixture::name, 3));
+        t.assert_true("pinned entry not retired", store.contains(fixture::name, 0));
+        t.assert_equal("pinned generation unchanged", pinned.generation(), generation);
+        auto reservation = budget->reserve(domain::host, category::state, free + 1);
+        t.assert_true("new buffer can be admitted", bool(reservation));
+        reservation.reset();
+        const size_t lower = budget->snapshot(domain::host).used() - 1;
+        budget->request(domain::host, lower);
+        t.assert_true("lower target initially pending", budget->snapshot(domain::host).pending());
+        t.assert_true("reclaim honors requested target", store.reclaim_to_fit(domain::host, 1));
+        t.assert_equal("second victim only", store.stats().reclaim_evictions, uint64_t(2));
+        t.assert_true("target applied after release", !budget->snapshot(domain::host).pending());
+        budget->request(domain::host, cap);
+        auto last = store.acquire(fixture::name, 3);
+        const auto before = store.stats();
+        t.assert_true("fully pinned cache refuses", !store.reclaim_to_fit(domain::host, cap));
+        t.assert_equal("pinned cache not evicted", store.stats().entries, before.entries);
+        t.assert_true("pinned entries not retired on refusal", store.contains(fixture::name, 0) && store.contains(fixture::name, 3));
+        t.assert_equal("selective reclaim performs no reads", store.stats().logical_read_bytes, initial.logical_read_bytes);
+        t.assert_equal("freed bytes match two victims", store.stats().reclaim_bytes, uint64_t(2 * resident));
+        t.assert_true("ledger within cap", budget->snapshot(domain::host).high_water <= cap);
+        last.reset(); pinned.reset();
+        store.trim();
+        t.assert_equal("lifecycle trim still clears all", store.stats().entries, size_t(0));
+        t.assert_equal("all physical charges released", budget->snapshot(domain::host).used(), size_t(0));
     });
     t.test("cache leases eviction and regrowth", [&](testing & t) {
         fixture f;
@@ -268,6 +320,259 @@ int main(int argc, char ** argv) {
         t.assert_true("all reservations stayed under cap", budget->snapshot(domain::host).high_water <= cap);
     });
 
+#ifdef __APPLE__
+    t.test("demand queue delivers only validated triples and drains failed reads", [&](testing & t) {
+        if (std::string(backend_name) != "CPU") { t.skip("CPU buffer admission fixture"); return; }
+        fixture f(true, false, "qwen4exp", 8, true);
+        auto source = f.source();
+        auto budget = std::make_shared<llama_memory_budget>(64 * 1024, 0, true);
+        llama_expert_store store(source, budget, backend.get(), domain::host, 64);
+        const std::array<const char *, 3> names{fixture::name, "blk.0.ffn_gate_exps.weight", "blk.0.ffn_down_exps.weight"};
+        const int64_t ids[] = {0, 2, 3, 5, 6, 7};
+        auto batch = store.enqueue_demand(names, ids, std::size(ids));
+        t.assert_true("unclaimed misses are hidden", !store.contains(names[0], 0));
+        rejects(t, "cannot acquire an unpublished tensor", [&] { store.acquire(names[0], 0); });
+        size_t seen = 0, delivered = 0;
+        while (batch->pending()) {
+            std::array<int64_t, 16> claimed{};
+            std::array<llama_expert_store::lease, 16> up, gate, down;
+            const size_t size = batch->take(claimed.data(), up.data(), gate.data(), down.data(), 4);
+            t.assert_true("bounded ready group", size >= std::min<size_t>(4, std::size(ids) - delivered));
+            delivered += size;
+            for (size_t j = 0; j < size; ++j) {
+                const size_t bit = size_t(1) << claimed[j];
+                t.assert_true("expert delivered once", !(seen & bit));
+                seen |= bit;
+                float u = 0, g = 0;
+                ggml_fp16_t d{};
+                ggml_backend_tensor_get(up[j].tensor(), &u, 0, sizeof(u));
+                ggml_backend_tensor_get(gate[j].tensor(), &g, 0, sizeof(g));
+                ggml_backend_tensor_get(down[j].tensor(), &d, 0, sizeof(d));
+                t.assert_true("all three slices complete", u == fixture::weight(claimed[j], 0, 0) && g == u && ggml_fp16_to_fp32(d) == 0);
+            }
+        }
+        size_t expected = 0;
+        for (auto id : ids) { expected |= size_t(1) << id; }
+        t.assert_equal("entire request delivered", seen, expected);
+        batch.reset();
+        t.assert_true("published expert reusable", store.contains(names[0], 0));
+        store.trim();
+        fs::resize_file(f.path, 0);
+        batch = store.enqueue_demand(names, ids, std::size(ids));
+        std::array<int64_t, 16> claimed{};
+        std::array<llama_expert_store::lease, 16> up, gate, down;
+        rejects(t, "bad source never produces a triple", [&] {
+            batch->take(claimed.data(), up.data(), gate.data(), down.data(), 4);
+        });
+        batch.reset();
+        t.assert_equal("failed wave releases all physical charges", budget->snapshot(domain::host).used(), size_t(0));
+        t.assert_equal("failed wave leaves no cache entries", store.stats().entries, size_t(0));
+        t.assert_true("physical ledger stays bounded", budget->snapshot(domain::host).high_water <= 64 * 1024);
+    });
+#endif
+
+#ifdef __APPLE__
+    auto check_lookahead = [&](testing & t, bool per_slice) {
+        if (std::string(backend_name) != "CPU") { t.skip("CPU buffer admission fixture"); return; }
+        fixture f(true, false, "qwen4exp", 4, true);
+        auto source = f.source();
+        const auto & up = source->tensor(fixture::name);
+        const auto & gate = source->tensor("blk.0.ffn_gate_exps.weight");
+        const auto & down = source->tensor("blk.0.ffn_down_exps.weight");
+        const size_t cap = 64 * 1024, bytes = llama_expert_lookahead::working_bytes(fixture::expert_bytes);
+        auto budget = std::make_shared<llama_memory_budget>(cap, 0, true);
+        llama_expert_store store(source, budget, backend.get(), domain::host, 64);
+        llama_expert_profile_data profile{};
+        store.set_profile(&profile);
+        std::array<ggml_bf16_t, 32 * 4> router{};
+        std::array<float, 32> row{};
+        row[0] = 1;
+        for (size_t e = 0; e < 4; ++e) { router[32 * e] = ggml_fp32_to_bf16(float(e)); }
+        const llama_expert_lookahead::target target{router.data(), 32, 4, {&up, &gate, &down}, GGML_TYPE_BF16};
+        ggml_tensor input{};
+        input.data = row.data();
+        input.ne[0] = 32;
+        input.ne[2] = 1;
+        input.nb[2] = sizeof(row);
+        {
+            auto ticket = budget->reserve(domain::host, category::io, bytes);
+            t.assert_true("scratch fits", bool(ticket));
+            llama_expert_lookahead ahead(source, store, std::move(ticket), fixture::expert_bytes, per_slice);
+            llama_expert_lookahead::prediction proposal{1, 4, {1, 2, 0, 3}, {4, 3, 2, 1}};
+            const auto * predicted = per_slice ? &proposal : nullptr;
+            ahead.begin_graph(false);
+            ahead.fetch(target, &input, &profile, predicted);
+            ahead.end_graph(&profile);
+            t.assert_equal("prompt graph performs no speculative read", profile.next_prefetch_bytes, uint64_t(0));
+
+            ahead.begin_graph(true);
+            ahead.fetch(target, &input, &profile, predicted);
+            t.assert_equal("prefetch publishes no cache entry", store.stats().entries, size_t(0));
+            t.assert_equal("all scratch still charged", budget->snapshot(domain::host).used(), bytes);
+            const int64_t demand[] = {per_slice ? 1 : 3, 0};
+            std::array<llama_expert_store::lease, 2> leases;
+            store.acquire_many(fixture::name, demand, 2, leases.data(), &ahead);
+            for (size_t i = 0; i < leases.size(); ++i) {
+                float first = 0;
+                ggml_backend_tensor_get(leases[i].tensor(), &first, 0, sizeof(first));
+                t.assert_equal("read the requested expert, regardless of prediction", first, fixture::weight(demand[i], 0, 0));
+            }
+            ahead.end_graph(&profile);
+            t.assert_equal("at most two complete predicted triples read", profile.next_prefetch_bytes,
+                uint64_t(2 * (up.expert_bytes() + gate.expert_bytes() + down.expert_bytes())));
+            t.assert_equal("matching slice consumed once", profile.next_prefetch_used_bytes, uint64_t(up.expert_bytes()));
+            t.assert_equal("mismatch alone reads from source on demand", store.stats().logical_read_bytes, uint64_t(up.expert_bytes()));
+            t.assert_true("hidden duration bounded by service time", profile.next_prefetch_hidden_ns <= profile.next_prefetch_read_ns);
+
+            leases = {};
+            store.trim();
+            const int64_t next = 2;
+            store.acquire_many(fixture::name, &next, 1, leases.data(), &ahead);
+            t.assert_equal("graph boundary forgets unused speculation", profile.next_prefetch_used_bytes, uint64_t(up.expert_bytes()));
+            leases = {};
+            store.trim();
+            fs::resize_file(f.path, 0);
+            ahead.begin_graph(true);
+            ahead.fetch(target, &input, &profile, predicted);
+            ahead.end_graph(&profile);
+            t.assert_equal("failed speculative job drained", profile.next_prefetch_failures, uint64_t(per_slice ? 6 : 1));
+            t.assert_equal("failed speculative read publishes nothing", store.stats().entries, size_t(0));
+            rejects(t, "actual demand still validates failed source", [&] { store.acquire(fixture::name, 3); });
+        }
+        t.assert_equal("scratch returned after drain", budget->snapshot(domain::host).used(), size_t(0));
+        t.assert_true("full budget respected", budget->snapshot(domain::host).high_water <= cap);
+    };
+    t.test("bounded expert lookahead copies exact misses and drains unused or failed reads",
+           [&](testing & t) { check_lookahead(t, false); });
+    t.test("independent expert slices copy predicted hits and isolate failed jobs",
+           [&](testing & t) { check_lookahead(t, true); });
+#endif
+
+    t.test("size-class recycling preserves eviction order bytes and failed-read ownership", [&](testing & t) {
+        if (std::string(backend_name) != "CPU") { t.skip("CPU physical allocation fixture"); return; }
+        fixture f(true, true, "qwen4exp", 8);
+        const size_t small = fixture::expert_bytes, arena = ggml_tensor_overhead();
+        const size_t cap = 3 * (arena + small) + arena + 4 * small;
+        auto budget = std::make_shared<llama_memory_budget>(cap, 0, true);
+        llama_expert_store store(f.source(), budget, backend.get(), domain::host, 64, nullptr, true, true);
+        auto seed = [&]() {
+            store.acquire("blk.0.ffn_down_exps.weight", 0).reset();
+            for (int i = 0; i < 3; ++i) { store.acquire(fixture::name, i).reset(); }
+            store.acquire(fixture::name, 3).reset();
+        };
+        seed();
+        auto stats = store.stats();
+        t.assert_true("original LRU victims removed", !store.contains("blk.0.ffn_down_exps.weight", 0) &&
+            !store.contains(fixture::name, 0) && store.contains(fixture::name, 1));
+        t.assert_equal("wrong-sized victim retained once", stats.pooled_buffers, size_t(1));
+        t.assert_equal("pool includes buffer and arena", stats.pooled_bytes, arena + 2 * small);
+        t.assert_equal("all retained memory charged", budget->snapshot(domain::host).used(), stats.resident_bytes + stats.pooled_bytes);
+        t.assert_equal("working capacity includes reclaimable spares", store.storage_bytes(), stats.resident_bytes + stats.pooled_bytes);
+        const auto allocations = stats.buffer_allocations;
+        auto large = store.acquire("blk.0.ffn_down_exps.weight", 1);
+        t.assert_equal("size-class hit avoids allocation", store.stats().buffer_allocations, allocations);
+        t.assert_equal("size-class hit recorded", store.stats().pool_reuses, uint64_t(1));
+        t.assert_equal("pool ownership transferred", store.stats().pooled_buffers, size_t(0));
+        std::vector<ggml_fp16_t> values(512);
+        ggml_backend_tensor_get(large.tensor(), values.data(), 0, 2 * small);
+        bool exact = true;
+        for (int i = 0; i < 512; ++i) { exact &= values[i] == ggml_fp32_to_fp16(float(i % 128) / 8); }
+        t.assert_true("pooled buffer rebound to requested weights", exact);
+        store.request_budget(domain::host, 0);
+        t.assert_equal("pinned recycled weight remains charged", budget->snapshot(domain::host).used(), arena + 2 * small);
+        t.assert_equal("pinned weight not pooled", store.stats().pooled_buffers, size_t(0));
+        large.reset();
+        t.assert_equal("retired recycled weight freed", budget->snapshot(domain::host).used(), size_t(0));
+        store.request_budget(domain::host, cap);
+        seed();
+        fs::resize_file(f.path, 0);
+        rejects(t, "failed pooled read cannot publish", [&] { store.acquire("blk.0.ffn_down_exps.weight", 1); });
+        t.assert_true("failed pooled weight absent", !store.contains("blk.0.ffn_down_exps.weight", 1));
+        t.assert_equal("failed pool owner destroyed", store.stats().pooled_bytes, size_t(0));
+        t.assert_equal("only unaffected residents stay charged", budget->snapshot(domain::host).used(), 3 * (arena + small));
+        t.assert_true("pool plus staging stayed within cap", budget->snapshot(domain::host).high_water <= cap);
+    });
+
+    t.test("size-class pool bounds reclamation resize and trace fallback", [&](testing & t) {
+        if (std::string(backend_name) != "CPU") { t.skip("CPU physical allocation fixture"); return; }
+        fixture f(true, true, "qwen4exp", 72);
+        const size_t small = fixture::expert_bytes, arena = ggml_tensor_overhead();
+        const size_t cap = 65 * (arena + 2 * small) + 4 * (arena + small) + 2 * small;
+        auto budget = std::make_shared<llama_memory_budget>(cap, 0, true);
+        llama_expert_store store(f.source(), budget, backend.get(), domain::host, 64, nullptr, true, true);
+        auto seed = [&]() {
+            store.trim();
+            for (int i = 0; i < 65; ++i) { store.acquire("blk.0.ffn_down_exps.weight", i).reset(); }
+            for (int i = 0; i < 5; ++i) { store.acquire(fixture::name, i).reset(); }
+            t.assert_equal("at most 64 buffers per size", store.stats().pooled_buffers, size_t(64));
+        };
+        seed();
+        auto before = store.stats();
+        const size_t free = cap - budget->snapshot(domain::host).used();
+        t.assert_true("selective reclamation succeeds", store.reclaim_to_fit(domain::host, free + 1));
+        auto after = store.stats();
+        t.assert_equal("reclamation frees one spare", after.pooled_buffers, size_t(63));
+        t.assert_equal("useful residents preserved", after.resident_bytes, before.resident_bytes);
+        t.assert_equal("reclaim counters include physical spare", after.reclaim_bytes - before.reclaim_bytes, arena + 2 * small);
+        store.request_budget(domain::host, after.resident_bytes);
+        t.assert_equal("resize releases remaining spare", store.stats().pooled_bytes, size_t(0));
+        t.assert_equal("resize retains fitting residents", store.resident_bytes(), after.resident_bytes);
+        store.request_budget(domain::host, cap);
+        seed();
+        store.set_trace([](const llama_expert_trace_event &, void *) noexcept {}, nullptr);
+        t.assert_equal("tracing drains unused spares", store.stats().pooled_buffers, size_t(0));
+        store.trim();
+        for (int i = 0; i < 65; ++i) { store.acquire("blk.0.ffn_down_exps.weight", i).reset(); }
+        for (int i = 0; i < 5; ++i) { store.acquire(fixture::name, i).reset(); }
+        t.assert_equal("tracing does not populate pool", store.stats().pooled_buffers, size_t(0));
+        store.set_trace(nullptr, nullptr);
+        seed();
+        store.evict_idle();
+        t.assert_equal("idle eviction returns pool and resident charges", budget->snapshot(domain::host).used(), size_t(0));
+        t.assert_true("all physical charges bounded", budget->snapshot(domain::host).high_water <= cap);
+    });
+
+    t.test("compact buffers release oversized victims and retain exact-size reuse", [&](testing & t) {
+        if (std::string(backend_name) != "CPU") { t.skip("CPU physical allocation fixture"); return; }
+        fixture f(true, true);
+        const size_t small = fixture::expert_bytes;
+        const size_t arena = ggml_tensor_overhead();
+        const size_t cap = arena + 4 * small;
+        auto budget = std::make_shared<llama_memory_budget>(cap, 0, true);
+        llama_expert_store store(f.source(), budget, backend.get(), domain::host, 64, nullptr, true);
+        auto large = store.acquire("blk.0.ffn_down_exps.weight", 0);
+        t.assert_equal("large slice estimate matches physical charge",
+                store.compact_slice_bytes("blk.0.ffn_down_exps.weight"), store.resident_bytes());
+        rejects(t, "pinned oversized victim remains protected", [&] { store.acquire(fixture::name, 0); });
+        large.reset();
+        auto next = store.acquire(fixture::name, 0);
+        t.assert_equal("only smaller physical buffer charged", store.resident_bytes(), arena + small);
+        t.assert_equal("small slice estimate matches physical charge", store.compact_slice_bytes(fixture::name), store.resident_bytes());
+        t.assert_equal("oversized allocation replaced", store.stats().buffer_allocations, uint64_t(2));
+        t.assert_equal("oversized allocation never reused", store.stats().buffer_reuses, uint64_t(0));
+        const auto * allocation = next.tensor()->data;
+        next.reset();
+        store.request_budget(domain::host, arena + 2 * small);
+        auto same = store.acquire(fixture::name, 1);
+        t.assert_true("same size can reuse policy victim", same.tensor()->data == allocation && store.stats().buffer_reuses == 1);
+        std::vector<float> values(128);
+        ggml_backend_tensor_get(same.tensor(), values.data(), 0, small);
+        bool exact = true;
+        for (int i = 0; i < 128; ++i) { exact &= values[i] == fixture::weight(1, i / 32, i % 32); }
+        t.assert_true("rebound weights preserved", exact);
+        store.request_budget(domain::host, 0);
+        t.assert_equal("retired lease stays charged", budget->snapshot(domain::host).used(), arena + small);
+        same.reset();
+        t.assert_equal("last release frees compact allocation", budget->snapshot(domain::host).used(), size_t(0));
+        store.request_budget(domain::host, arena + 2 * small);
+        store.acquire(fixture::name, 2).reset();
+        fs::resize_file(f.path, 0);
+        rejects(t, "failed compact reuse cannot publish", [&] { store.acquire(fixture::name, 3); });
+        t.assert_true("failed buffer absent", !store.contains(fixture::name, 3));
+        t.assert_equal("failed buffer uncharged", budget->snapshot(domain::host).used(), size_t(0));
+        t.assert_true("physical and staging charges bounded", budget->snapshot(domain::host).high_water <= cap);
+    });
+
     t.test("uniform slots reuse small and large experts within physical cap", [&](testing & t) {
         fixture f(true, true);
         const size_t slot = 2 * fixture::expert_bytes;
@@ -275,6 +580,7 @@ int main(int argc, char ** argv) {
         const size_t cap = resident + slot;
         auto budget = std::make_shared<llama_memory_budget>(cap, 0, true);
         llama_expert_store store(f.source(), budget, backend.get(), domain::host, slot);
+        t.assert_equal("noncompact slots retain conservative admission", store.compact_slice_bytes(fixture::name), size_t(0));
         auto small = store.acquire(fixture::name, 0);
         const auto * allocation = small.tensor()->data;
         t.assert_equal("resident accounting includes padding and arena", store.resident_bytes(), resident);
@@ -605,6 +911,49 @@ int main(int argc, char ** argv) {
         t.assert_equal("direct path not used", profile.direct_read_bytes, uint64_t(0));
         t.assert_equal("physical staging returned", budget->snapshot(domain::host).released, fixture::expert_bytes);
     });
+#if defined(__APPLE__)
+    t.test("adjacent GGUF ranges preserve bytes and never publish partial reads", [&](testing & t) {
+        fixture f;
+        auto budget = std::make_shared<llama_memory_budget>(1024 * 1024, 0, true);
+        llama_expert_store store(f.source(), budget, backend.get(), domain::host, 65536);
+        const int64_t experts[] = {0, 1, 3};
+        std::array<llama_expert_store::lease, 3> weights;
+        store.acquire_many(fixture::name, experts, 3, weights.data(), nullptr, true);
+        for (size_t i = 0; i < weights.size(); ++i) {
+            std::array<float, fixture::expert_bytes / sizeof(float)> values;
+            ggml_backend_tensor_get(weights[i].tensor(), values.data(), 0, fixture::expert_bytes);
+            bool exact = true;
+            for (size_t j = 0; j < values.size(); ++j) {
+                exact &= values[j] == fixture::weight(int(experts[i]), int(j / 32), int(j % 32));
+            }
+            t.assert_true("original slice bytes", exact);
+            weights[i].reset();
+        }
+        t.assert_equal("no gap bytes", store.stats().logical_read_bytes, uint64_t(3 * fixture::expert_bytes));
+        t.assert_true("gap remains cold", !store.contains(fixture::name, 2));
+        store.trim();
+        fs::resize_file(f.path, 0);
+        rejects(t, "failed range publishes nothing", [&] {
+            store.acquire_many(fixture::name, experts, 3, weights.data(), nullptr, true);
+        });
+        t.assert_equal("no incomplete entries", store.stats().entries, size_t(0));
+        t.assert_equal("no retained charges", budget->snapshot(domain::host).used(), size_t(0));
+    });
+#endif
+    t.test("batched read failure discards unpublished leases", [&](testing & t) {
+        fixture f;
+        auto budget = std::make_shared<llama_memory_budget>(1024 * 1024, 0, true);
+        llama_expert_store store(f.source(), budget, backend.get(), domain::host, 65536);
+        const int64_t experts[] = {0, 1};
+        llama_expert_store::lease weights[2];
+
+        fs::resize_file(f.path, 0);
+        rejects(t, "modified source aborts the batch", [&] { store.acquire_many(fixture::name, experts, 2, weights); });
+        t.assert_true("no leases escape", !weights[0] && !weights[1]);
+        t.assert_equal("no incomplete entries", size_t(0), store.stats().entries);
+        t.assert_equal("no retained charges", size_t(0), budget->snapshot(domain::host).used());
+    });
+
     t.test("allocation and read failure rollback", [&](testing & t) {
         fixture f;
         auto source = f.source();

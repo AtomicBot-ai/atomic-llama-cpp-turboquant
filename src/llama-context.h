@@ -59,6 +59,7 @@ struct llama_context {
     //   - changing attention type
     //   - etc.
     void sched_reserve();
+    void reset_expert_graphs();
 
     void synchronize();
 
@@ -160,7 +161,7 @@ struct llama_context {
                 const llama_ubatch & ubatch,
                     llm_graph_type   gtype,
             llama_memory_context_i * mctx,
-                       ggml_status & ret);
+                       ggml_status & ret, bool expert_decode = false);
 
     int encode(const llama_batch_ext & batch_inp);
     int decode(const llama_batch_ext & batch_inp, size_t uncached_prompt_tokens = 0);
@@ -215,11 +216,16 @@ struct llama_context {
     void perf_reset();
 
     llama_memory_breakdown memory_breakdown() const;
+    bool prefill_window_supported() const;
+    bool prefill_wide_qualified() const;
     bool prefill_window_set(bool enabled);
     bool prefill_window_get(llama_prefill_window_data & result) const;
     // 0: ordinary loop owns the current remaining microbatch; 1: all consumed; -3: fatal.
+    static constexpr uint32_t prefill_wide_rows = 1024;
+    static constexpr uint32_t prefill_smaller_wide_rows = 512;
     int decode_prefill_window(llama_memory_context_ptr & mctx, int32_t n_outputs_all,
-            size_t prompt_tokens, int64_t & n_outputs_prev, int64_t & n_tokens_prev);
+            size_t prompt_tokens, size_t batch_tokens, int64_t & n_outputs_prev, int64_t & n_tokens_prev,
+            bool * retry_smaller_wide = nullptr, bool try_shared_wide = false, bool partial_wide = false);
     bool expert_profile_set(bool enabled);
     bool expert_read_overlap_set(bool enabled);
     bool expert_single_map_set(bool enabled);
@@ -375,6 +381,7 @@ private:
 
     llama_memory_ptr memory;
     llama_moe_cache_ptr moe_cache;
+    bool lfm_grouped_decode = false;
     std::unique_ptr<llama_expert_executor> expert_executor;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])

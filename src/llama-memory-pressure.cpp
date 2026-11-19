@@ -18,7 +18,7 @@ struct llama_memory_pressure_monitor::impl {
     dispatch_source_t source = nullptr;
     dispatch_semaphore_t stopped = nullptr;
     impl() {
-        queue = dispatch_queue_create("atomic-turbine.memory-pressure", DISPATCH_QUEUE_SERIAL);
+        queue = dispatch_queue_create("atomic-engine.memory-pressure", DISPATCH_QUEUE_SERIAL);
         stopped = dispatch_semaphore_create(0);
         if (queue && stopped) { source = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
             DISPATCH_MEMORYPRESSURE_NORMAL | DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL, queue); }

@@ -93,7 +93,7 @@ ggml_metal_buffer_t ggml_metal_expert_buffer_new(ggml_metal_expert_pool_t pool, 
             group = calloc(1, sizeof(*group));
             if (group) {
                 MTLResidencySetDescriptor * desc = [[MTLResidencySetDescriptor alloc] init];
-                desc.label = @"atomic_turbine_experts";
+                desc.label = @"atomic_engine_experts";
                 desc.initialCapacity = GGML_METAL_EXPERT_GROUP_SIZE;
                 NSError * error = nil;
                 group->rset = [pool->dev->mtl_device newResidencySetWithDescriptor:desc error:&error];

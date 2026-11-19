@@ -31,6 +31,7 @@
 #include <cassert>
 #include <cfloat>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <functional>
@@ -1706,6 +1707,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
         expert_streaming_size = params.expert_streaming_size;
         expert_source = std::make_shared<llama_expert_source>(ml.file_paths);
+        if (arch == LLM_ARCH_QWEN4EXP && params.memory_budget_size > 0 && devices.size() == 1 &&
+                std::strcmp(ggml_backend_dev_name(devices.front().dev), "MTL0") == 0) {
+            if (const char * pack = std::getenv("LLAMA_EXPERT_PACK"); pack && *pack) {
+                if (!expert_source->open_expert_pack(pack)) {
+                    LLAMA_LOG_WARN("%s: expert pack unavailable, using GGUF experts\n", __func__);
+                }
+            }
+        }
         ml.stream_experts = true;
         ml.stream_tok_embd = arch == LLM_ARCH_QWEN4EXP && discrete_streaming;
         ml.stream_ple = arch == LLM_ARCH_QWEN4EXP && devices.size() == 1 &&

@@ -1,0 +1,67 @@
+--- a/common/atomic-budget.cpp
++++ b/common/atomic-budget.cpp
+@@ -75,7 +75,7 @@
+ }
+ bool common_atomic_dflash2_enabled(const common_params & params) {
+     const bool short_profile = params.engine_budget == (size_t(18) << 30) && params.n_ctx == 1024;
+-    const bool long_profile = params.engine_budget == (size_t(8) << 30) && params.n_ctx == 4096 && params.n_batch == 4096;
++    const bool long_profile = (params.engine_budget >= (size_t(8) << 30) && params.engine_budget <= (size_t(24) << 30) && params.engine_budget % (size_t(2) << 30) == 0) && params.n_ctx == 4096 && params.n_batch == 4096;
+     const auto draft_ubatch = params.speculative.draft.n_ubatch;
+     const bool draft_ubatch_supported = !draft_ubatch ||
+         (short_profile ? draft_ubatch == params.n_ubatch : draft_ubatch >= params.n_ubatch && draft_ubatch <= 256);
+--- a/src/llama-context-atomic.cpp
++++ b/src/llama-context-atomic.cpp
+@@ -20,7 +20,7 @@
+     const auto & hp = target->hparams;
+     const bool flash = cap == (size_t(18) << 30) && target->arch == LLM_ARCH_QWEN4EXP &&
+         hp.n_layer() == 48 && target->streamed_ple;
+-    const bool qwen35 = cap == (size_t(8) << 30) && target->arch == LLM_ARCH_QWEN35MOE &&
++    const bool qwen35 = (cap >= (size_t(8) << 30) && cap <= (size_t(24) << 30) && cap % (size_t(2) << 30) == 0) && target->arch == LLM_ARCH_QWEN35MOE &&
+         hp.n_layer() == 40 && hp.n_embd == 2048 && hp.n_expert == 256 && hp.n_expert_used_max() == 8;
+     const auto device = target->dev_output();
+     if ((!flash && !qwen35) || !device || std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "MTL") != 0) {
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -714,6 +714,10 @@
+     if (expert_executor) {
+         expert_executor->configure_acceleration(model.arch == LLM_ARCH_QWEN35MOE &&
+                 model.memory_contract && model.memory_contract->dflash2_target && cparams.n_rs_seq > 0);
++    }
++    if (budget_control && model.arch == LLM_ARCH_QWEN35MOE && expert_executor && std::getenv("ATOMIC_QWEN35_GRID_LAYERS") &&
++            prefill_wide_qualified()) {
++        expert_executor->configure_lfm_residency(model);
+     }
+     if (budget_control && model.arch == LLM_ARCH_LFM2MOE && expert_executor) {
+         const char * resident = std::getenv("LLAMA_LFM_RESIDENT_LAYERS");
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2294,7 +2294,7 @@
+         gate_exps = weights[0];
+         up_exps   = weights[1];
+         down_exps = weights[2];
+-    } else if (expert_executor && model.arch == LLM_ARCH_LFM2MOE) {
++    } else if (expert_executor && (model.arch == LLM_ARCH_LFM2MOE || model.arch == LLM_ARCH_QWEN35MOE)) {
+         if (const auto * resident = expert_executor->resident_lfm_layer(il)) {
+             gate_exps = (*resident)[0];
+             up_exps   = (*resident)[1];
+--- a/src/llama-lfm-resident.h
++++ b/src/llama-lfm-resident.h
+@@ -44,7 +44,17 @@
+                 ggml_backend_dev_backend_reg(dev), "ggml_backend_metal_buffer_get_host_base"));
+         if (!host_base) { return; }
+         const auto ledger = model.memory_contract->ledger;
+-        for (size_t il = first; il < model.hparams.n_layer(); ++il) {
++        size_t limit = model.hparams.n_layer();
++        if (model.arch == LLM_ARCH_QWEN35MOE) {
++            if (const char * value = std::getenv("ATOMIC_QWEN35_GRID_LAYERS")) {
++                const std::string setting(value);
++                size_t end = 0;
++                const size_t count = std::stoul(setting, &end);
++                if (end != setting.size() || count > limit) { throw std::invalid_argument("invalid Qwen resident layer count"); }
++                limit = std::min(limit, first + count);
++            }
++        }
++        for (size_t il = first; il < limit; ++il) {
+             const auto & layer = model.layers[il];
+             const weights original = {layer.ffn_gate_exps, layer.ffn_up_exps, layer.ffn_down_exps};
+             if (model.dev_layer(il) != dev || !std::all_of(original.begin(), original.end(),

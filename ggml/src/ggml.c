@@ -1698,6 +1698,14 @@ size_t ggml_get_mem_size(const struct ggml_context * ctx) {
     return ctx->mem_size;
 }
 
+bool ggml_trim_external_context(struct ggml_context * ctx, size_t bytes) {
+    if (ctx->mem_buffer_owned || !ctx->no_alloc || bytes < ggml_used_mem(ctx) || bytes > ctx->mem_size) {
+        return false;
+    }
+    ctx->mem_size = bytes;
+    return true;
+}
+
 size_t ggml_get_max_tensor_size(const struct ggml_context * ctx) {
     size_t max_size = 0;
 
