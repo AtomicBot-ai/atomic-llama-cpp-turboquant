@@ -137,6 +137,7 @@ struct llama_expert_executor::impl {
     bool selective_reclaim = false;
     bool automatic_acceleration = false;
     bool dflash_verify = false;
+    bool flash_next_dflash3 = false;
     bool profile_overlap = false;
     std::unique_ptr<llama_lfm_resident> lfm_resident;
     std::shared_ptr<llama_expert_source> acceleration_source;
@@ -357,11 +358,14 @@ struct llama_expert_executor::impl {
             if (!charge) { throw std::runtime_error("metadata does not fit"); }
             auto candidate = std::make_unique<llama_expert_moe>(budget, backend.get(), *store, acceleration_source,
                 acceleration_width, max_expert_allocation, max_expert_payload, failed, failure, sizeof(failure),
-                profile, n_projections, n_matmuls, n_submissions, true, dflash_verify, profile_overlap);
+                profile, n_projections, n_matmuls, n_submissions, true, dflash_verify, profile_overlap, flash_next_dflash3);
             charge.commit(); moe_charge = std::move(charge); moe = std::move(candidate);
             std::fprintf(stderr,"expert acceleration: auto architecture=%s compact=1 recycle=1 reclaim=1 FP32=1 address_batch=%d priority_readers=%d prefetch=%zu ready=4 optional_bytes=%zu\n",
                 acceleration_source->architecture().c_str(),int(moe->address_batches()),int(moe->priority_reads()),
                 moe->prefetch_candidates(),moe->optional_bytes()+moe_charge.size());
+            if (flash_next_dflash3) {
+                std::fprintf(stderr, "Flash Next DFlash2: verify_ready=8 next_read_after_submit=1\n");
+            }
         } catch (const std::exception & e) {
             std::fprintf(stderr,"expert acceleration: fallback (%s); ordinary streaming retained\n",e.what());
         }
@@ -530,6 +534,8 @@ struct llama_expert_executor::impl {
         }
     }
 
+#include "llama-flash-next-prompt-tiles.inc"
+
     void compute(const projection & p, ggml_tensor * dst, bool keep_vector = false) {
         llama_expert_timer projection_timer(profile ? &profile->projection_ns : nullptr);
         llama_allocation_scope explicit_admission;
@@ -540,6 +546,13 @@ struct llama_expert_executor::impl {
             (input->ne[1] != 1 && input->ne[1] != ids->ne[0])) {
             throw std::runtime_error("unsupported routed projection input layout");
         }
+#if defined(__APPLE__)
+        if (flash_next_dflash3 && !keep_vector && ids->ne[1] >= 32 && metal && !p.on_cpu && row_source) {
+            compute_prompt_tiles(p, dst);
+            ++n_projections;
+            return;
+        }
+#endif
         const projection * early_target = nullptr;
         if (early) {
             for (size_t i = 0; i < early->count; ++i) {
@@ -1167,7 +1180,9 @@ ggml_tensor * llama_expert_executor::build(ggml_context * ctx, const ggml_tensor
 }
 
 const char * llama_expert_executor::error() const { return pimpl->failed.load() ? pimpl->failure : nullptr; }
-void llama_expert_executor::configure_acceleration(bool dflash_verify, bool profile_overlap) {
+void llama_expert_executor::configure_acceleration(bool dflash_verify, bool profile_overlap, bool flash_next) {
+    pimpl->flash_next_dflash3 = flash_next;
+    if (flash_next) { pimpl->store->enable_size_lru(); }
     pimpl->profile_overlap = profile_overlap;
     pimpl->dflash_verify = dflash_verify;
     pimpl->configure_acceleration();

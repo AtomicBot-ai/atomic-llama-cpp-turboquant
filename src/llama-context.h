@@ -59,6 +59,7 @@ struct llama_context {
     //   - changing attention type
     //   - etc.
     void sched_reserve();
+    friend void llama_atomic_park_flash_draft(llama_context * draft);
     void reset_expert_graphs();
 
     void synchronize();

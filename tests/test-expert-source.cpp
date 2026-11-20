@@ -131,6 +131,27 @@ int main(int argc, char ** argv) {
         });
         t.assert_true("poisoned source declines advice", !source.advise_expert("gate", 0));
     });
+#if defined(__APPLE__)
+    t.test("contiguous expert range", [&](testing & t) {
+        fixture f;
+        f.write(0, GGML_TYPE_Q4_K, "gate");
+        f.write(1, GGML_TYPE_F16, "down", 2, 2, nullptr);
+        llama_expert_source source(f.paths());
+        const size_t stride = source.tensor("down").expert_bytes();
+        std::vector<uint8_t> range(3 * stride + 2, 0xA5), expected(3 * stride);
+        for (int i = 1; i < 4; ++i) {
+            source.read_expert("down", i, expected.data() + (i - 1) * stride, stride);
+        }
+        rejects(t, "past end", [&] { source.read_expert_range("down", 2, 5, range.data() + 1, expected.size()); });
+        rejects(t, "short buffer", [&] { source.read_expert_range("down", 1, 4, range.data() + 1, stride); });
+        source.read_expert_range("down", 1, 4, range.data() + 1, expected.size());
+        t.assert_true("exact range", std::equal(expected.begin(), expected.end(), range.begin() + 1));
+        t.assert_true("guard bytes", range.front() == 0xA5 && range.back() == 0xA5);
+        fs::resize_file(f.path(0), 0);
+        rejects(t, "other shard changed", [&] { source.read_expert_range("down", 1, 4, range.data() + 1, expected.size()); });
+        rejects(t, "source stays invalid", [&] { source.read_expert("down", 0, range.data(), stride); });
+    });
+#endif
     t.test("packed bytes across shards", [&](testing & t) {
         for (ggml_type type : {GGML_TYPE_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS, GGML_TYPE_Q5_K}) {
             fixture f;

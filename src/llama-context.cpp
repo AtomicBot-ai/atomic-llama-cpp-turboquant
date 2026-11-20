@@ -196,7 +196,7 @@ llama_context::llama_context(
                  model.n_gpu_layers() > model.hparams.n_layer_all || !params.op_offload)) {
             throw std::runtime_error("CUDA boundary reduction requires partially offloaded LFM2 MoE with op offload");
         }
-        const bool dflash_profile = (model.arch == LLM_ARCH_QWEN4EXP && params.n_ctx == 1024) ||
+        const bool dflash_profile = model.memory_contract->flash_next_dflash3 || (model.arch == LLM_ARCH_QWEN4EXP && params.n_ctx == 1024) ||
             (model.arch == LLM_ARCH_QWEN35MOE && params.n_ctx == 4096 && params.n_batch == 4096);
         const bool rollback_allowed = model.memory_contract->dflash2_target && dflash_profile &&
             params.n_ubatch == 8 && params.n_rs_seq < params.n_ubatch - 1;
@@ -719,7 +719,8 @@ llama_context::llama_context(
     if (expert_executor) {
         expert_executor->configure_acceleration(model.arch == LLM_ARCH_QWEN35MOE &&
                 model.memory_contract && model.memory_contract->dflash2_target && cparams.n_rs_seq > 0,
-                model.memory_contract && model.memory_contract->qwen35_profile_layers > 0);
+                model.memory_contract && model.memory_contract->qwen35_profile_layers > 0,
+                model.memory_contract && model.memory_contract->flash_next_dflash3);
     }
     if (budget_control && model.memory_contract && model.memory_contract->qwen35_profile_layers && expert_executor &&
             prefill_wide_qualified()) {
@@ -2303,6 +2304,23 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
     return false; // all sequences use backend sampling
 }
 
+// Called with the single slot idle between draft work and a fresh target prompt.
+// Draft KV, weights and extracted target features are owned outside the scheduler.
+void llama_atomic_park_flash_draft(llama_context * draft) {
+    if (!draft || draft->model.arch != LLM_ARCH_DFLASH || !draft->model.hparams.dflash_selector_rank ||
+            !draft->cparams.ctx_other || !draft->sched) { return; }
+    auto & target = *draft->cparams.ctx_other;
+    if (!target.model.memory_contract || !target.model.memory_contract->flash_next_dflash3 ||
+            !target.budget_control || !target.budget_control->prefill_window_wide_default) { return; }
+    draft->synchronize();
+    draft->reset_expert_graphs();
+    // Keep a valid empty scheduler for synchronization and error cleanup. The
+    // next draft decode reserves its buffers through the normal entry point.
+    draft->sched.reset();
+    draft->sched_new(draft->sched_params_cur);
+    draft->sched_need_reserve = true;
+}
+
 void llama_context::reset_expert_graphs() {
     ggml_backend_sched_reset(sched.get());
     for (auto & graph : gf_res_prev) { graph->reset(); }
@@ -2446,8 +2464,9 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
     memory_update(false);
 
     const bool write_h_nextn = cparams.embeddings_nextn_dev && h_nextn_dev != nullptr;
-    const bool wide_dflash = layer_inp_dev && model.arch == LLM_ARCH_QWEN35MOE &&
-            model.memory_contract && model.memory_contract->dflash2_target;
+    const bool flash_draft = layer_inp_dev && model.memory_contract && model.memory_contract->flash_next_dflash3;
+    const bool wide_dflash = (flash_draft && uncached_prompt_tokens >= 320) || (layer_inp_dev && model.arch == LLM_ARCH_QWEN35MOE &&
+            model.memory_contract && model.memory_contract->dflash2_target);
     const bool can_window = budget_control && budget_control->prefill_window.enabled && batch_inp.embd.empty() &&
             batch_inp.state.empty() && !has_samplers &&
             !has_embd_row && !has_state_row && !write_h_nextn && (!layer_inp_dev || wide_dflash) && n_tokens_all > 1;
@@ -2499,6 +2518,16 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
             window_rows = (n_tokens_all + blocks - 1) / blocks;
             partial_wide = true;
         }
+    }
+    const bool stream_wide = flash_draft && can_window && budget_control->prefill_window_wide_default &&
+            n_tokens_all >= 320 && n_tokens_all == uncached_prompt_tokens && n_outputs_all == 1 &&
+            batch_inp.tokens.front().pos[0] == 0;
+    if (stream_wide) {
+        // Balance real prompt rows across streamed graphs within the prompt scratch limit.
+        constexpr uint32_t max_rows = 912;
+        const uint32_t blocks = (n_tokens_all + max_rows - 1) / max_rows;
+        window_rows = (n_tokens_all + blocks - 1) / blocks;
+        partial_wide = false;
     }
     llama_memory_context_ptr mctx;
 
@@ -2598,7 +2627,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
     }
 
     int window_result = 0;
-    if (partial_wide || legacy_window || window_rows == prefill_wide_rows) {
+    if (!stream_wide && (partial_wide || legacy_window || window_rows == prefill_wide_rows)) {
         const size_t prompt_tokens = std::max(uncached_prompt_tokens, size_t(n_tokens_all));
         bool retry_smaller_wide = false;
         bool try_shared_wide = false;
@@ -2675,6 +2704,10 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
 
         ggml_status status;
 
+        if (stream_wide && std::getenv("ATOMIC_WINDOW_PROFILE")) {
+            std::fprintf(stderr, "Flash Next streamed prefill: rows=%u previous=%lld outputs=%d\n",
+                    ubatch.n_tokens, (long long) n_tokens_prev, n_outputs);
+        }
         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status, uncached_prompt_tokens == 0);
 
         if (!res) {
@@ -2915,6 +2948,16 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
         }
     }
 
+    if (stream_wide) {
+        // Output copies and target feature writes must finish before replacing
+        // the prompt graph. KV, recurrent state and the feature buffer belong
+        // to the context, independently of this scheduler.
+        synchronize();
+        reset_expert_graphs();
+        sched.reset();
+        sched_need_reserve = true;
+        sched_reserve();
+    }
     // wait for the computation to finish (automatically done when obtaining the model output)
     //synchronize();
 

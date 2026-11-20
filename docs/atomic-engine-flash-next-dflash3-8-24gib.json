@@ -1,0 +1,453 @@
+{
+  "hardware": "Apple M4 Max, 48 GiB unified memory",
+  "base_commit": "a46a2c27cb85d82e450827b6a98f2d2ca814209b",
+  "binary_sha256": "0a9b5d2f3ea4df3f3a446398e17042d50a9e39a2963f93ab1d91ba13870121ef",
+  "target_model": "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "draft_path": ".work/models/flash-next-dflash2-q4_0-selector-bf16.gguf",
+  "draft_sha256": "11604ebbf986e195194a1450a342b154580d99d35f541e8674f4b916cc624acd",
+  "environment": {
+    "LLAMA_EXPERIMENTAL_BUDGET_DFLASH2": "1",
+    "ATOMIC_WINDOW_PROFILE": "1"
+  },
+  "server_arguments": [
+    "-m",
+    "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "-c",
+    "4096",
+    "-b",
+    "4096",
+    "-ub",
+    "8",
+    "-np",
+    "1",
+    "-t",
+    "8",
+    "-tb",
+    "8",
+    "-ngl",
+    "99",
+    "-ctk",
+    "bf16",
+    "-ctv",
+    "bf16",
+    "-fit",
+    "off",
+    "--cache-ram",
+    "0",
+    "--ctx-checkpoints",
+    "0",
+    "--no-warmup",
+    "--metrics",
+    "--no-webui",
+    "--engine-budget-mib",
+    "{budget_mib}",
+    "--host",
+    "127.0.0.1",
+    "--spec-type",
+    "draft-dflash",
+    "-md",
+    "{draft_path}",
+    "-ngld",
+    "99",
+    "--spec-draft-n-max",
+    "3",
+    "--spec-draft-n-ubatch",
+    "128"
+  ],
+  "fixtures": {
+    "archive": {
+      "ids_source": "atomic-engine-flash-next-default-8-16gib.json#fixtures.archive",
+      "length": 4000,
+      "sha256_u32le": "5cc62fecfe01c463105c8a73a94fc37918834f67bcdab61c81514aa0d95010a3",
+      "reference_output_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653"
+    },
+    "handover": {
+      "ids_source": "atomic-engine-flash-next-default-8-16gib.json#fixtures.handover",
+      "length": 912,
+      "sha256_u32le": "c597d496af2d062bb95b31fd48b587034385f0a8325e2afa1dd20837a74d4b84",
+      "reference_output_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068"
+    }
+  },
+  "policy": "Single-slot Flash Next Metal, fixed depth three, BF16 KV, a minimum of eight ready experts for full verification batches and the next known reads submitted after the current GPU group. Fresh streamed prefill balances real prompt rows across blocks of at most 912. Quantized expert weights are read in tiles.",
+  "protocol": "One sequential observation per prompt and budget. Fresh server for each observation. Warmup uses the final eight archive IDs for eight greedy outputs. Measured requests use unpadded native input IDs, zero cached tokens, temperature 0, seed 42, ignore_eos, one slot and 64 returned token IDs. TTFT uses client monotonic time from HTTP request to first SSE token. Live decode TPS is 63 divided by seconds between the first and last token. No per-op or decode profiler. ATOMIC_WINDOW_PROFILE confirms the actual streamed prompt block sizes. OS file cache and thermals uncontrolled. High water is process-lifetime managed engine memory.",
+  "ordinary_controls": [
+    {
+      "cap_gib": 8,
+      "fixture": "archive",
+      "ttft_s": 16.4847336250823,
+      "live_decode_tps": 12.70401070072972,
+      "matched_ids": 64,
+      "verification_rounds": 0,
+      "managed_high_water_bytes": 8589934410
+    },
+    {
+      "cap_gib": 8,
+      "fixture": "handover",
+      "ttft_s": 6.404390375013463,
+      "live_decode_tps": 12.898314915392838,
+      "matched_ids": 64,
+      "verification_rounds": 0,
+      "managed_high_water_bytes": 8589934410
+    }
+  ],
+  "runs": [
+    {
+      "cap_gib": 8,
+      "fixture": "archive",
+      "ttft_s": 44.3740023750579,
+      "live_decode_tps": 15.117997319027854,
+      "last_token_s": 48.541221000021324,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 8589934282
+    },
+    {
+      "cap_gib": 8,
+      "fixture": "handover",
+      "ttft_s": 9.57737025001552,
+      "live_decode_tps": 14.421998631227448,
+      "last_token_s": 13.945696832961403,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 8589934410
+    },
+    {
+      "cap_gib": 10,
+      "fixture": "handover",
+      "ttft_s": 9.502587374998257,
+      "live_decode_tps": 15.117855080129038,
+      "last_token_s": 13.669845207943581,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 10737416074
+    },
+    {
+      "cap_gib": 10,
+      "fixture": "archive",
+      "ttft_s": 45.07172662508674,
+      "live_decode_tps": 14.973105600129802,
+      "last_token_s": 49.27927058306523,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 10737417402
+    },
+    {
+      "cap_gib": 12,
+      "fixture": "archive",
+      "ttft_s": 46.751768541987985,
+      "live_decode_tps": 14.252646771739705,
+      "last_token_s": 51.17200016696006,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 12884898346
+    },
+    {
+      "cap_gib": 12,
+      "fixture": "handover",
+      "ttft_s": 9.703544958028942,
+      "live_decode_tps": 15.521340102603146,
+      "last_token_s": 13.762472833041102,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 12884901882
+    },
+    {
+      "cap_gib": 14,
+      "fixture": "handover",
+      "ttft_s": 9.612556750071235,
+      "live_decode_tps": 15.779499280732992,
+      "last_token_s": 13.605078875087202,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 15032382490
+    },
+    {
+      "cap_gib": 14,
+      "fixture": "archive",
+      "ttft_s": 47.485693792114034,
+      "live_decode_tps": 14.81711505481928,
+      "last_token_s": 51.73753362509888,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 15032382490
+    },
+    {
+      "cap_gib": 16,
+      "fixture": "archive",
+      "ttft_s": 45.50622462492902,
+      "live_decode_tps": 16.199281849520506,
+      "last_token_s": 49.395285916980356,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 17179858426
+    },
+    {
+      "cap_gib": 16,
+      "fixture": "handover",
+      "ttft_s": 9.650516625028104,
+      "live_decode_tps": 15.21645237546625,
+      "last_token_s": 13.790772083099,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 17179863658
+    },
+    {
+      "cap_gib": 18,
+      "fixture": "handover",
+      "ttft_s": 9.456017000018619,
+      "live_decode_tps": 17.01513693214991,
+      "last_token_s": 13.158602542011067,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 19327352682
+    },
+    {
+      "cap_gib": 18,
+      "fixture": "archive",
+      "ttft_s": 45.66244966699742,
+      "live_decode_tps": 17.108678003256983,
+      "last_token_s": 49.34479145798832,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 19327342650
+    },
+    {
+      "cap_gib": 20,
+      "fixture": "archive",
+      "ttft_s": 45.35290599998552,
+      "live_decode_tps": 9.01523510334089,
+      "last_token_s": 52.34107650001533,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 21474836234
+    },
+    {
+      "cap_gib": 20,
+      "fixture": "handover",
+      "ttft_s": 9.540981083060615,
+      "live_decode_tps": 17.446595041920915,
+      "last_token_s": 13.152000875095837,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 21474826058
+    },
+    {
+      "cap_gib": 22,
+      "fixture": "handover",
+      "ttft_s": 9.50334162497893,
+      "live_decode_tps": 16.667251453849914,
+      "last_token_s": 13.283208999899216,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 23622299818
+    },
+    {
+      "cap_gib": 22,
+      "fixture": "archive",
+      "ttft_s": 45.82477895799093,
+      "live_decode_tps": 16.792178575034686,
+      "last_token_s": 49.57652562495787,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 23622315738
+    },
+    {
+      "cap_gib": 24,
+      "fixture": "archive",
+      "ttft_s": 45.0726344169816,
+      "live_decode_tps": 16.359247517406292,
+      "last_token_s": 48.92366729199421,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "5fe5a7f005c54da9aa37bb4828d6fb4108be9572e406dca05c62e653310c1653",
+      "uncached_tokens": 4000,
+      "prompt_blocks": [
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "verification_rounds": 23,
+      "proposed": 67,
+      "accepted": 40,
+      "managed_high_water_bytes": 25769793242
+    },
+    {
+      "cap_gib": 24,
+      "fixture": "handover",
+      "ttft_s": 9.38033712503966,
+      "live_decode_tps": 17.43834415248141,
+      "last_token_s": 12.99306545802392,
+      "matched_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "uncached_tokens": 912,
+      "prompt_blocks": [
+        912
+      ],
+      "verification_rounds": 24,
+      "proposed": 72,
+      "accepted": 38,
+      "managed_high_water_bytes": 25769800298
+    }
+  ],
+  "followup_20gib_archive": {
+    "reason": "The first 20 GiB archive decode was slower than either adjacent budget. Same process, warmup and completion protocol in a new server after the matrix and the two ordinary controls.",
+    "ttft_s": 45.84487108304165,
+    "live_decode_tps": 17.020713069525453,
+    "last_token_s": 49.54624362499453,
+    "matched_ids": 64,
+    "verification_rounds": 23,
+    "managed_high_water_bytes": 21474836234,
+    "prompt_blocks": [
+      800,
+      800,
+      800,
+      800,
+      800
+    ]
+  }
+}

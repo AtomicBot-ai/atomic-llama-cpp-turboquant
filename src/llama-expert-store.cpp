@@ -301,7 +301,29 @@ struct llama_expert_store::impl {
         return bytes;
     }
 
+    // Flash Next can recycle Metal buffers within the same aligned size class.
+    // Other geometries fall back to the existing LRU admission policy.
+    static constexpr size_t slot_alignment = 64 * 1024;
+    struct size_index {
+        llama_memory_budget::ticket charge;
+        std::array<entry *, 16> oldest {};
+    };
+    std::unique_ptr<size_index> size_lru;
+
+    static bool indexed_size(size_t bytes) {
+        return bytes && bytes <= 16 * slot_alignment && bytes % slot_alignment == 0;
+    }
+
+    static entry * next_size(entry * start, size_t bytes) {
+        while (start && start->buffer_charge.size() != bytes) { start = start->newer; }
+        return start;
+    }
+
     void unlink_lru(entry & e) {
+        if (size_lru && !history && indexed_size(e.buffer_charge.size())) {
+            auto & first = size_lru->oldest[e.buffer_charge.size() / slot_alignment - 1];
+            if (first == &e) { first = next_size(e.newer, e.buffer_charge.size()); }
+        }
         if (e.older) { e.older->newer = e.newer; }
         else { lru_first[e.frequency_class] = e.newer; }
         if (e.newer) { e.newer->older = e.older; }
@@ -328,7 +350,7 @@ struct llama_expert_store::impl {
         return candidate;
     }
 
-    std::shared_ptr<entry> take_victim() {
+    std::shared_ptr<entry> take_victim(size_t preferred_bytes = 0) {
         llama_expert_timer timer(profile ? &profile->eviction_search_ns : nullptr);
         entry * chosen = nullptr;
         if (history) {
@@ -380,6 +402,15 @@ struct llama_expert_store::impl {
             }
         } else {
             chosen = oldest_unpinned(0);
+            if (indexed_size(preferred_bytes)) {
+                auto & first = size_lru->oldest[preferred_bytes / slot_alignment - 1];
+                if (!first) { first = next_size(lru_first[0], preferred_bytes); }
+                auto * candidate = first;
+                while (candidate && (candidate->pins || candidate->retiring)) {
+                    candidate = next_size(candidate->newer, preferred_bytes);
+                }
+                if (candidate) { chosen = candidate; }
+            }
         }
         if (!chosen) { return {}; }
         auto victim = entries.find(chosen->key);
@@ -974,7 +1005,7 @@ llama_expert_store::lease llama_expert_store::acquire_locked(const std::string &
             charges = pimpl->reserve(arena_bytes, buffer_bytes, data_bytes);
             if (charges.complete()) { break; }
             charges = {};
-            auto victim = pimpl->take_victim();
+            auto victim = pimpl->take_victim(pimpl->size_lru ? buffer_bytes : 0);
             if (!victim) {
                 // Tight budgets must not fail merely because spares are held.
                 if (pimpl->release_recycled()) { continue; }
@@ -1187,6 +1218,17 @@ void llama_expert_store::begin_projection(const std::string & name, int64_t toke
     }
 }
 
+void llama_expert_store::enable_size_lru() {
+    if (pimpl->size_lru) { return; }
+    auto charge = pimpl->budget->reserve(llama_memory_domain::host, llama_memory_category::runtime, sizeof(impl::size_index));
+    if (!charge) { return; }
+    std::unique_ptr<impl::size_index> index(new (std::nothrow) impl::size_index{});
+    if (!index) { return; }
+    charge.commit();
+    index->charge = std::move(charge);
+    pimpl->size_lru = std::move(index);
+}
+
 bool llama_expert_store::enable_class_lru(size_t working_bytes, bool reclaim) {
     if (pimpl->history) { return true; }
     const size_t bytes = pimpl->policy_bytes();
@@ -1217,6 +1259,7 @@ bool llama_expert_store::enable_class_lru(size_t working_bytes, bool reclaim) {
     charge.commit();
     pimpl->policy_charge = std::move(charge);
     pimpl->policy_tensors = std::move(table);
+    if (pimpl->size_lru) { pimpl->size_lru->oldest.fill(nullptr); }
     pimpl->history = std::move(history);
     return true;
 }

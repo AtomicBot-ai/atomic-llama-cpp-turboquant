@@ -4867,6 +4867,9 @@ private:
                 const auto & slot = *batch.slot_batched;
                 const size_t total = slot.task->n_tokens();
                 const size_t uncached = total - std::min(total, size_t(slot.stats.n_prompt_cached));
+                if (ctx_dft && off == 0 && uncached >= 320 && size_t(batch.view.size()) == uncached) {
+                    llama_atomic_park_flash_draft(ctx_dft);
+                }
                 ret = llama_expert_prefill_decode(ctx_tgt, batch.view.get(), uncached);
             } else {
                 ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());

@@ -138,6 +138,7 @@ public:
     void set_trace(llama_expert_trace_callback callback, void * user);
     void begin_projection(const std::string & name, int64_t tokens);
     // Configure only before the first acquisition. History is admitted separately.
+    void enable_size_lru();
     bool set_policy(const std::string & policy, size_t working_bytes = 0);
     // At an idle batch boundary, switch policy while keeping resident weights.
     // Automatic prefill uses decayed-frequency candidates from both class ends;

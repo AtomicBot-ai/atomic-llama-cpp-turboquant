@@ -76,6 +76,7 @@ class llama_expert_moe {
     static constexpr size_t queue_headroom = 64 * 1024;
 
     size_t demand_min_ready = 4;
+    bool flash_next_verify = false;
     bool metal_predictor = false;
     bool graph_predictor = false;
     using compute_prefix_t = ggml_status (*)(ggml_backend_t, ggml_cgraph *, int);
@@ -557,19 +558,28 @@ class llama_expert_moe {
         std::unique_ptr<llama_expert_store::demand_batch> demand = std::move(published_demand);
         published_count = 0; published_layer = nullptr;
         const bool use_queue = was_published || (queued_demand && !metal_predictor && available > queue_headroom + 6 * max_allocation + max_payload);
-        auto enqueue_ready = [&] {
-            if (demand && demand->pending()) { return true; }
+        std::unique_ptr<llama_expert_store::demand_batch> following;
+        auto queue_plan = [&](std::unique_ptr<llama_expert_store::demand_batch> & destination) {
             group plan;
             take(plan);
             if (!plan.n) { return false; }
             llama_expert_timer timer(profile ? &profile->acquire_ns : nullptr);
-            demand = store.enqueue_demand({p.up->name, p.gate->name, p.down->name},
+            destination = store.enqueue_demand({p.up->name, p.gate->name, p.down->name},
                     plan.experts.data(), plan.n, ahead, readers.get(), false, staged);
             return true;
         };
+        auto enqueue_ready = [&] {
+            if (demand && demand->pending()) { return true; }
+            if (following) {
+                demand = std::move(following);
+                return true;
+            }
+            return queue_plan(demand);
+        };
         auto collect_ready = [&](group & g) {
             llama_expert_timer timer(profile ? &profile->acquire_ns : nullptr);
-            g.n = demand->take(g.experts.data(), g.up.data(), g.gate.data(), g.down.data(), demand_min_ready);
+            g.n = demand->take(g.experts.data(), g.up.data(), g.gate.data(), g.down.data(),
+                    flash_next_verify && tokens == 4 ? size_t(8) : demand_min_ready);
         };
         group current;
         if (was_published) {
@@ -746,6 +756,14 @@ class llama_expert_moe {
             }
             if (status == GGML_STATUS_SUCCESS) {
                 if (use_queue) {
+                    // Submission is asynchronous. Keep draining this wave first, but give
+                    // the readers the next known routes while Metal owns the current leases.
+                    // With publication disabled, the current leases and the unconsumed
+                    // portion of demand belong to one wave. Each wave is <= capacity/2.
+                    if (flash_next_verify && tokens == 4 && !was_published && !staged &&
+                            demand && demand->pending() && !following) {
+                        queue_plan(following);
+                    }
                     queued_next = enqueue_ready();
                     if (queued_next) { ++pipeline_groups; }
                 } else {
@@ -859,7 +877,7 @@ public:
                     std::shared_ptr<llama_expert_source> source, size_t max_width, size_t max_allocation, size_t max_payload,
                     std::atomic<bool> & failed, char * failure, size_t failure_size,
                     llama_expert_profile_data * & profile, uint64_t & projections, uint64_t & matmuls, uint64_t & submissions,
-                    bool automatic = false, bool dflash_verify = false, bool profile_overlap = false) :
+                    bool automatic = false, bool dflash_verify = false, bool profile_overlap = false, bool flash_next = false) :
         budget(std::move(budget)), backend(backend), store(store), failed(failed), failure(failure), failure_size(failure_size),
         profile(profile), projections(projections), matmuls(matmuls), submissions(submissions),
         max_allocation(max_allocation), max_payload(max_payload) {
@@ -904,6 +922,7 @@ public:
             throw std::runtime_error("combined MoE minimum working set does not fit");
         }
 #ifdef __APPLE__
+        flash_next_verify = automatic && flash_next;
         if (automatic && queued_demand) {
             const size_t bytes = early_io::pool::memory_bytes();
             if (memory.requested - memory.used() - working >= bytes) {

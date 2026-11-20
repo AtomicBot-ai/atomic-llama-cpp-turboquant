@@ -232,13 +232,20 @@ void common_atomic_select_qwen35_profile(common_params & p) {
     }
 }
 
+bool common_atomic_flash_next_dflash3_profile(const common_params & params) {
+    return params.engine_budget >= (size_t(8) << 30) && params.engine_budget <= (size_t(24) << 30) &&
+            params.n_ctx == 4096 && params.n_batch == 4096 && params.n_ubatch == 8 && params.n_parallel == 1 &&
+            params.cache_type_k == GGML_TYPE_BF16 && params.cache_type_v == GGML_TYPE_BF16 &&
+            params.speculative.draft.n_max == 3;
+}
+
 bool common_atomic_dflash2_enabled(const common_params & params) {
     const bool short_profile = params.engine_budget == (size_t(18) << 30) && params.n_ctx == 1024;
     const bool long_profile = (params.engine_qwen35_layers || params.engine_budget == (size_t(8) << 30)) && params.n_ctx == 4096 && params.n_batch == 4096;
     const auto draft_ubatch = params.speculative.draft.n_ubatch;
     const bool draft_ubatch_supported = !draft_ubatch ||
         (short_profile ? draft_ubatch == params.n_ubatch : draft_ubatch >= params.n_ubatch && draft_ubatch <= 256);
-    if ((!short_profile && !long_profile) || params.engine_ram_budget || params.engine_vram_budget ||
+    if ((!short_profile && !long_profile && !common_atomic_flash_next_dflash3_profile(params)) || params.engine_ram_budget || params.engine_vram_budget ||
             params.engine_memory_auto || params.engine_prefill_window ||
             params.n_ubatch != 8 || params.n_parallel != 1 || !params.speculative.has_dft() ||
             params.speculative.draft.n_max < 1 ||

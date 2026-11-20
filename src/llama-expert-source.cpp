@@ -336,6 +336,35 @@ const llama_expert_tensor_info & llama_expert_source::tensor(const std::string &
     return pimpl->tensors[it->second];
 }
 
+#if defined(__APPLE__)
+void llama_expert_source::read_expert_range(const std::string & name, int64_t first, int64_t end,
+        void * dst, size_t bytes) {
+    const auto & info = tensor(name);
+    const size_t stride = info.expert_bytes();
+    if (!dst || first < 0 || first >= end || end > info.ne[2] || bytes != size_t(end - first) * stride) {
+        throw std::invalid_argument("invalid contiguous expert range");
+    }
+    std::lock_guard<std::mutex> lock(pimpl->mutex);
+    if (pimpl->failed) { throw std::runtime_error("expert source is invalid after an earlier read failure"); }
+    try {
+        for (const auto & shard : pimpl->shards) { shard.check(); }
+        const int fd = expert_fileno(pimpl->shards[info.shard].file.get());
+        const off_t offset = info.offset + size_t(first) * stride;
+        for (size_t done = 0; done < bytes;) {
+            const size_t chunk = std::min(bytes - done, size_t(64) << 20);
+            const auto n = ::pread(fd, static_cast<char *>(dst) + done, chunk, offset + done);
+            if (n < 0 && errno == EINTR) { continue; }
+            if (n <= 0) { throw std::runtime_error("incomplete contiguous expert read: " + name); }
+            done += size_t(n);
+        }
+        for (const auto & shard : pimpl->shards) { shard.check(); }
+    } catch (...) {
+        pimpl->failed = true;
+        throw;
+    }
+}
+#endif
+
 void llama_expert_source::read_experts(const read_request * requests, size_t count, bool speculative,
         bool concurrent_demand, bool adjacent_ranges) {
     if (count == 1 && !speculative && !concurrent_demand) {

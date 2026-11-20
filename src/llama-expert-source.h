@@ -66,6 +66,10 @@ public:
     };
     void read_experts(const read_request * requests, size_t count, bool speculative = false,
                     bool concurrent_demand = false, bool adjacent_ranges = false);
+#if defined(__APPLE__)
+    // Exact contiguous expert slices into one already admitted Metal or staging range.
+    void read_expert_range(const std::string & name, int64_t first, int64_t end, void * dst, size_t bytes);
+#endif
     // Best-effort macOS file-cache hint for one known demand expert. No user
     // buffer, published weight, offset change or validation bypass. False means
     // unsupported, invalid or declined; demand must still use read_expert.

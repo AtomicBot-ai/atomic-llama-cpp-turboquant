@@ -52,7 +52,7 @@ public:
     ggml_tensor * build(ggml_context * ctx, const ggml_tensor * weight, ggml_tensor * input, ggml_tensor * ids);
     // Qualified short-row FP32 Metal profile. Null preserves the ordinary graph.
     // Admit optional acceleration after mandatory context/graph allocation.
-    void configure_acceleration(bool dflash_verify = false, bool profile_overlap = false);
+    void configure_acceleration(bool dflash_verify = false, bool profile_overlap = false, bool flash_next = false);
     void configure_resident_layers(const llama_model & model);
     const std::array<ggml_tensor *, 3> * resident_layer(int il) const;
     bool can_retain_prefill_tail(size_t routed_layers) const;
