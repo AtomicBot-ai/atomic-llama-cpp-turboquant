@@ -4867,7 +4867,7 @@ private:
                 const auto & slot = *batch.slot_batched;
                 const size_t total = slot.task->n_tokens();
                 const size_t uncached = total - std::min(total, size_t(slot.stats.n_prompt_cached));
-                const bool multi_batch = params_base.n_ctx == 40960 && uncached > size_t(params_base.n_batch);
+                const bool multi_batch = params_base.n_ctx > 4096 && uncached > size_t(params_base.n_batch);
                 if (ctx_dft && off == 0 && uncached >= 320 && (size_t(batch.view.size()) == uncached || multi_batch)) {
                     llama_atomic_park_flash_draft(ctx_dft);
                 }

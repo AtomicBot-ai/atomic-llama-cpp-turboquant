@@ -233,10 +233,13 @@ void common_atomic_select_qwen35_profile(common_params & p) {
 }
 
 bool common_atomic_flash_next_dflash3_profile(const common_params & params) {
-    return params.engine_budget >= (size_t(8) << 30) && params.engine_budget <= (size_t(24) << 30) &&
-            (params.n_ctx == 4096 || params.n_ctx == 40960) && params.n_batch == 4096 && params.n_ubatch == 8 && params.n_parallel == 1 &&
-            params.cache_type_k == GGML_TYPE_BF16 && params.cache_type_v == GGML_TYPE_BF16 &&
-            params.speculative.draft.n_max == 3;
+    const bool standard = (params.n_ctx == 4096 || params.n_ctx == 40960) && params.n_batch == 4096 &&
+            params.cache_type_k == GGML_TYPE_BF16 && params.cache_type_v == GGML_TYPE_BF16;
+    const bool compact = params.n_ctx == 61440 && params.n_batch == 512 && params.slot_save_path.empty() &&
+            params.cache_type_k == GGML_TYPE_Q4_0 && params.cache_type_v == GGML_TYPE_Q4_0 &&
+            params.speculative.draft.n_ubatch == 16;
+    return (standard || compact) && params.engine_budget >= (size_t(8) << 30) && params.engine_budget <= (size_t(24) << 30) &&
+            params.n_ubatch == 8 && params.n_parallel == 1 && params.speculative.draft.n_max == 3;
 }
 
 bool common_atomic_dflash2_enabled(const common_params & params) {

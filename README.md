@@ -1,5 +1,7 @@
 # Atomic Engine
 
+Run Qwen3.8 Flash Next on Apple Silicon with a single `llama-server` binary that serves a web chat and an OpenAI-compatible API. Set `LLAMA_EXPERIMENTAL_BUDGET_DFLASH2=1` at launch to let a small draft model propose tokens within the same memory budget. On the 912-token Handover prompt (M4 Max, 20 GiB budget, 4,096-token context), live decode peaked at **17.45 tokens/s**. The signed binary reached **15.58 tokens/s** and matched all **64/64** reference tokens. [Launch the server and open the chat](docs/atomic-engine-flash-next-dflash3-8-24gib.md#run-the-macos-binary).
+
 Atomic Engine is an inference engine under development on top of llama.cpp,
 targeting MoE expert streaming from SSD and adjustable managed memory budgets.
 The experimental engine admits model, state, compute and expert buffers under a

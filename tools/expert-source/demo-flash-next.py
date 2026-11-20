@@ -53,10 +53,9 @@ def main():
     parser.add_argument("--budget-gib", type=int, choices=range(8, 25, 2), default=20)
     parser.add_argument("--measure-only", action="store_true", help="Exit after the measured request")
     args = parser.parse_args()
-    fixture = Path(__file__).resolve().parents[2] / "docs/atomic-engine-flash-next-default-8-16gib.json"
+    fixture = Path(__file__).with_name("flash-next-handover.json")
     record = json.loads(fixture.read_text())
-    prompts = record["fixtures"]
-    gold = next(row["output_ids"] for row in record["runs"] if row["kind"] == "handover" and row["cap_gib"] == 8)
+    gold = record["output_ids"]
     for path in (args.server, args.model, args.draft):
         if not path.is_file():
             parser.error(f"File not found: {path}")
@@ -84,8 +83,8 @@ def main():
             time.sleep(0.25)
         else:
             raise RuntimeError("Server failed to become ready")
-        decode(client, base, prompts["archive"]["ids"][-8:], 8)
-        ids, ttft, tps = decode(client, base, prompts["handover"]["ids"], 64)
+        decode(client, base, record["warmup_ids"], 8)
+        ids, ttft, tps = decode(client, base, record["input_ids"], 64)
         matches = sum(a == b for a, b in zip(ids, gold))
         print(f"Handover (912 in, 64 out): TTFT {ttft:.2f} s | live decode {tps:.2f} tok/s | {matches}/64 IDs matched", flush=True)
         if matches != 64:

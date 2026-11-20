@@ -81,7 +81,7 @@ struct llama_memory_contract : std::enable_shared_from_this<llama_memory_contrac
     bool stream_cuda_boundary_reduction = false;
     bool dflash2_target = false;
     bool flash_next_dflash3 = false;
-    bool flash_next_40k = false;
+    uint32_t flash_next_extended_ctx = 0;
     uint32_t qwen35_profile_layers = 0;
     bool qwen35_fast_prefill_default = false;
     bool qwen35_resident_verify = false;
