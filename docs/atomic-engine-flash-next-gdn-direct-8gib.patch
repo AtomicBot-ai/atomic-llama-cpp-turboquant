@@ -1,0 +1,41 @@
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -6,6 +6,9 @@
+ 
+ #include <algorithm>
+ #include <cinttypes>
++#include <atomic>
++#include <cstdlib>
++#include <cstring>
+ 
+ // bad metadata must be catchable: GGML_ASSERT aborts the whole process
+ static void qwen4exp_require_nonzero(const llama_model_loader & ml, llm_kv kid, uint32_t value) {
+@@ -1174,7 +1177,27 @@
+     ggml_tensor * conv_input = build_conv_state_at(inp, conv_states_all, qkv_mixed,
+             conv_kernel_size - 1, conv_channels, il);
+ 
+-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
++    static const bool direct_state = [] {
++        const char * value = std::getenv("LLAMA_FLASH_GDN_DIRECT_STATE");
++        return value && std::strcmp(value, "1") == 0;
++    }();
++    // With one physical row and no rollback, every established sequence reads row zero.
++    // The regular graph still handles initial zeroing; graph reuse also checks rs_z.
++    const bool read_cache = direct_state && expert_executor && !prefill_expert_weights &&
++            cparams.n_seq_max == 1 && cparams.n_rs_seq == 0 && n_seq_tokens == 1 && n_seqs == 1 &&
++            mctx_cur->get_size() == 1 && mctx_cur->get_n_rs() == 1 && mctx_cur->get_head() == 0 &&
++            mctx_cur->get_rs_z() < 0 && ssm_states_all->type == GGML_TYPE_F32 &&
++            ssm_states_all->ne[0] == hparams.n_embd_s() && ssm_states_all->ne[1] == 1 &&
++            ggml_is_contiguous(ssm_states_all);
++    ggml_tensor * state = read_cache ? ssm_states_all : build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
++    if (read_cache && il >= 0 && il < 64) {
++        // Report configuration once during warmup, without instrumenting graph execution.
++        static std::atomic<uint64_t> seen{0};
++        const uint64_t bit = UINT64_C(1) << il;
++        if (!(seen.load(std::memory_order_relaxed) & bit) && !(seen.fetch_or(bit) & bit)) {
++            fprintf(stderr, "FLASH_GDN_DIRECT layer=%d\n", il);
++        }
++    }
+     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
+     cb(state, "state_predelta", il);
+ 

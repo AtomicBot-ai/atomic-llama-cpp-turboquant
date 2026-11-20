@@ -1,0 +1,5225 @@
+{
+  "base_commit": "a46a2c27cb85d82e450827b6a98f2d2ca814209b",
+  "hardware": "Apple M4 Max, 48 GiB",
+  "prerequisite": "atomic-engine-flash-next-dflash3-single-prefill-8gib.json",
+  "light_timing_patch": "atomic-engine-flash-next-dflash3-rounds-8gib.patch",
+  "light_timing_patch_sha256": "e1fdcc84e1edaf3023877cd8b0b3176188c4c7e1afc95824648068760d49394d",
+  "optional_expert_detail_delta": "--- a/tools/server/server-context.cpp\n+++ b/tools/server/server-context.cpp\n@@ -4944,9 +4944,66 @@\n                 }\n                 ret = llama_expert_prefill_decode(ctx_tgt, batch.view.get(), uncached);\n             } else {\n+                const bool detail = phases.active && batch.view.size() == 4 &&\n+                        std::getenv(\"FLASH_PHASE_EXPERTS\");\n+                llama_expert_streaming_data before{}, after{};\n+                if (detail) {\n+                    GGML_ASSERT(llama_get_expert_streaming_stats(ctx_tgt, &before));\n+                    GGML_ASSERT(llama_expert_profile_set(ctx_tgt, true));\n+                }\n                 decode_span span(batch.view.size() > 1 ? \"verify_graph\" : \"serial_graph\", batch.view.size());\n                 ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());\n                 if (ret == 0 && has_output) { llama_synchronize(ctx_tgt); }\n+                if (detail) {\n+                    llama_expert_profile_data profile{};\n+                    GGML_ASSERT(llama_expert_profile_get(ctx_tgt, &profile));\n+                    GGML_ASSERT(llama_expert_profile_set(ctx_tgt, false));\n+                    GGML_ASSERT(llama_get_expert_streaming_stats(ctx_tgt, &after));\n+                    std::fprintf(stderr, \"VERIFY_EXPERT\"\n+                            \" projection_ns=%\" PRIu64\n+                            \" acquire_ns=%\" PRIu64\n+                            \" admission_ns=%\" PRIu64\n+                            \" allocation_ns=%\" PRIu64\n+                            \" eviction_search_ns=%\" PRIu64\n+                            \" overlap_acquire_ns=%\" PRIu64\n+                            \" demand_queue_wait_ns=%\" PRIu64\n+                            \" compute_ns=%\" PRIu64\n+                            \" submit_ns=%\" PRIu64\n+                            \" wait_ns=%\" PRIu64\n+                            \" gpu_command_ns=%\" PRIu64\n+                            \" gpu_timed_submissions=%\" PRIu64\n+                            \" graph_setup_ns=%\" PRIu64\n+                            \" readback_ns=%\" PRIu64\n+                            \" read_ns=%\" PRIu64\n+                            \" source_transfer_ns=%\" PRIu64\n+                            \" logical_read_bytes=%\" PRIu64\n+                            \" hits=%\" PRIu64\n+                            \" misses=%\" PRIu64\n+                            \" buffer_allocations=%\" PRIu64\n+                            \" buffer_reuses=%\" PRIu64\n+                            \"\\n\",\n+                            profile.projection_ns,\n+                            profile.acquire_ns,\n+                            profile.admission_ns,\n+                            profile.allocation_ns,\n+                            profile.eviction_search_ns,\n+                            profile.overlap_acquire_ns,\n+                            profile.demand_queue_wait_ns,\n+                            profile.compute_ns,\n+                            profile.submit_ns,\n+                            profile.wait_ns,\n+                            profile.gpu_command_ns,\n+                            profile.gpu_timed_submissions,\n+                            profile.graph_setup_ns,\n+                            profile.readback_ns,\n+                            profile.read_ns,\n+                            profile.source_transfer_ns,\n+                            after.logical_read_bytes - before.logical_read_bytes,\n+                            after.hits - before.hits,\n+                            after.misses - before.misses,\n+                            after.buffer_allocations - before.buffer_allocations,\n+                            after.buffer_reuses - before.buffer_reuses);\n+                }\n             }\n             if (params_base.engine_budget && batch.tokens[off].is_prompt && ret == 0 && has_output) {\n                 llama_synchronize(ctx_tgt);\n",
+  "fixture": "atomic-engine-flash-next-default-8-16gib.json#fixtures.handover",
+  "input_ids_sha256_u32le": "c597d496af2d062bb95b31fd48b587034385f0a8325e2afa1dd20837a74d4b84",
+  "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+  "protocol": "Four sequential fresh processes on Metal. Same 8 GiB managed budget, context and batch 4096, one 912-row target prefill, greedy seed 42, uncached handover, compact Q4_0 DFlash2 with BF16 selectors, depth 3, draft ubatch 128. Eight-input/eight-output warmup. Client TPS counts 63 intervals between token events. Original binary for the clean control. Light timestamps are buffered in memory on the inference thread, bounded by queuing IDs 1 and 64. Natural run preserves asynchronous feature injection. Fenced run synchronizes draft features, proposals and pending prompt features at their respective boundaries. In the separate expert run, existing expert counters cover only the 24 synchronized four-row verifier graphs. OS file cache uncontrolled.",
+  "interpretation": "Verification graph wall includes ordinary target synchronization, expert streaming and recurrent snapshot maintenance. Explicit KV suffix truncation is timed separately for rejections and full accepts, plus routine temporary draft trimming after proposing. No full checkpoint save or replay. Expert readiness wait is consumer wall inside expert acquisition. Metal completion wait is host wall; GPU command service is nested/overlapping. These counters must not be added as independent phases. Logical model-source bytes are not physical SSD traffic. Savings targets assume unchanged round count and other phases.",
+  "summary": {
+    "reference_ms_per_token": 78.90234853968852,
+    "control_ms_per_token": 78.61127050793064,
+    "fenced_ms_per_token": 79.60822485712549,
+    "target_ms_per_token": 76.30271428571429,
+    "remaining_target_ms_per_token_at_20_tps": 46.694489428588795,
+    "target_ms_per_check": 200.294625,
+    "required_target_ms_per_check": 122.57303475004558,
+    "required_target_fraction_removed": 0.3880363252381556,
+    "expert_weight_wait_ms_per_token": 28.598093587301587,
+    "logical_expert_mib_per_token": 630.3490048363095,
+    "logical_expert_gib_per_verified_batch": 1.6158849000930786
+  },
+  "runs": {
+    "control": {
+      "env": {
+        "FLASH_LIVE_SIZE_LRU": "1",
+        "FLASH_LIVE_DRAFT": "1",
+        "LLAMA_EXPERIMENTAL_BUDGET_DFLASH2": "1",
+        "FLASH_SINGLE_PREFILL": "1",
+        "FLASH_PROMPT_TILES": "1",
+        "FLASH_STREAM_WIDE": "1",
+        "FLASH_LIVE_FEATURE_PREFILL": "1"
+      },
+      "ttft_s": 9.564437667024322,
+      "tps": 12.720822263000008,
+      "last_token_s": 14.516947709023952,
+      "matches": 64,
+      "output_ids": [
+        2,
+        25662,
+        35312,
+        286,
+        25,
+        5711,
+        69041,
+        7673,
+        5606,
+        271,
+        550,
+        220,
+        16,
+        13,
+        3976,
+        278,
+        417,
+        8845,
+        318,
+        2432,
+        12296,
+        8,
+        198,
+        760,
+        2614,
+        2250,
+        43303,
+        3371,
+        6290,
+        494,
+        279,
+        5129,
+        27370,
+        321,
+        1325,
+        3050,
+        5975,
+        1518,
+        781,
+        628,
+        10046,
+        310,
+        3286,
+        466,
+        16111,
+        13,
+        271,
+        91,
+        32783,
+        2937,
+        735,
+        24425,
+        735,
+        5411,
+        12296,
+        735,
+        25009,
+        735,
+        198,
+        91,
+        535,
+        4277,
+        735,
+        535
+      ],
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 912,
+        "prompt_ms": 9563.88,
+        "prompt_per_token_ms": 10.486710526315788,
+        "prompt_per_second": 95.35878743773448,
+        "predicted_n": 64,
+        "predicted_ms": 4952.6,
+        "predicted_per_token_ms": 78.61269841269842,
+        "predicted_per_second": 12.720591204619794,
+        "draft_n": 72,
+        "draft_n_accepted": 38
+      },
+      "metrics": {
+        "budget_requested_bytes": 8589934592,
+        "budget_applied_bytes": 8589934592,
+        "budget_minimum_bytes": 8263833066,
+        "budget_used_bytes": 8588963914,
+        "budget_high_water_bytes": 8589934474,
+        "budget_released_bytes": 6706872400,
+        "prefill_windows": 0,
+        "prefill_window_tokens": 0,
+        "prefill_window_tails": 0,
+        "prefill_window_fallbacks": 0,
+        "prefill_window_failed": 0
+      },
+      "command": [
+        "/private/tmp/flash-phases.l5z86I/plain/feature-server",
+        "-m",
+        "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "-c",
+        "4096",
+        "-b",
+        "4096",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "8",
+        "-tb",
+        "8",
+        "-ngl",
+        "99",
+        "-ctk",
+        "bf16",
+        "-ctv",
+        "bf16",
+        "-fit",
+        "off",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--no-warmup",
+        "--metrics",
+        "--no-webui",
+        "--engine-budget-mib",
+        "8192",
+        "--host",
+        "127.0.0.1",
+        "--spec-type",
+        "draft-dflash",
+        "-md",
+        "/private/tmp/flash-live.HsFIV6/compact.gguf",
+        "-ngld",
+        "99",
+        "--spec-draft-n-max",
+        "3",
+        "--spec-draft-n-ubatch",
+        "128"
+      ],
+      "binary_sha256": "1d7c0214034fc7f11f3374df7558284ac102702935716c03e9b13eae4a0befb1",
+      "observed_target_prefill_rows": null,
+      "client_ms_per_token": 78.61127050793064
+    },
+    "natural": {
+      "env": {
+        "FLASH_LIVE_SIZE_LRU": "1",
+        "FLASH_LIVE_DRAFT": "1",
+        "LLAMA_EXPERIMENTAL_BUDGET_DFLASH2": "1",
+        "FLASH_PHASES": "1",
+        "FLASH_SINGLE_PREFILL": "1",
+        "FLASH_PROMPT_TILES": "1",
+        "FLASH_STREAM_WIDE": "1",
+        "FLASH_ADMIT_TRACE": "1",
+        "FLASH_LIVE_FEATURE_PREFILL": "1"
+      },
+      "ttft_s": 9.79779187508393,
+      "tps": 12.201774251856488,
+      "last_token_s": 14.960975417052396,
+      "matches": 64,
+      "output_ids": [
+        2,
+        25662,
+        35312,
+        286,
+        25,
+        5711,
+        69041,
+        7673,
+        5606,
+        271,
+        550,
+        220,
+        16,
+        13,
+        3976,
+        278,
+        417,
+        8845,
+        318,
+        2432,
+        12296,
+        8,
+        198,
+        760,
+        2614,
+        2250,
+        43303,
+        3371,
+        6290,
+        494,
+        279,
+        5129,
+        27370,
+        321,
+        1325,
+        3050,
+        5975,
+        1518,
+        781,
+        628,
+        10046,
+        310,
+        3286,
+        466,
+        16111,
+        13,
+        271,
+        91,
+        32783,
+        2937,
+        735,
+        24425,
+        735,
+        5411,
+        12296,
+        735,
+        25009,
+        735,
+        198,
+        91,
+        535,
+        4277,
+        735,
+        535
+      ],
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 912,
+        "prompt_ms": 9797.239,
+        "prompt_per_token_ms": 10.742586622807018,
+        "prompt_per_second": 93.08745045415347,
+        "predicted_n": 64,
+        "predicted_ms": 5163.25,
+        "predicted_per_token_ms": 81.9563492063492,
+        "predicted_per_second": 12.201617198469956,
+        "draft_n": 72,
+        "draft_n_accepted": 38
+      },
+      "metrics": {
+        "budget_requested_bytes": 8589934592,
+        "budget_applied_bytes": 8589934592,
+        "budget_minimum_bytes": 8263833066,
+        "budget_used_bytes": 8588964650,
+        "budget_high_water_bytes": 8589934474,
+        "budget_released_bytes": 6723595120,
+        "prefill_windows": 0,
+        "prefill_window_tokens": 0,
+        "prefill_window_tails": 0,
+        "prefill_window_fallbacks": 0,
+        "prefill_window_failed": 0
+      },
+      "command": [
+        "/private/tmp/flash-phases.l5z86I/phases/feature-server",
+        "-m",
+        "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "-c",
+        "4096",
+        "-b",
+        "4096",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "8",
+        "-tb",
+        "8",
+        "-ngl",
+        "99",
+        "-ctk",
+        "bf16",
+        "-ctv",
+        "bf16",
+        "-fit",
+        "off",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--no-warmup",
+        "--metrics",
+        "--no-webui",
+        "--engine-budget-mib",
+        "8192",
+        "--host",
+        "127.0.0.1",
+        "--spec-type",
+        "draft-dflash",
+        "-md",
+        "/private/tmp/flash-live.HsFIV6/compact.gguf",
+        "-ngld",
+        "99",
+        "--spec-draft-n-max",
+        "3",
+        "--spec-draft-n-ubatch",
+        "128"
+      ],
+      "binary_sha256": "20107ece91239d2e2facf671c19544e7f0fceb0c7b511dd2cbf3c258cb5a9adf",
+      "observed_target_prefill_rows": [
+        912
+      ],
+      "client_ms_per_token": 81.95529431695977,
+      "server_ms_per_token": 81.9563492063492,
+      "client_minus_server_ms_per_token": -0.0010548893894366529,
+      "ms_per_emitted_token": {
+        "propose": 1.8553174603174603,
+        "draft_trim": 0.003126984126984127,
+        "verify_graph": 78.58746031746031,
+        "features": 0.06250793650793651,
+        "verify_sample": 0.12665079365079365,
+        "rollback": 0.0033015873015873015,
+        "accepted_trim": 0.0010476190476190477,
+        "serial_graph": 1.2954920634920635,
+        "serial_sample": 0.0018253968253968255,
+        "other_server": 0.01961904761904762
+      },
+      "call_counts": {
+        "propose": 24,
+        "draft_trim": 24,
+        "verify_graph": 24,
+        "features": 25,
+        "verify_sample": 24,
+        "rollback": 15,
+        "accepted_trim": 9,
+        "serial_graph": 1,
+        "serial_sample": 1
+      },
+      "accepted_draft_prefix_lengths": [
+        0,
+        3,
+        1,
+        1,
+        0,
+        0,
+        3,
+        3,
+        3,
+        1,
+        1,
+        3,
+        1,
+        1,
+        0,
+        0,
+        2,
+        1,
+        0,
+        3,
+        3,
+        2,
+        3,
+        3
+      ],
+      "events_format": "[phase, argument, start_us_relative_to_first_token, elapsed_us]. For emit, argument is the 1-based token index. For verify_sample it is accepted draft length. For rollback it is the number of discarded positions. Intervals are disjoint.",
+      "events": [
+        [
+          "emit",
+          1,
+          0,
+          0
+        ],
+        [
+          "propose",
+          0,
+          10,
+          12968
+        ],
+        [
+          "draft_trim",
+          3,
+          12987,
+          9
+        ],
+        [
+          "verify_graph",
+          4,
+          13001,
+          378639
+        ],
+        [
+          "features",
+          4,
+          391652,
+          142
+        ],
+        [
+          "verify_sample",
+          0,
+          391801,
+          155
+        ],
+        [
+          "rollback",
+          3,
+          391959,
+          14
+        ],
+        [
+          "emit",
+          2,
+          391981,
+          0
+        ],
+        [
+          "propose",
+          0,
+          391988,
+          4331
+        ],
+        [
+          "draft_trim",
+          3,
+          396332,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          396342,
+          220879
+        ],
+        [
+          "features",
+          4,
+          617229,
+          152
+        ],
+        [
+          "verify_sample",
+          3,
+          617387,
+          614
+        ],
+        [
+          "accepted_trim",
+          0,
+          618004,
+          6
+        ],
+        [
+          "emit",
+          3,
+          618015,
+          0
+        ],
+        [
+          "emit",
+          4,
+          618016,
+          0
+        ],
+        [
+          "emit",
+          5,
+          618017,
+          0
+        ],
+        [
+          "emit",
+          6,
+          618017,
+          0
+        ],
+        [
+          "propose",
+          0,
+          618025,
+          4882
+        ],
+        [
+          "draft_trim",
+          3,
+          622923,
+          8
+        ],
+        [
+          "verify_graph",
+          4,
+          622937,
+          249319
+        ],
+        [
+          "features",
+          4,
+          872266,
+          148
+        ],
+        [
+          "verify_sample",
+          1,
+          872420,
+          246
+        ],
+        [
+          "rollback",
+          2,
+          872668,
+          13
+        ],
+        [
+          "emit",
+          7,
+          872685,
+          0
+        ],
+        [
+          "emit",
+          8,
+          872686,
+          0
+        ],
+        [
+          "propose",
+          0,
+          872692,
+          4234
+        ],
+        [
+          "draft_trim",
+          3,
+          876931,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          876941,
+          176337
+        ],
+        [
+          "features",
+          4,
+          1053286,
+          154
+        ],
+        [
+          "verify_sample",
+          1,
+          1053446,
+          262
+        ],
+        [
+          "rollback",
+          2,
+          1053710,
+          14
+        ],
+        [
+          "emit",
+          9,
+          1053729,
+          0
+        ],
+        [
+          "emit",
+          10,
+          1053730,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1053737,
+          4863
+        ],
+        [
+          "draft_trim",
+          3,
+          1058608,
+          8
+        ],
+        [
+          "verify_graph",
+          4,
+          1058624,
+          191688
+        ],
+        [
+          "features",
+          4,
+          1250323,
+          142
+        ],
+        [
+          "verify_sample",
+          0,
+          1250473,
+          149
+        ],
+        [
+          "rollback",
+          3,
+          1250625,
+          15
+        ],
+        [
+          "emit",
+          11,
+          1250648,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1250655,
+          4493
+        ],
+        [
+          "draft_trim",
+          3,
+          1255156,
+          9
+        ],
+        [
+          "verify_graph",
+          4,
+          1255171,
+          155609
+        ],
+        [
+          "features",
+          4,
+          1410789,
+          157
+        ],
+        [
+          "verify_sample",
+          0,
+          1410954,
+          162
+        ],
+        [
+          "rollback",
+          3,
+          1411118,
+          15
+        ],
+        [
+          "emit",
+          12,
+          1411140,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1411146,
+          4153
+        ],
+        [
+          "draft_trim",
+          3,
+          1415305,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          1415316,
+          261400
+        ],
+        [
+          "features",
+          4,
+          1676726,
+          153
+        ],
+        [
+          "verify_sample",
+          3,
+          1676888,
+          475
+        ],
+        [
+          "accepted_trim",
+          0,
+          1677366,
+          8
+        ],
+        [
+          "emit",
+          13,
+          1677380,
+          0
+        ],
+        [
+          "emit",
+          14,
+          1677381,
+          0
+        ],
+        [
+          "emit",
+          15,
+          1677382,
+          0
+        ],
+        [
+          "emit",
+          16,
+          1677383,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1677391,
+          4386
+        ],
+        [
+          "draft_trim",
+          3,
+          1681783,
+          7
+        ],
+        [
+          "verify_graph",
+          4,
+          1681796,
+          224404
+        ],
+        [
+          "features",
+          4,
+          1906211,
+          175
+        ],
+        [
+          "verify_sample",
+          3,
+          1906396,
+          467
+        ],
+        [
+          "accepted_trim",
+          0,
+          1906866,
+          8
+        ],
+        [
+          "emit",
+          17,
+          1906882,
+          0
+        ],
+        [
+          "emit",
+          18,
+          1906883,
+          0
+        ],
+        [
+          "emit",
+          19,
+          1906883,
+          0
+        ],
+        [
+          "emit",
+          20,
+          1906884,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1906893,
+          4506
+        ],
+        [
+          "draft_trim",
+          3,
+          1911411,
+          12
+        ],
+        [
+          "verify_graph",
+          4,
+          1911428,
+          208945
+        ],
+        [
+          "features",
+          4,
+          2120381,
+          161
+        ],
+        [
+          "verify_sample",
+          3,
+          2120549,
+          482
+        ],
+        [
+          "accepted_trim",
+          0,
+          2121034,
+          7
+        ],
+        [
+          "emit",
+          21,
+          2121047,
+          0
+        ],
+        [
+          "emit",
+          22,
+          2121048,
+          0
+        ],
+        [
+          "emit",
+          23,
+          2121048,
+          0
+        ],
+        [
+          "emit",
+          24,
+          2121049,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2121057,
+          5017
+        ],
+        [
+          "draft_trim",
+          3,
+          2126098,
+          19
+        ],
+        [
+          "verify_graph",
+          4,
+          2126124,
+          257934
+        ],
+        [
+          "features",
+          4,
+          2384070,
+          169
+        ],
+        [
+          "verify_sample",
+          1,
+          2384245,
+          276
+        ],
+        [
+          "rollback",
+          2,
+          2384523,
+          14
+        ],
+        [
+          "emit",
+          25,
+          2384543,
+          0
+        ],
+        [
+          "emit",
+          26,
+          2384544,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2384551,
+          4954
+        ],
+        [
+          "draft_trim",
+          3,
+          2389515,
+          10
+        ],
+        [
+          "verify_graph",
+          4,
+          2389530,
+          216753
+        ],
+        [
+          "features",
+          4,
+          2606294,
+          163
+        ],
+        [
+          "verify_sample",
+          1,
+          2606466,
+          270
+        ],
+        [
+          "rollback",
+          2,
+          2606738,
+          13
+        ],
+        [
+          "emit",
+          27,
+          2606756,
+          0
+        ],
+        [
+          "emit",
+          28,
+          2606758,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2606764,
+          4261
+        ],
+        [
+          "draft_trim",
+          3,
+          2611030,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          2611040,
+          213149
+        ],
+        [
+          "features",
+          4,
+          2824201,
+          163
+        ],
+        [
+          "verify_sample",
+          3,
+          2824369,
+          480
+        ],
+        [
+          "accepted_trim",
+          0,
+          2824852,
+          7
+        ],
+        [
+          "emit",
+          29,
+          2824865,
+          0
+        ],
+        [
+          "emit",
+          30,
+          2824866,
+          0
+        ],
+        [
+          "emit",
+          31,
+          2824866,
+          0
+        ],
+        [
+          "emit",
+          32,
+          2824869,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2824876,
+          4339
+        ],
+        [
+          "draft_trim",
+          3,
+          2829221,
+          7
+        ],
+        [
+          "verify_graph",
+          4,
+          2829233,
+          228515
+        ],
+        [
+          "features",
+          4,
+          3057759,
+          155
+        ],
+        [
+          "verify_sample",
+          1,
+          3057924,
+          273
+        ],
+        [
+          "rollback",
+          2,
+          3058199,
+          12
+        ],
+        [
+          "emit",
+          33,
+          3058218,
+          0
+        ],
+        [
+          "emit",
+          34,
+          3058219,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3058226,
+          4248
+        ],
+        [
+          "draft_trim",
+          3,
+          3062480,
+          7
+        ],
+        [
+          "verify_graph",
+          4,
+          3062495,
+          192580
+        ],
+        [
+          "features",
+          4,
+          3255086,
+          158
+        ],
+        [
+          "verify_sample",
+          1,
+          3255253,
+          267
+        ],
+        [
+          "rollback",
+          2,
+          3255523,
+          15
+        ],
+        [
+          "emit",
+          35,
+          3255544,
+          0
+        ],
+        [
+          "emit",
+          36,
+          3255545,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3255552,
+          4708
+        ],
+        [
+          "draft_trim",
+          3,
+          3260267,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          3260278,
+          169498
+        ],
+        [
+          "features",
+          4,
+          3429787,
+          157
+        ],
+        [
+          "verify_sample",
+          0,
+          3429953,
+          164
+        ],
+        [
+          "rollback",
+          3,
+          3430120,
+          17
+        ],
+        [
+          "emit",
+          37,
+          3430144,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3430153,
+          4259
+        ],
+        [
+          "draft_trim",
+          3,
+          3434419,
+          9
+        ],
+        [
+          "verify_graph",
+          4,
+          3434434,
+          145870
+        ],
+        [
+          "features",
+          4,
+          3580313,
+          154
+        ],
+        [
+          "verify_sample",
+          0,
+          3580474,
+          169
+        ],
+        [
+          "rollback",
+          3,
+          3580646,
+          14
+        ],
+        [
+          "emit",
+          38,
+          3580669,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3580676,
+          4301
+        ],
+        [
+          "draft_trim",
+          3,
+          3584984,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          3584995,
+          189986
+        ],
+        [
+          "features",
+          4,
+          3774990,
+          149
+        ],
+        [
+          "verify_sample",
+          2,
+          3775145,
+          366
+        ],
+        [
+          "rollback",
+          1,
+          3775514,
+          12
+        ],
+        [
+          "emit",
+          39,
+          3775532,
+          0
+        ],
+        [
+          "emit",
+          40,
+          3775533,
+          0
+        ],
+        [
+          "emit",
+          41,
+          3775534,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3775540,
+          4397
+        ],
+        [
+          "draft_trim",
+          3,
+          3779944,
+          9
+        ],
+        [
+          "verify_graph",
+          4,
+          3779957,
+          172892
+        ],
+        [
+          "features",
+          4,
+          3952861,
+          190
+        ],
+        [
+          "verify_sample",
+          1,
+          3953070,
+          291
+        ],
+        [
+          "rollback",
+          2,
+          3953364,
+          13
+        ],
+        [
+          "emit",
+          42,
+          3953384,
+          0
+        ],
+        [
+          "emit",
+          43,
+          3953385,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3953392,
+          4422
+        ],
+        [
+          "draft_trim",
+          3,
+          3957823,
+          7
+        ],
+        [
+          "verify_graph",
+          4,
+          3957835,
+          167116
+        ],
+        [
+          "features",
+          4,
+          4124961,
+          164
+        ],
+        [
+          "verify_sample",
+          0,
+          4125131,
+          157
+        ],
+        [
+          "rollback",
+          3,
+          4125290,
+          14
+        ],
+        [
+          "emit",
+          44,
+          4125313,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4125320,
+          4328
+        ],
+        [
+          "draft_trim",
+          3,
+          4129654,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          4129664,
+          188206
+        ],
+        [
+          "features",
+          4,
+          4317878,
+          153
+        ],
+        [
+          "verify_sample",
+          3,
+          4318038,
+          477
+        ],
+        [
+          "accepted_trim",
+          0,
+          4318517,
+          7
+        ],
+        [
+          "emit",
+          45,
+          4318529,
+          0
+        ],
+        [
+          "emit",
+          46,
+          4318530,
+          0
+        ],
+        [
+          "emit",
+          47,
+          4318531,
+          0
+        ],
+        [
+          "emit",
+          48,
+          4318531,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4318539,
+          4821
+        ],
+        [
+          "draft_trim",
+          3,
+          4323367,
+          10
+        ],
+        [
+          "verify_graph",
+          4,
+          4323383,
+          195161
+        ],
+        [
+          "features",
+          4,
+          4518554,
+          153
+        ],
+        [
+          "verify_sample",
+          3,
+          4518713,
+          473
+        ],
+        [
+          "accepted_trim",
+          0,
+          4519189,
+          8
+        ],
+        [
+          "emit",
+          49,
+          4519204,
+          0
+        ],
+        [
+          "emit",
+          50,
+          4519205,
+          0
+        ],
+        [
+          "emit",
+          51,
+          4519206,
+          0
+        ],
+        [
+          "emit",
+          52,
+          4519206,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4519214,
+          4857
+        ],
+        [
+          "draft_trim",
+          3,
+          4524080,
+          9
+        ],
+        [
+          "verify_graph",
+          4,
+          4524095,
+          160812
+        ],
+        [
+          "features",
+          4,
+          4684917,
+          165
+        ],
+        [
+          "verify_sample",
+          2,
+          4685087,
+          372
+        ],
+        [
+          "rollback",
+          1,
+          4685461,
+          13
+        ],
+        [
+          "emit",
+          53,
+          4685479,
+          0
+        ],
+        [
+          "emit",
+          54,
+          4685480,
+          0
+        ],
+        [
+          "emit",
+          55,
+          4685480,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4685487,
+          4779
+        ],
+        [
+          "draft_trim",
+          3,
+          4690278,
+          11
+        ],
+        [
+          "verify_graph",
+          4,
+          4690296,
+          154560
+        ],
+        [
+          "features",
+          4,
+          4844867,
+          164
+        ],
+        [
+          "verify_sample",
+          3,
+          4845041,
+          465
+        ],
+        [
+          "accepted_trim",
+          0,
+          4845508,
+          8
+        ],
+        [
+          "emit",
+          56,
+          4845522,
+          0
+        ],
+        [
+          "emit",
+          57,
+          4845524,
+          0
+        ],
+        [
+          "emit",
+          58,
+          4845524,
+          0
+        ],
+        [
+          "emit",
+          59,
+          4845525,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4845534,
+          4378
+        ],
+        [
+          "draft_trim",
+          3,
+          4849920,
+          8
+        ],
+        [
+          "verify_graph",
+          4,
+          4849933,
+          230758
+        ],
+        [
+          "features",
+          4,
+          5080701,
+          154
+        ],
+        [
+          "verify_sample",
+          3,
+          5080861,
+          467
+        ],
+        [
+          "accepted_trim",
+          0,
+          5081331,
+          7
+        ],
+        [
+          "emit",
+          60,
+          5081343,
+          0
+        ],
+        [
+          "emit",
+          61,
+          5081344,
+          0
+        ],
+        [
+          "emit",
+          62,
+          5081345,
+          0
+        ],
+        [
+          "emit",
+          63,
+          5081345,
+          0
+        ],
+        [
+          "serial_graph",
+          1,
+          5081353,
+          81616
+        ],
+        [
+          "features",
+          1,
+          5162977,
+          143
+        ],
+        [
+          "serial_sample",
+          0,
+          5163126,
+          115
+        ],
+        [
+          "emit",
+          64,
+          5163250,
+          0
+        ]
+      ]
+    },
+    "fenced": {
+      "env": {
+        "FLASH_LIVE_SIZE_LRU": "1",
+        "FLASH_LIVE_DRAFT": "1",
+        "LLAMA_EXPERIMENTAL_BUDGET_DFLASH2": "1",
+        "FLASH_PHASE_FENCE": "1",
+        "FLASH_PHASES": "1",
+        "FLASH_SINGLE_PREFILL": "1",
+        "FLASH_PROMPT_TILES": "1",
+        "FLASH_STREAM_WIDE": "1",
+        "FLASH_LIVE_FEATURE_PREFILL": "1"
+      },
+      "ttft_s": 9.651458041975275,
+      "tps": 12.561516122168538,
+      "last_token_s": 14.66677620797418,
+      "matches": 64,
+      "output_ids": [
+        2,
+        25662,
+        35312,
+        286,
+        25,
+        5711,
+        69041,
+        7673,
+        5606,
+        271,
+        550,
+        220,
+        16,
+        13,
+        3976,
+        278,
+        417,
+        8845,
+        318,
+        2432,
+        12296,
+        8,
+        198,
+        760,
+        2614,
+        2250,
+        43303,
+        3371,
+        6290,
+        494,
+        279,
+        5129,
+        27370,
+        321,
+        1325,
+        3050,
+        5975,
+        1518,
+        781,
+        628,
+        10046,
+        310,
+        3286,
+        466,
+        16111,
+        13,
+        271,
+        91,
+        32783,
+        2937,
+        735,
+        24425,
+        735,
+        5411,
+        12296,
+        735,
+        25009,
+        735,
+        198,
+        91,
+        535,
+        4277,
+        735,
+        535
+      ],
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 912,
+        "prompt_ms": 9650.888,
+        "prompt_per_token_ms": 10.58211403508772,
+        "prompt_per_second": 94.49907614718975,
+        "predicted_n": 64,
+        "predicted_ms": 5015.416,
+        "predicted_per_token_ms": 79.60977777777778,
+        "predicted_per_second": 12.561271088978462,
+        "draft_n": 72,
+        "draft_n_accepted": 38
+      },
+      "metrics": {
+        "budget_requested_bytes": 8589934592,
+        "budget_applied_bytes": 8589934592,
+        "budget_minimum_bytes": 8263833066,
+        "budget_used_bytes": 8588965018,
+        "budget_high_water_bytes": 8589934474,
+        "budget_released_bytes": 6708446000,
+        "prefill_windows": 0,
+        "prefill_window_tokens": 0,
+        "prefill_window_tails": 0,
+        "prefill_window_fallbacks": 0,
+        "prefill_window_failed": 0
+      },
+      "command": [
+        "/private/tmp/flash-phases.l5z86I/phases/feature-server",
+        "-m",
+        "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "-c",
+        "4096",
+        "-b",
+        "4096",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "8",
+        "-tb",
+        "8",
+        "-ngl",
+        "99",
+        "-ctk",
+        "bf16",
+        "-ctv",
+        "bf16",
+        "-fit",
+        "off",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--no-warmup",
+        "--metrics",
+        "--no-webui",
+        "--engine-budget-mib",
+        "8192",
+        "--host",
+        "127.0.0.1",
+        "--spec-type",
+        "draft-dflash",
+        "-md",
+        "/private/tmp/flash-live.HsFIV6/compact.gguf",
+        "-ngld",
+        "99",
+        "--spec-draft-n-max",
+        "3",
+        "--spec-draft-n-ubatch",
+        "128"
+      ],
+      "binary_sha256": "20107ece91239d2e2facf671c19544e7f0fceb0c7b511dd2cbf3c258cb5a9adf",
+      "observed_target_prefill_rows": null,
+      "client_ms_per_token": 79.60822485712549,
+      "server_ms_per_token": 79.60974603174603,
+      "client_minus_server_ms_per_token": -0.0015211746205352483,
+      "ms_per_emitted_token": {
+        "carry_features": 0.0031746031746031746,
+        "propose": 1.6947460317460317,
+        "draft_trim": 0.003015873015873016,
+        "verify_graph": 76.30271428571429,
+        "features": 0.1819047619047619,
+        "verify_sample": 0.12174603174603174,
+        "rollback": 0.0032222222222222222,
+        "accepted_trim": 0.0010952380952380953,
+        "serial_graph": 1.2763809523809524,
+        "serial_sample": 0.0017142857142857142,
+        "other_server": 0.020031746031746032
+      },
+      "call_counts": {
+        "carry_features": 1,
+        "propose": 24,
+        "draft_trim": 24,
+        "verify_graph": 24,
+        "features": 25,
+        "verify_sample": 24,
+        "rollback": 15,
+        "accepted_trim": 9,
+        "serial_graph": 1,
+        "serial_sample": 1
+      },
+      "accepted_draft_prefix_lengths": [
+        0,
+        3,
+        1,
+        1,
+        0,
+        0,
+        3,
+        3,
+        3,
+        1,
+        1,
+        3,
+        1,
+        1,
+        0,
+        0,
+        2,
+        1,
+        0,
+        3,
+        3,
+        2,
+        3,
+        3
+      ],
+      "events_format": "[phase, argument, start_us_relative_to_first_token, elapsed_us]. For emit, argument is the 1-based token index. For verify_sample it is accepted draft length. For rollback it is the number of discarded positions. Intervals are disjoint.",
+      "events": [
+        [
+          "emit",
+          1,
+          0,
+          0
+        ],
+        [
+          "carry_features",
+          0,
+          13,
+          200
+        ],
+        [
+          "propose",
+          0,
+          214,
+          4652
+        ],
+        [
+          "draft_trim",
+          3,
+          4885,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          4895,
+          370464
+        ],
+        [
+          "features",
+          4,
+          375372,
+          430
+        ],
+        [
+          "verify_sample",
+          0,
+          375810,
+          148
+        ],
+        [
+          "rollback",
+          3,
+          375960,
+          15
+        ],
+        [
+          "emit",
+          2,
+          375983,
+          0
+        ],
+        [
+          "propose",
+          0,
+          375989,
+          4272
+        ],
+        [
+          "draft_trim",
+          3,
+          380268,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          380280,
+          207010
+        ],
+        [
+          "features",
+          4,
+          587299,
+          420
+        ],
+        [
+          "verify_sample",
+          3,
+          587726,
+          485
+        ],
+        [
+          "accepted_trim",
+          0,
+          588214,
+          7
+        ],
+        [
+          "emit",
+          3,
+          588227,
+          0
+        ],
+        [
+          "emit",
+          4,
+          588229,
+          0
+        ],
+        [
+          "emit",
+          5,
+          588229,
+          0
+        ],
+        [
+          "emit",
+          6,
+          588230,
+          0
+        ],
+        [
+          "propose",
+          0,
+          588238,
+          4260
+        ],
+        [
+          "draft_trim",
+          3,
+          592507,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          592519,
+          240470
+        ],
+        [
+          "features",
+          4,
+          832999,
+          434
+        ],
+        [
+          "verify_sample",
+          1,
+          833440,
+          260
+        ],
+        [
+          "rollback",
+          2,
+          833702,
+          12
+        ],
+        [
+          "emit",
+          7,
+          833720,
+          0
+        ],
+        [
+          "emit",
+          8,
+          833721,
+          0
+        ],
+        [
+          "propose",
+          0,
+          833727,
+          4217
+        ],
+        [
+          "draft_trim",
+          3,
+          837954,
+          8
+        ],
+        [
+          "verify_graph",
+          4,
+          837968,
+          171235
+        ],
+        [
+          "features",
+          4,
+          1009212,
+          425
+        ],
+        [
+          "verify_sample",
+          1,
+          1009643,
+          255
+        ],
+        [
+          "rollback",
+          2,
+          1009901,
+          16
+        ],
+        [
+          "emit",
+          9,
+          1009922,
+          0
+        ],
+        [
+          "emit",
+          10,
+          1009923,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1009930,
+          4451
+        ],
+        [
+          "draft_trim",
+          3,
+          1014389,
+          7
+        ],
+        [
+          "verify_graph",
+          4,
+          1014402,
+          187227
+        ],
+        [
+          "features",
+          4,
+          1201643,
+          454
+        ],
+        [
+          "verify_sample",
+          0,
+          1202104,
+          156
+        ],
+        [
+          "rollback",
+          3,
+          1202262,
+          17
+        ],
+        [
+          "emit",
+          11,
+          1202287,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1202294,
+          4266
+        ],
+        [
+          "draft_trim",
+          3,
+          1206567,
+          8
+        ],
+        [
+          "verify_graph",
+          4,
+          1206580,
+          156999
+        ],
+        [
+          "features",
+          4,
+          1363589,
+          431
+        ],
+        [
+          "verify_sample",
+          0,
+          1364025,
+          154
+        ],
+        [
+          "rollback",
+          3,
+          1364181,
+          13
+        ],
+        [
+          "emit",
+          12,
+          1364200,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1364207,
+          4387
+        ],
+        [
+          "draft_trim",
+          3,
+          1368605,
+          10
+        ],
+        [
+          "verify_graph",
+          4,
+          1368621,
+          229512
+        ],
+        [
+          "features",
+          4,
+          1598144,
+          613
+        ],
+        [
+          "verify_sample",
+          3,
+          1598763,
+          488
+        ],
+        [
+          "accepted_trim",
+          0,
+          1599254,
+          7
+        ],
+        [
+          "emit",
+          13,
+          1599269,
+          0
+        ],
+        [
+          "emit",
+          14,
+          1599270,
+          0
+        ],
+        [
+          "emit",
+          15,
+          1599270,
+          0
+        ],
+        [
+          "emit",
+          16,
+          1599271,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1599279,
+          4365
+        ],
+        [
+          "draft_trim",
+          3,
+          1603654,
+          10
+        ],
+        [
+          "verify_graph",
+          4,
+          1603670,
+          234226
+        ],
+        [
+          "features",
+          4,
+          1837907,
+          447
+        ],
+        [
+          "verify_sample",
+          3,
+          1838360,
+          473
+        ],
+        [
+          "accepted_trim",
+          0,
+          1838836,
+          8
+        ],
+        [
+          "emit",
+          17,
+          1838850,
+          0
+        ],
+        [
+          "emit",
+          18,
+          1838851,
+          0
+        ],
+        [
+          "emit",
+          19,
+          1838852,
+          0
+        ],
+        [
+          "emit",
+          20,
+          1838852,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1838861,
+          4893
+        ],
+        [
+          "draft_trim",
+          3,
+          1843763,
+          12
+        ],
+        [
+          "verify_graph",
+          4,
+          1843783,
+          203955
+        ],
+        [
+          "features",
+          4,
+          2047750,
+          444
+        ],
+        [
+          "verify_sample",
+          3,
+          2048200,
+          461
+        ],
+        [
+          "accepted_trim",
+          0,
+          2048664,
+          9
+        ],
+        [
+          "emit",
+          21,
+          2048679,
+          0
+        ],
+        [
+          "emit",
+          22,
+          2048681,
+          0
+        ],
+        [
+          "emit",
+          23,
+          2048681,
+          0
+        ],
+        [
+          "emit",
+          24,
+          2048682,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2048689,
+          4548
+        ],
+        [
+          "draft_trim",
+          3,
+          2053247,
+          12
+        ],
+        [
+          "verify_graph",
+          4,
+          2053270,
+          253888
+        ],
+        [
+          "features",
+          4,
+          2307168,
+          627
+        ],
+        [
+          "verify_sample",
+          1,
+          2307801,
+          270
+        ],
+        [
+          "rollback",
+          2,
+          2308073,
+          16
+        ],
+        [
+          "emit",
+          25,
+          2308094,
+          0
+        ],
+        [
+          "emit",
+          26,
+          2308095,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2308102,
+          4425
+        ],
+        [
+          "draft_trim",
+          3,
+          2312537,
+          9
+        ],
+        [
+          "verify_graph",
+          4,
+          2312552,
+          218425
+        ],
+        [
+          "features",
+          4,
+          2530987,
+          433
+        ],
+        [
+          "verify_sample",
+          1,
+          2531426,
+          254
+        ],
+        [
+          "rollback",
+          2,
+          2531682,
+          15
+        ],
+        [
+          "emit",
+          27,
+          2531703,
+          0
+        ],
+        [
+          "emit",
+          28,
+          2531704,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2531711,
+          4527
+        ],
+        [
+          "draft_trim",
+          3,
+          2536248,
+          8
+        ],
+        [
+          "verify_graph",
+          4,
+          2536263,
+          209458
+        ],
+        [
+          "features",
+          4,
+          2745731,
+          434
+        ],
+        [
+          "verify_sample",
+          3,
+          2746173,
+          476
+        ],
+        [
+          "accepted_trim",
+          0,
+          2746651,
+          8
+        ],
+        [
+          "emit",
+          29,
+          2746664,
+          0
+        ],
+        [
+          "emit",
+          30,
+          2746666,
+          0
+        ],
+        [
+          "emit",
+          31,
+          2746666,
+          0
+        ],
+        [
+          "emit",
+          32,
+          2746667,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2746675,
+          4647
+        ],
+        [
+          "draft_trim",
+          3,
+          2751332,
+          10
+        ],
+        [
+          "verify_graph",
+          4,
+          2751348,
+          210647
+        ],
+        [
+          "features",
+          4,
+          2962007,
+          502
+        ],
+        [
+          "verify_sample",
+          1,
+          2962516,
+          262
+        ],
+        [
+          "rollback",
+          2,
+          2962780,
+          13
+        ],
+        [
+          "emit",
+          33,
+          2962799,
+          0
+        ],
+        [
+          "emit",
+          34,
+          2962800,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2962806,
+          4680
+        ],
+        [
+          "draft_trim",
+          3,
+          2967495,
+          10
+        ],
+        [
+          "verify_graph",
+          4,
+          2967512,
+          190725
+        ],
+        [
+          "features",
+          4,
+          3158247,
+          430
+        ],
+        [
+          "verify_sample",
+          1,
+          3158689,
+          260
+        ],
+        [
+          "rollback",
+          2,
+          3158952,
+          12
+        ],
+        [
+          "emit",
+          35,
+          3158970,
+          0
+        ],
+        [
+          "emit",
+          36,
+          3158971,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3158978,
+          4302
+        ],
+        [
+          "draft_trim",
+          3,
+          3163287,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          3163298,
+          165985
+        ],
+        [
+          "features",
+          4,
+          3329293,
+          417
+        ],
+        [
+          "verify_sample",
+          0,
+          3329717,
+          156
+        ],
+        [
+          "rollback",
+          3,
+          3329875,
+          13
+        ],
+        [
+          "emit",
+          37,
+          3329894,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3329900,
+          4606
+        ],
+        [
+          "draft_trim",
+          3,
+          3334515,
+          11
+        ],
+        [
+          "verify_graph",
+          4,
+          3334533,
+          143064
+        ],
+        [
+          "features",
+          4,
+          3477608,
+          435
+        ],
+        [
+          "verify_sample",
+          0,
+          3478049,
+          149
+        ],
+        [
+          "rollback",
+          3,
+          3478201,
+          12
+        ],
+        [
+          "emit",
+          38,
+          3478218,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3478224,
+          4508
+        ],
+        [
+          "draft_trim",
+          3,
+          3482742,
+          8
+        ],
+        [
+          "verify_graph",
+          4,
+          3482756,
+          174626
+        ],
+        [
+          "features",
+          4,
+          3657392,
+          435
+        ],
+        [
+          "verify_sample",
+          2,
+          3657833,
+          361
+        ],
+        [
+          "rollback",
+          1,
+          3658197,
+          13
+        ],
+        [
+          "emit",
+          39,
+          3658216,
+          0
+        ],
+        [
+          "emit",
+          40,
+          3658217,
+          0
+        ],
+        [
+          "emit",
+          41,
+          3658218,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3658225,
+          4538
+        ],
+        [
+          "draft_trim",
+          3,
+          3662772,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          3662784,
+          174280
+        ],
+        [
+          "features",
+          4,
+          3837076,
+          459
+        ],
+        [
+          "verify_sample",
+          1,
+          3837541,
+          253
+        ],
+        [
+          "rollback",
+          2,
+          3837796,
+          12
+        ],
+        [
+          "emit",
+          42,
+          3837814,
+          0
+        ],
+        [
+          "emit",
+          43,
+          3837815,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3837823,
+          4486
+        ],
+        [
+          "draft_trim",
+          3,
+          3842319,
+          7
+        ],
+        [
+          "verify_graph",
+          4,
+          3842332,
+          149046
+        ],
+        [
+          "features",
+          4,
+          3991388,
+          416
+        ],
+        [
+          "verify_sample",
+          0,
+          3991811,
+          155
+        ],
+        [
+          "rollback",
+          3,
+          3991968,
+          12
+        ],
+        [
+          "emit",
+          44,
+          3991985,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3991992,
+          4179
+        ],
+        [
+          "draft_trim",
+          3,
+          3996178,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          3996189,
+          187862
+        ],
+        [
+          "features",
+          4,
+          4184062,
+          442
+        ],
+        [
+          "verify_sample",
+          3,
+          4184509,
+          447
+        ],
+        [
+          "accepted_trim",
+          0,
+          4184958,
+          8
+        ],
+        [
+          "emit",
+          45,
+          4184974,
+          0
+        ],
+        [
+          "emit",
+          46,
+          4184975,
+          0
+        ],
+        [
+          "emit",
+          47,
+          4184976,
+          0
+        ],
+        [
+          "emit",
+          48,
+          4184976,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4184984,
+          4284
+        ],
+        [
+          "draft_trim",
+          3,
+          4189274,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          4189284,
+          199925
+        ],
+        [
+          "features",
+          4,
+          4389220,
+          536
+        ],
+        [
+          "verify_sample",
+          3,
+          4389763,
+          462
+        ],
+        [
+          "accepted_trim",
+          0,
+          4390230,
+          7
+        ],
+        [
+          "emit",
+          49,
+          4390243,
+          0
+        ],
+        [
+          "emit",
+          50,
+          4390245,
+          0
+        ],
+        [
+          "emit",
+          51,
+          4390245,
+          0
+        ],
+        [
+          "emit",
+          52,
+          4390246,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4390253,
+          4312
+        ],
+        [
+          "draft_trim",
+          3,
+          4394584,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          4394596,
+          151673
+        ],
+        [
+          "features",
+          4,
+          4546279,
+          432
+        ],
+        [
+          "verify_sample",
+          2,
+          4546717,
+          360
+        ],
+        [
+          "rollback",
+          1,
+          4547080,
+          12
+        ],
+        [
+          "emit",
+          53,
+          4547098,
+          0
+        ],
+        [
+          "emit",
+          54,
+          4547099,
+          0
+        ],
+        [
+          "emit",
+          55,
+          4547099,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4547113,
+          4490
+        ],
+        [
+          "draft_trim",
+          3,
+          4551616,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          4551627,
+          151872
+        ],
+        [
+          "features",
+          4,
+          4703507,
+          494
+        ],
+        [
+          "verify_sample",
+          3,
+          4704010,
+          469
+        ],
+        [
+          "accepted_trim",
+          0,
+          4704481,
+          8
+        ],
+        [
+          "emit",
+          56,
+          4704494,
+          0
+        ],
+        [
+          "emit",
+          57,
+          4704496,
+          0
+        ],
+        [
+          "emit",
+          58,
+          4704496,
+          0
+        ],
+        [
+          "emit",
+          59,
+          4704497,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4704505,
+          4474
+        ],
+        [
+          "draft_trim",
+          3,
+          4708986,
+          8
+        ],
+        [
+          "verify_graph",
+          4,
+          4708999,
+          224497
+        ],
+        [
+          "features",
+          4,
+          4933508,
+          443
+        ],
+        [
+          "verify_sample",
+          3,
+          4933960,
+          456
+        ],
+        [
+          "accepted_trim",
+          0,
+          4934418,
+          7
+        ],
+        [
+          "emit",
+          60,
+          4934433,
+          0
+        ],
+        [
+          "emit",
+          61,
+          4934434,
+          0
+        ],
+        [
+          "emit",
+          62,
+          4934434,
+          0
+        ],
+        [
+          "emit",
+          63,
+          4934435,
+          0
+        ],
+        [
+          "serial_graph",
+          1,
+          4934443,
+          80412
+        ],
+        [
+          "features",
+          1,
+          5014866,
+          427
+        ],
+        [
+          "serial_sample",
+          0,
+          5015300,
+          108
+        ],
+        [
+          "emit",
+          64,
+          5015414,
+          0
+        ]
+      ]
+    },
+    "expert_detail": {
+      "env": {
+        "FLASH_LIVE_SIZE_LRU": "1",
+        "FLASH_LIVE_DRAFT": "1",
+        "LLAMA_EXPERIMENTAL_BUDGET_DFLASH2": "1",
+        "FLASH_PHASE_EXPERTS": "1",
+        "FLASH_PHASES": "1",
+        "FLASH_SINGLE_PREFILL": "1",
+        "FLASH_PROMPT_TILES": "1",
+        "FLASH_STREAM_WIDE": "1",
+        "FLASH_ADMIT_TRACE": "1",
+        "FLASH_LIVE_FEATURE_PREFILL": "1"
+      },
+      "ttft_s": 9.62316091696266,
+      "tps": 12.603715784766152,
+      "last_token_s": 14.621686833910644,
+      "matches": 64,
+      "output_ids": [
+        2,
+        25662,
+        35312,
+        286,
+        25,
+        5711,
+        69041,
+        7673,
+        5606,
+        271,
+        550,
+        220,
+        16,
+        13,
+        3976,
+        278,
+        417,
+        8845,
+        318,
+        2432,
+        12296,
+        8,
+        198,
+        760,
+        2614,
+        2250,
+        43303,
+        3371,
+        6290,
+        494,
+        279,
+        5129,
+        27370,
+        321,
+        1325,
+        3050,
+        5975,
+        1518,
+        781,
+        628,
+        10046,
+        310,
+        3286,
+        466,
+        16111,
+        13,
+        271,
+        91,
+        32783,
+        2937,
+        735,
+        24425,
+        735,
+        5411,
+        12296,
+        735,
+        25009,
+        735,
+        198,
+        91,
+        535,
+        4277,
+        735,
+        535
+      ],
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 912,
+        "prompt_ms": 9622.232,
+        "prompt_per_token_ms": 10.550692982456141,
+        "prompt_per_second": 94.78050414914128,
+        "predicted_n": 64,
+        "predicted_ms": 4998.354,
+        "predicted_per_token_ms": 79.33895238095239,
+        "predicted_per_second": 12.604149285944933,
+        "draft_n": 72,
+        "draft_n_accepted": 38
+      },
+      "metrics": {
+        "budget_requested_bytes": 8589934592,
+        "budget_applied_bytes": 8589934592,
+        "budget_minimum_bytes": 8263833066,
+        "budget_used_bytes": 8588963178,
+        "budget_high_water_bytes": 8589934474,
+        "budget_released_bytes": 6714939952,
+        "prefill_windows": 0,
+        "prefill_window_tokens": 0,
+        "prefill_window_tails": 0,
+        "prefill_window_fallbacks": 0,
+        "prefill_window_failed": 0
+      },
+      "command": [
+        "/private/tmp/flash-phases.l5z86I/experts/feature-server",
+        "-m",
+        "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "-c",
+        "4096",
+        "-b",
+        "4096",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "8",
+        "-tb",
+        "8",
+        "-ngl",
+        "99",
+        "-ctk",
+        "bf16",
+        "-ctv",
+        "bf16",
+        "-fit",
+        "off",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--no-warmup",
+        "--metrics",
+        "--no-webui",
+        "--engine-budget-mib",
+        "8192",
+        "--host",
+        "127.0.0.1",
+        "--spec-type",
+        "draft-dflash",
+        "-md",
+        "/private/tmp/flash-live.HsFIV6/compact.gguf",
+        "-ngld",
+        "99",
+        "--spec-draft-n-max",
+        "3",
+        "--spec-draft-n-ubatch",
+        "128"
+      ],
+      "binary_sha256": "48ac3b3367662406499a70557368ec94a4a9c348c7cef35025726b14e9d2f66a",
+      "observed_target_prefill_rows": [
+        912
+      ],
+      "client_ms_per_token": 79.34168122139656,
+      "server_ms_per_token": 79.33896825396826,
+      "client_minus_server_ms_per_token": 0.0027129674282946326,
+      "ms_per_emitted_token": {
+        "propose": 1.7643333333333333,
+        "draft_trim": 0.002380952380952381,
+        "verify_graph": 75.99244444444444,
+        "features": 0.05971428571428571,
+        "verify_sample": 0.1616984126984127,
+        "rollback": 0.0031904761904761906,
+        "accepted_trim": 0.0010317460317460319,
+        "serial_graph": 1.330968253968254,
+        "serial_sample": 0.0020476190476190477,
+        "other_server": 0.021158730158730158
+      },
+      "call_counts": {
+        "propose": 24,
+        "draft_trim": 24,
+        "verify_graph": 24,
+        "features": 25,
+        "verify_sample": 24,
+        "rollback": 15,
+        "accepted_trim": 9,
+        "serial_graph": 1,
+        "serial_sample": 1
+      },
+      "accepted_draft_prefix_lengths": [
+        0,
+        3,
+        1,
+        1,
+        0,
+        0,
+        3,
+        3,
+        3,
+        1,
+        1,
+        3,
+        1,
+        1,
+        0,
+        0,
+        2,
+        1,
+        0,
+        3,
+        3,
+        2,
+        3,
+        3
+      ],
+      "events_format": "[phase, argument, start_us_relative_to_first_token, elapsed_us]. For emit, argument is the 1-based token index. For verify_sample it is accepted draft length. For rollback it is the number of discarded positions. Intervals are disjoint.",
+      "events": [
+        [
+          "emit",
+          1,
+          0,
+          0
+        ],
+        [
+          "propose",
+          0,
+          11,
+          12444
+        ],
+        [
+          "draft_trim",
+          3,
+          12466,
+          10
+        ],
+        [
+          "verify_graph",
+          4,
+          12489,
+          368586
+        ],
+        [
+          "features",
+          4,
+          381084,
+          148
+        ],
+        [
+          "verify_sample",
+          0,
+          381239,
+          157
+        ],
+        [
+          "rollback",
+          3,
+          381399,
+          14
+        ],
+        [
+          "emit",
+          2,
+          381420,
+          0
+        ],
+        [
+          "propose",
+          0,
+          381430,
+          4268
+        ],
+        [
+          "draft_trim",
+          3,
+          385705,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          385723,
+          207245
+        ],
+        [
+          "features",
+          4,
+          592979,
+          148
+        ],
+        [
+          "verify_sample",
+          3,
+          593134,
+          607
+        ],
+        [
+          "accepted_trim",
+          0,
+          593743,
+          7
+        ],
+        [
+          "emit",
+          3,
+          593755,
+          0
+        ],
+        [
+          "emit",
+          4,
+          593757,
+          0
+        ],
+        [
+          "emit",
+          5,
+          593757,
+          0
+        ],
+        [
+          "emit",
+          6,
+          593758,
+          0
+        ],
+        [
+          "propose",
+          0,
+          593765,
+          4307
+        ],
+        [
+          "draft_trim",
+          3,
+          598090,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          598108,
+          240121
+        ],
+        [
+          "features",
+          4,
+          838239,
+          144
+        ],
+        [
+          "verify_sample",
+          1,
+          838389,
+          405
+        ],
+        [
+          "rollback",
+          2,
+          838796,
+          13
+        ],
+        [
+          "emit",
+          7,
+          838814,
+          0
+        ],
+        [
+          "emit",
+          8,
+          838815,
+          0
+        ],
+        [
+          "propose",
+          0,
+          838821,
+          4450
+        ],
+        [
+          "draft_trim",
+          3,
+          843285,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          843303,
+          174602
+        ],
+        [
+          "features",
+          4,
+          1017914,
+          170
+        ],
+        [
+          "verify_sample",
+          1,
+          1018091,
+          388
+        ],
+        [
+          "rollback",
+          2,
+          1018481,
+          13
+        ],
+        [
+          "emit",
+          9,
+          1018500,
+          0
+        ],
+        [
+          "emit",
+          10,
+          1018501,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1018508,
+          4225
+        ],
+        [
+          "draft_trim",
+          3,
+          1022739,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          1022755,
+          189559
+        ],
+        [
+          "features",
+          4,
+          1212325,
+          147
+        ],
+        [
+          "verify_sample",
+          0,
+          1212481,
+          253
+        ],
+        [
+          "rollback",
+          3,
+          1212737,
+          14
+        ],
+        [
+          "emit",
+          11,
+          1212756,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1212763,
+          4352
+        ],
+        [
+          "draft_trim",
+          3,
+          1217120,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          1217137,
+          149288
+        ],
+        [
+          "features",
+          4,
+          1366436,
+          152
+        ],
+        [
+          "verify_sample",
+          0,
+          1366598,
+          167
+        ],
+        [
+          "rollback",
+          3,
+          1366767,
+          15
+        ],
+        [
+          "emit",
+          12,
+          1366790,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1366802,
+          4259
+        ],
+        [
+          "draft_trim",
+          3,
+          1371079,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          1371095,
+          231993
+        ],
+        [
+          "features",
+          4,
+          1603100,
+          154
+        ],
+        [
+          "verify_sample",
+          3,
+          1603260,
+          638
+        ],
+        [
+          "accepted_trim",
+          0,
+          1603901,
+          7
+        ],
+        [
+          "emit",
+          13,
+          1603914,
+          0
+        ],
+        [
+          "emit",
+          14,
+          1603915,
+          0
+        ],
+        [
+          "emit",
+          15,
+          1603915,
+          0
+        ],
+        [
+          "emit",
+          16,
+          1603916,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1603923,
+          4229
+        ],
+        [
+          "draft_trim",
+          3,
+          1608157,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          1608180,
+          216950
+        ],
+        [
+          "features",
+          4,
+          1825140,
+          139
+        ],
+        [
+          "verify_sample",
+          3,
+          1825287,
+          455
+        ],
+        [
+          "accepted_trim",
+          0,
+          1825745,
+          7
+        ],
+        [
+          "emit",
+          17,
+          1825758,
+          0
+        ],
+        [
+          "emit",
+          18,
+          1825759,
+          0
+        ],
+        [
+          "emit",
+          19,
+          1825760,
+          0
+        ],
+        [
+          "emit",
+          20,
+          1825761,
+          0
+        ],
+        [
+          "propose",
+          0,
+          1825768,
+          4295
+        ],
+        [
+          "draft_trim",
+          3,
+          1830072,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          1830089,
+          199037
+        ],
+        [
+          "features",
+          4,
+          2029137,
+          143
+        ],
+        [
+          "verify_sample",
+          3,
+          2029288,
+          630
+        ],
+        [
+          "accepted_trim",
+          0,
+          2029920,
+          7
+        ],
+        [
+          "emit",
+          21,
+          2029933,
+          0
+        ],
+        [
+          "emit",
+          22,
+          2029934,
+          0
+        ],
+        [
+          "emit",
+          23,
+          2029934,
+          0
+        ],
+        [
+          "emit",
+          24,
+          2029935,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2029942,
+          4260
+        ],
+        [
+          "draft_trim",
+          3,
+          2034208,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          2034224,
+          249476
+        ],
+        [
+          "features",
+          4,
+          2283710,
+          154
+        ],
+        [
+          "verify_sample",
+          1,
+          2283870,
+          411
+        ],
+        [
+          "rollback",
+          2,
+          2284283,
+          14
+        ],
+        [
+          "emit",
+          25,
+          2284304,
+          0
+        ],
+        [
+          "emit",
+          26,
+          2284305,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2284311,
+          4405
+        ],
+        [
+          "draft_trim",
+          3,
+          2288722,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          2288737,
+          212577
+        ],
+        [
+          "features",
+          4,
+          2501323,
+          145
+        ],
+        [
+          "verify_sample",
+          1,
+          2501475,
+          394
+        ],
+        [
+          "rollback",
+          2,
+          2501871,
+          12
+        ],
+        [
+          "emit",
+          27,
+          2501891,
+          0
+        ],
+        [
+          "emit",
+          28,
+          2501892,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2501897,
+          4181
+        ],
+        [
+          "draft_trim",
+          3,
+          2506084,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          2506099,
+          206136
+        ],
+        [
+          "features",
+          4,
+          2712246,
+          148
+        ],
+        [
+          "verify_sample",
+          3,
+          2712400,
+          586
+        ],
+        [
+          "accepted_trim",
+          0,
+          2712989,
+          7
+        ],
+        [
+          "emit",
+          29,
+          2713001,
+          0
+        ],
+        [
+          "emit",
+          30,
+          2713002,
+          0
+        ],
+        [
+          "emit",
+          31,
+          2713003,
+          0
+        ],
+        [
+          "emit",
+          32,
+          2713003,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2713011,
+          4318
+        ],
+        [
+          "draft_trim",
+          3,
+          2717335,
+          4
+        ],
+        [
+          "verify_graph",
+          4,
+          2717348,
+          215802
+        ],
+        [
+          "features",
+          4,
+          2933159,
+          143
+        ],
+        [
+          "verify_sample",
+          1,
+          2933308,
+          405
+        ],
+        [
+          "rollback",
+          2,
+          2933715,
+          12
+        ],
+        [
+          "emit",
+          33,
+          2933734,
+          0
+        ],
+        [
+          "emit",
+          34,
+          2933735,
+          0
+        ],
+        [
+          "propose",
+          0,
+          2933740,
+          4181
+        ],
+        [
+          "draft_trim",
+          3,
+          2937926,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          2937944,
+          187332
+        ],
+        [
+          "features",
+          4,
+          3125286,
+          154
+        ],
+        [
+          "verify_sample",
+          1,
+          3125447,
+          415
+        ],
+        [
+          "rollback",
+          2,
+          3125864,
+          13
+        ],
+        [
+          "emit",
+          35,
+          3125883,
+          0
+        ],
+        [
+          "emit",
+          36,
+          3125884,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3125889,
+          4291
+        ],
+        [
+          "draft_trim",
+          3,
+          3130186,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          3130203,
+          161124
+        ],
+        [
+          "features",
+          4,
+          3291337,
+          138
+        ],
+        [
+          "verify_sample",
+          0,
+          3291481,
+          228
+        ],
+        [
+          "rollback",
+          3,
+          3291711,
+          14
+        ],
+        [
+          "emit",
+          37,
+          3291733,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3291740,
+          4227
+        ],
+        [
+          "draft_trim",
+          3,
+          3295985,
+          7
+        ],
+        [
+          "verify_graph",
+          4,
+          3296002,
+          140720
+        ],
+        [
+          "features",
+          4,
+          3436731,
+          142
+        ],
+        [
+          "verify_sample",
+          0,
+          3436879,
+          193
+        ],
+        [
+          "rollback",
+          3,
+          3437073,
+          13
+        ],
+        [
+          "emit",
+          38,
+          3437091,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3437096,
+          4202
+        ],
+        [
+          "draft_trim",
+          3,
+          3441304,
+          4
+        ],
+        [
+          "verify_graph",
+          4,
+          3441317,
+          175393
+        ],
+        [
+          "features",
+          4,
+          3616720,
+          164
+        ],
+        [
+          "verify_sample",
+          2,
+          3616893,
+          588
+        ],
+        [
+          "rollback",
+          1,
+          3617484,
+          14
+        ],
+        [
+          "emit",
+          39,
+          3617504,
+          0
+        ],
+        [
+          "emit",
+          40,
+          3617505,
+          0
+        ],
+        [
+          "emit",
+          41,
+          3617506,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3617512,
+          4389
+        ],
+        [
+          "draft_trim",
+          3,
+          3621909,
+          10
+        ],
+        [
+          "verify_graph",
+          4,
+          3621939,
+          172385
+        ],
+        [
+          "features",
+          4,
+          3794335,
+          161
+        ],
+        [
+          "verify_sample",
+          1,
+          3794503,
+          278
+        ],
+        [
+          "rollback",
+          2,
+          3794784,
+          14
+        ],
+        [
+          "emit",
+          42,
+          3794803,
+          0
+        ],
+        [
+          "emit",
+          43,
+          3794804,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3794810,
+          4270
+        ],
+        [
+          "draft_trim",
+          3,
+          3799088,
+          11
+        ],
+        [
+          "verify_graph",
+          4,
+          3799116,
+          150222
+        ],
+        [
+          "features",
+          4,
+          3949349,
+          156
+        ],
+        [
+          "verify_sample",
+          0,
+          3949512,
+          158
+        ],
+        [
+          "rollback",
+          3,
+          3949673,
+          14
+        ],
+        [
+          "emit",
+          44,
+          3949694,
+          0
+        ],
+        [
+          "propose",
+          0,
+          3949700,
+          4297
+        ],
+        [
+          "draft_trim",
+          3,
+          3954005,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          3954023,
+          180626
+        ],
+        [
+          "features",
+          4,
+          4134659,
+          149
+        ],
+        [
+          "verify_sample",
+          3,
+          4134815,
+          515
+        ],
+        [
+          "accepted_trim",
+          0,
+          4135332,
+          7
+        ],
+        [
+          "emit",
+          45,
+          4135344,
+          0
+        ],
+        [
+          "emit",
+          46,
+          4135345,
+          0
+        ],
+        [
+          "emit",
+          47,
+          4135346,
+          0
+        ],
+        [
+          "emit",
+          48,
+          4135346,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4135352,
+          4255
+        ],
+        [
+          "draft_trim",
+          3,
+          4139613,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          4139630,
+          209311
+        ],
+        [
+          "features",
+          4,
+          4348950,
+          177
+        ],
+        [
+          "verify_sample",
+          3,
+          4349134,
+          486
+        ],
+        [
+          "accepted_trim",
+          0,
+          4349623,
+          7
+        ],
+        [
+          "emit",
+          49,
+          4349635,
+          0
+        ],
+        [
+          "emit",
+          50,
+          4349635,
+          0
+        ],
+        [
+          "emit",
+          51,
+          4349636,
+          0
+        ],
+        [
+          "emit",
+          52,
+          4349638,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4349644,
+          4353
+        ],
+        [
+          "draft_trim",
+          3,
+          4354004,
+          5
+        ],
+        [
+          "verify_graph",
+          4,
+          4354023,
+          157174
+        ],
+        [
+          "features",
+          4,
+          4511206,
+          137
+        ],
+        [
+          "verify_sample",
+          2,
+          4511350,
+          555
+        ],
+        [
+          "rollback",
+          1,
+          4511907,
+          12
+        ],
+        [
+          "emit",
+          53,
+          4511924,
+          0
+        ],
+        [
+          "emit",
+          54,
+          4511925,
+          0
+        ],
+        [
+          "emit",
+          55,
+          4511926,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4511931,
+          4361
+        ],
+        [
+          "draft_trim",
+          3,
+          4516296,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          4516314,
+          153255
+        ],
+        [
+          "features",
+          4,
+          4669580,
+          150
+        ],
+        [
+          "verify_sample",
+          3,
+          4669740,
+          539
+        ],
+        [
+          "accepted_trim",
+          0,
+          4670281,
+          8
+        ],
+        [
+          "emit",
+          56,
+          4670294,
+          0
+        ],
+        [
+          "emit",
+          57,
+          4670296,
+          0
+        ],
+        [
+          "emit",
+          58,
+          4670296,
+          0
+        ],
+        [
+          "emit",
+          59,
+          4670302,
+          0
+        ],
+        [
+          "propose",
+          0,
+          4670309,
+          4334
+        ],
+        [
+          "draft_trim",
+          3,
+          4674649,
+          6
+        ],
+        [
+          "verify_graph",
+          4,
+          4674670,
+          238610
+        ],
+        [
+          "features",
+          4,
+          4913288,
+          157
+        ],
+        [
+          "verify_sample",
+          3,
+          4913451,
+          736
+        ],
+        [
+          "accepted_trim",
+          0,
+          4914189,
+          8
+        ],
+        [
+          "emit",
+          60,
+          4914203,
+          0
+        ],
+        [
+          "emit",
+          61,
+          4914204,
+          0
+        ],
+        [
+          "emit",
+          62,
+          4914205,
+          0
+        ],
+        [
+          "emit",
+          63,
+          4914205,
+          0
+        ],
+        [
+          "serial_graph",
+          1,
+          4914213,
+          83851
+        ],
+        [
+          "features",
+          1,
+          4998072,
+          142
+        ],
+        [
+          "serial_sample",
+          0,
+          4998220,
+          129
+        ],
+        [
+          "emit",
+          64,
+          4998355,
+          0
+        ]
+      ],
+      "expert_counters_per_verified_batch": [
+        {
+          "projection_ns": 320779296,
+          "acquire_ns": 257590751,
+          "admission_ns": 3076849,
+          "allocation_ns": 5358190,
+          "eviction_search_ns": 1075109,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 219635546,
+          "compute_ns": 68428665,
+          "submit_ns": 6824543,
+          "wait_ns": 52719827,
+          "gpu_command_ns": 19129718,
+          "gpu_timed_submissions": 329,
+          "graph_setup_ns": 1668703,
+          "readback_ns": 945957,
+          "read_ns": 219689409,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1646822400,
+          "hits": 0,
+          "misses": 3864,
+          "buffer_allocations": 88,
+          "buffer_reuses": 3776
+        },
+        {
+          "projection_ns": 161821745,
+          "acquire_ns": 105298301,
+          "admission_ns": 2437443,
+          "allocation_ns": 2645595,
+          "eviction_search_ns": 971311,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 90199704,
+          "compute_ns": 59313301,
+          "submit_ns": 6342844,
+          "wait_ns": 46746965,
+          "gpu_command_ns": 18228600,
+          "gpu_timed_submissions": 308,
+          "graph_setup_ns": 1594670,
+          "readback_ns": 900335,
+          "read_ns": 90246987,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1477452800,
+          "hits": 0,
+          "misses": 3540,
+          "buffer_allocations": 24,
+          "buffer_reuses": 3516
+        },
+        {
+          "projection_ns": 194877086,
+          "acquire_ns": 136073369,
+          "admission_ns": 2703872,
+          "allocation_ns": 2770197,
+          "eviction_search_ns": 1108124,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 118455703,
+          "compute_ns": 62012584,
+          "submit_ns": 6837911,
+          "wait_ns": 48317745,
+          "gpu_command_ns": 19033501,
+          "gpu_timed_submissions": 322,
+          "graph_setup_ns": 1689992,
+          "readback_ns": 934757,
+          "read_ns": 118505714,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1619302400,
+          "hits": 0,
+          "misses": 3771,
+          "buffer_allocations": 25,
+          "buffer_reuses": 3746
+        },
+        {
+          "projection_ns": 129121543,
+          "acquire_ns": 67435294,
+          "admission_ns": 2602138,
+          "allocation_ns": 2610172,
+          "eviction_search_ns": 1036686,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 51691535,
+          "compute_ns": 64953207,
+          "submit_ns": 7146789,
+          "wait_ns": 50857346,
+          "gpu_command_ns": 18947685,
+          "gpu_timed_submissions": 336,
+          "graph_setup_ns": 1719005,
+          "readback_ns": 939881,
+          "read_ns": 51747908,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1741900800,
+          "hits": 0,
+          "misses": 3993,
+          "buffer_allocations": 23,
+          "buffer_reuses": 3970
+        },
+        {
+          "projection_ns": 144240459,
+          "acquire_ns": 89349714,
+          "admission_ns": 2439143,
+          "allocation_ns": 2588097,
+          "eviction_search_ns": 963154,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 72319457,
+          "compute_ns": 57217201,
+          "submit_ns": 6374162,
+          "wait_ns": 45064582,
+          "gpu_command_ns": 18248567,
+          "gpu_timed_submissions": 290,
+          "graph_setup_ns": 1590989,
+          "readback_ns": 932924,
+          "read_ns": 72367640,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1375744000,
+          "hits": 0,
+          "misses": 3399,
+          "buffer_allocations": 24,
+          "buffer_reuses": 3375
+        },
+        {
+          "projection_ns": 105307919,
+          "acquire_ns": 51894423,
+          "admission_ns": 2352035,
+          "allocation_ns": 2680590,
+          "eviction_search_ns": 897251,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 36311082,
+          "compute_ns": 55439163,
+          "submit_ns": 5849409,
+          "wait_ns": 44251217,
+          "gpu_command_ns": 17740744,
+          "gpu_timed_submissions": 273,
+          "graph_setup_ns": 1531424,
+          "readback_ns": 919838,
+          "read_ns": 36359502,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1334707200,
+          "hits": 0,
+          "misses": 3288,
+          "buffer_allocations": 30,
+          "buffer_reuses": 3258
+        },
+        {
+          "projection_ns": 186898751,
+          "acquire_ns": 122089501,
+          "admission_ns": 2906903,
+          "allocation_ns": 3191243,
+          "eviction_search_ns": 1164277,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 104936919,
+          "compute_ns": 68869287,
+          "submit_ns": 8301902,
+          "wait_ns": 52616197,
+          "gpu_command_ns": 19173685,
+          "gpu_timed_submissions": 347,
+          "graph_setup_ns": 1857087,
+          "readback_ns": 909253,
+          "read_ns": 104993765,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1802880000,
+          "hits": 0,
+          "misses": 4107,
+          "buffer_allocations": 31,
+          "buffer_reuses": 4076
+        },
+        {
+          "projection_ns": 172449753,
+          "acquire_ns": 110190545,
+          "admission_ns": 2945732,
+          "allocation_ns": 3362959,
+          "eviction_search_ns": 1062089,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 93380613,
+          "compute_ns": 66288430,
+          "submit_ns": 7460578,
+          "wait_ns": 51016914,
+          "gpu_command_ns": 19324567,
+          "gpu_timed_submissions": 342,
+          "graph_setup_ns": 1735543,
+          "readback_ns": 920869,
+          "read_ns": 93445321,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1748428800,
+          "hits": 0,
+          "misses": 4002,
+          "buffer_allocations": 36,
+          "buffer_reuses": 3966
+        },
+        {
+          "projection_ns": 154330837,
+          "acquire_ns": 90496925,
+          "admission_ns": 2876232,
+          "allocation_ns": 3207281,
+          "eviction_search_ns": 1057568,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 73718333,
+          "compute_ns": 68385872,
+          "submit_ns": 7447165,
+          "wait_ns": 52623289,
+          "gpu_command_ns": 19381882,
+          "gpu_timed_submissions": 359,
+          "graph_setup_ns": 1769874,
+          "readback_ns": 935870,
+          "read_ns": 73775110,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1853286400,
+          "hits": 0,
+          "misses": 4206,
+          "buffer_allocations": 33,
+          "buffer_reuses": 4173
+        },
+        {
+          "projection_ns": 204888585,
+          "acquire_ns": 142516257,
+          "admission_ns": 2871013,
+          "allocation_ns": 3211240,
+          "eviction_search_ns": 1054459,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 122139785,
+          "compute_ns": 66369281,
+          "submit_ns": 7011117,
+          "wait_ns": 51609748,
+          "gpu_command_ns": 19430529,
+          "gpu_timed_submissions": 351,
+          "graph_setup_ns": 1730561,
+          "readback_ns": 938962,
+          "read_ns": 122194952,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1762713600,
+          "hits": 0,
+          "misses": 4056,
+          "buffer_allocations": 34,
+          "buffer_reuses": 4022
+        },
+        {
+          "projection_ns": 167501834,
+          "acquire_ns": 100872960,
+          "admission_ns": 3170284,
+          "allocation_ns": 3445314,
+          "eviction_search_ns": 1139479,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 83283540,
+          "compute_ns": 72714653,
+          "submit_ns": 8125569,
+          "wait_ns": 54482864,
+          "gpu_command_ns": 19698848,
+          "gpu_timed_submissions": 385,
+          "graph_setup_ns": 1910968,
+          "readback_ns": 921535,
+          "read_ns": 83346822,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 2064819200,
+          "hits": 0,
+          "misses": 4545,
+          "buffer_allocations": 37,
+          "buffer_reuses": 4508
+        },
+        {
+          "projection_ns": 160965792,
+          "acquire_ns": 102803959,
+          "admission_ns": 2717945,
+          "allocation_ns": 3064497,
+          "eviction_search_ns": 981647,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 87086164,
+          "compute_ns": 61542005,
+          "submit_ns": 6607176,
+          "wait_ns": 47989169,
+          "gpu_command_ns": 18245992,
+          "gpu_timed_submissions": 320,
+          "graph_setup_ns": 1622041,
+          "readback_ns": 899005,
+          "read_ns": 87136826,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1632768000,
+          "hits": 0,
+          "misses": 3756,
+          "buffer_allocations": 35,
+          "buffer_reuses": 3721
+        },
+        {
+          "projection_ns": 170858086,
+          "acquire_ns": 101000750,
+          "admission_ns": 3181533,
+          "allocation_ns": 3143510,
+          "eviction_search_ns": 1161697,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 83660499,
+          "compute_ns": 75811536,
+          "submit_ns": 8694161,
+          "wait_ns": 57092501,
+          "gpu_command_ns": 20374290,
+          "gpu_timed_submissions": 409,
+          "graph_setup_ns": 1949700,
+          "readback_ns": 932993,
+          "read_ns": 83726364,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 2258790400,
+          "hits": 0,
+          "misses": 4836,
+          "buffer_allocations": 30,
+          "buffer_reuses": 4806
+        },
+        {
+          "projection_ns": 141991749,
+          "acquire_ns": 79624327,
+          "admission_ns": 2849811,
+          "allocation_ns": 2985104,
+          "eviction_search_ns": 1093207,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 62949748,
+          "compute_ns": 66694630,
+          "submit_ns": 7356126,
+          "wait_ns": 51261751,
+          "gpu_command_ns": 19028195,
+          "gpu_timed_submissions": 347,
+          "graph_setup_ns": 1738870,
+          "readback_ns": 927300,
+          "read_ns": 63006503,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1828377600,
+          "hits": 0,
+          "misses": 4116,
+          "buffer_allocations": 30,
+          "buffer_reuses": 4086
+        },
+        {
+          "projection_ns": 116623038,
+          "acquire_ns": 46639756,
+          "admission_ns": 3133005,
+          "allocation_ns": 3133536,
+          "eviction_search_ns": 1187821,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 29545302,
+          "compute_ns": 75544407,
+          "submit_ns": 8473213,
+          "wait_ns": 57408913,
+          "gpu_command_ns": 20135586,
+          "gpu_timed_submissions": 392,
+          "graph_setup_ns": 1929830,
+          "readback_ns": 997912,
+          "read_ns": 29615305,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 2188800000,
+          "hits": 0,
+          "misses": 4740,
+          "buffer_allocations": 28,
+          "buffer_reuses": 4712
+        },
+        {
+          "projection_ns": 96529708,
+          "acquire_ns": 33098546,
+          "admission_ns": 2808635,
+          "allocation_ns": 3088701,
+          "eviction_search_ns": 1060375,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 16516165,
+          "compute_ns": 67818373,
+          "submit_ns": 7631247,
+          "wait_ns": 51877243,
+          "gpu_command_ns": 19077573,
+          "gpu_timed_submissions": 352,
+          "graph_setup_ns": 1793458,
+          "readback_ns": 1006957,
+          "read_ns": 16578258,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1922662400,
+          "hits": 0,
+          "misses": 4308,
+          "buffer_allocations": 31,
+          "buffer_reuses": 4277
+        },
+        {
+          "projection_ns": 131085334,
+          "acquire_ns": 78461833,
+          "admission_ns": 2303898,
+          "allocation_ns": 2306787,
+          "eviction_search_ns": 929690,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 62677750,
+          "compute_ns": 54042583,
+          "submit_ns": 6298120,
+          "wait_ns": 42968373,
+          "gpu_command_ns": 17542332,
+          "gpu_timed_submissions": 274,
+          "graph_setup_ns": 1511338,
+          "readback_ns": 970621,
+          "read_ns": 62725737,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1307494400,
+          "hits": 0,
+          "misses": 3279,
+          "buffer_allocations": 21,
+          "buffer_reuses": 3258
+        },
+        {
+          "projection_ns": 128471831,
+          "acquire_ns": 63728089,
+          "admission_ns": 3183398,
+          "allocation_ns": 3710799,
+          "eviction_search_ns": 1154865,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 46058250,
+          "compute_ns": 68230126,
+          "submit_ns": 9958784,
+          "wait_ns": 50366955,
+          "gpu_command_ns": 18500207,
+          "gpu_timed_submissions": 330,
+          "graph_setup_ns": 2129494,
+          "readback_ns": 952532,
+          "read_ns": 46102917,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1751449600,
+          "hits": 0,
+          "misses": 3957,
+          "buffer_allocations": 44,
+          "buffer_reuses": 3913
+        },
+        {
+          "projection_ns": 106184584,
+          "acquire_ns": 44142262,
+          "admission_ns": 3065940,
+          "allocation_ns": 3320124,
+          "eviction_search_ns": 1107207,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 26879086,
+          "compute_ns": 67014035,
+          "submit_ns": 8279624,
+          "wait_ns": 49894297,
+          "gpu_command_ns": 18923334,
+          "gpu_timed_submissions": 343,
+          "graph_setup_ns": 1769484,
+          "readback_ns": 923251,
+          "read_ns": 26942824,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1890713600,
+          "hits": 0,
+          "misses": 4287,
+          "buffer_allocations": 39,
+          "buffer_reuses": 4248
+        },
+        {
+          "projection_ns": 136913747,
+          "acquire_ns": 67546379,
+          "admission_ns": 3376197,
+          "allocation_ns": 3831853,
+          "eviction_search_ns": 1224011,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 49723451,
+          "compute_ns": 75772898,
+          "submit_ns": 8575786,
+          "wait_ns": 56664489,
+          "gpu_command_ns": 20046339,
+          "gpu_timed_submissions": 407,
+          "graph_setup_ns": 1916841,
+          "readback_ns": 981881,
+          "read_ns": 49790616,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 2238464000,
+          "hits": 0,
+          "misses": 4818,
+          "buffer_allocations": 45,
+          "buffer_reuses": 4773
+        },
+        {
+          "projection_ns": 164380337,
+          "acquire_ns": 105606758,
+          "admission_ns": 2603601,
+          "allocation_ns": 2978435,
+          "eviction_search_ns": 972616,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 89194282,
+          "compute_ns": 61183240,
+          "submit_ns": 6437549,
+          "wait_ns": 48784329,
+          "gpu_command_ns": 18427143,
+          "gpu_timed_submissions": 312,
+          "graph_setup_ns": 1636084,
+          "readback_ns": 889833,
+          "read_ns": 89245314,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1495014400,
+          "hits": 0,
+          "misses": 3609,
+          "buffer_allocations": 31,
+          "buffer_reuses": 3578
+        },
+        {
+          "projection_ns": 109280415,
+          "acquire_ns": 55363793,
+          "admission_ns": 2298575,
+          "allocation_ns": 2300134,
+          "eviction_search_ns": 937027,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 39407626,
+          "compute_ns": 55532377,
+          "submit_ns": 6095368,
+          "wait_ns": 44435547,
+          "gpu_command_ns": 17603250,
+          "gpu_timed_submissions": 278,
+          "graph_setup_ns": 1546497,
+          "readback_ns": 906126,
+          "read_ns": 39456309,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1323673600,
+          "hits": 0,
+          "misses": 3282,
+          "buffer_allocations": 21,
+          "buffer_reuses": 3261
+        },
+        {
+          "projection_ns": 105137707,
+          "acquire_ns": 48590376,
+          "admission_ns": 2539179,
+          "allocation_ns": 2725122,
+          "eviction_search_ns": 957149,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 33359412,
+          "compute_ns": 58580656,
+          "submit_ns": 6573540,
+          "wait_ns": 46399616,
+          "gpu_command_ns": 17998692,
+          "gpu_timed_submissions": 300,
+          "graph_setup_ns": 1641955,
+          "readback_ns": 942541,
+          "read_ns": 33410468,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1533875200,
+          "hits": 0,
+          "misses": 3618,
+          "buffer_allocations": 28,
+          "buffer_reuses": 3590
+        },
+        {
+          "projection_ns": 193840207,
+          "acquire_ns": 128640576,
+          "admission_ns": 2854090,
+          "allocation_ns": 2962108,
+          "eviction_search_ns": 1147732,
+          "overlap_acquire_ns": 0,
+          "demand_queue_wait_ns": 108549944,
+          "compute_ns": 69328051,
+          "submit_ns": 7645464,
+          "wait_ns": 53785547,
+          "gpu_command_ns": 20126477,
+          "gpu_timed_submissions": 368,
+          "graph_setup_ns": 1774622,
+          "readback_ns": 914874,
+          "read_ns": 108607511,
+          "source_transfer_ns": 0,
+          "logical_read_bytes": 1840896000,
+          "hits": 0,
+          "misses": 4257,
+          "buffer_allocations": 28,
+          "buffer_reuses": 4229
+        }
+      ],
+      "expert_totals": {
+        "projection_ns": 3704480343,
+        "acquire_ns": 2229055444,
+        "admission_ns": 67297451,
+        "allocation_ns": 74621588,
+        "eviction_search_ns": 25444551,
+        "overlap_acquire_ns": 0,
+        "demand_queue_wait_ns": 1801679896,
+        "compute_ns": 1567086561,
+        "submit_ns": 176348147,
+        "wait_ns": 1209235424,
+        "gpu_command_ns": 454367736,
+        "gpu_timed_submissions": 8074,
+        "graph_setup_ns": 41759030,
+        "readback_ns": 22446007,
+        "read_ns": 1803018082,
+        "source_transfer_ns": 0,
+        "logical_read_bytes": 41641036800,
+        "hits": 0,
+        "misses": 95634,
+        "buffer_allocations": 796,
+        "buffer_reuses": 94838
+      },
+      "expert_ms_per_token": {
+        "projection_ns": 58.80127528571428,
+        "acquire_ns": 35.38183244444444,
+        "admission_ns": 1.068213507936508,
+        "allocation_ns": 1.1844696507936507,
+        "eviction_search_ns": 0.4038817619047619,
+        "overlap_acquire_ns": 0.0,
+        "demand_queue_wait_ns": 28.598093587301587,
+        "compute_ns": 24.87438985714286,
+        "submit_ns": 2.7991769365079366,
+        "wait_ns": 19.194213079365078,
+        "gpu_command_ns": 7.212186285714286,
+        "graph_setup_ns": 0.6628417460317461,
+        "readback_ns": 0.3562858253968254,
+        "read_ns": 28.619334634920634,
+        "source_transfer_ns": 0.0
+      }
+    }
+  }
+}

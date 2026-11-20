@@ -1,0 +1,157 @@
+--- a/src/llama-expert-store.cpp
++++ b/src/llama-expert-store.cpp
+@@ -17,6 +17,11 @@
+ #include <mutex>
+ #include <stdexcept>
+ #include <utility>
++
++// Single-request verifier sets this switch after prefill, before timed decode.
++static bool flash_verify_size_lru = false;
++void flash_verify_enable_size_lru();
++void flash_verify_enable_size_lru() { flash_verify_size_lru = true; }
+ 
+ namespace {
+ 
+@@ -301,7 +306,25 @@
+         return bytes;
+     }
+ 
++    // The verifier fixture uses six 64 KiB-aligned Metal size classes.
++    // Other geometries fall back to the existing LRU admission policy.
++    static constexpr size_t slot_alignment = 64 * 1024;
++    std::array<entry *, 16> oldest_size {};
++
++    static bool indexed_size(size_t bytes) {
++        return bytes && bytes <= 16 * slot_alignment && bytes % slot_alignment == 0;
++    }
++
++    static entry * next_size(entry * start, size_t bytes) {
++        while (start && start->buffer_charge.size() != bytes) { start = start->newer; }
++        return start;
++    }
++
+     void unlink_lru(entry & e) {
++        if (flash_verify_size_lru && !history && indexed_size(e.buffer_charge.size())) {
++            auto & first = oldest_size[e.buffer_charge.size() / slot_alignment - 1];
++            if (first == &e) { first = next_size(e.newer, e.buffer_charge.size()); }
++        }
+         if (e.older) { e.older->newer = e.newer; }
+         else { lru_first[e.frequency_class] = e.newer; }
+         if (e.newer) { e.newer->older = e.older; }
+@@ -328,7 +351,7 @@
+         return candidate;
+     }
+ 
+-    std::shared_ptr<entry> take_victim() {
++    std::shared_ptr<entry> take_victim(size_t preferred_bytes = 0) {
+         llama_expert_timer timer(profile ? &profile->eviction_search_ns : nullptr);
+         entry * chosen = nullptr;
+         if (history) {
+@@ -380,6 +403,15 @@
+             }
+         } else {
+             chosen = oldest_unpinned(0);
++            if (indexed_size(preferred_bytes)) {
++                auto & first = oldest_size[preferred_bytes / slot_alignment - 1];
++                if (!first) { first = next_size(lru_first[0], preferred_bytes); }
++                auto * candidate = first;
++                while (candidate && (candidate->pins || candidate->retiring)) {
++                    candidate = next_size(candidate->newer, preferred_bytes);
++                }
++                if (candidate) { chosen = candidate; }
++            }
+         }
+         if (!chosen) { return {}; }
+         auto victim = entries.find(chosen->key);
+@@ -974,7 +1006,7 @@
+             charges = pimpl->reserve(arena_bytes, buffer_bytes, data_bytes);
+             if (charges.complete()) { break; }
+             charges = {};
+-            auto victim = pimpl->take_victim();
++            auto victim = pimpl->take_victim(flash_verify_size_lru ? buffer_bytes : 0);
+             if (!victim) {
+                 // Tight budgets must not fail merely because spares are held.
+                 if (pimpl->release_recycled()) { continue; }
+--- a/src/llama-context-atomic.cpp
++++ b/src/llama-context-atomic.cpp
+@@ -43,7 +43,8 @@
+     }
+     const size_t cap = target->memory_contract->ledger->snapshot(llama_memory_domain::host).requested;
+     const auto & hp = target->hparams;
+-    const bool flash = cap == (size_t(18) << 30) && target->arch == LLM_ARCH_QWEN4EXP &&
++    const bool flash8 = cap == (size_t(8) << 30) && std::getenv("FLASH_LIVE_DRAFT");
++    const bool flash = (flash8 || cap == (size_t(18) << 30)) && target->arch == LLM_ARCH_QWEN4EXP &&
+         hp.n_layer() == 48 && target->streamed_ple;
+     const bool qwen35 = (target->memory_contract->qwen35_profile_layers || cap == (size_t(8) << 30)) && target->arch == LLM_ARCH_QWEN35MOE &&
+         hp.n_layer() == 40 && hp.n_embd == 2048 && hp.n_expert == 256 && hp.n_expert_used_max() == 8;
+@@ -55,7 +56,7 @@
+     // host staging for saving or loading the draft appendix before evaluation.
+     auto & contract = *target->memory_contract;
+     contract.draft_slot_staging = contract.ledger->reserve(llama_memory_domain::host,
+-            llama_memory_category::io, llama_atomic_dflash2_slot_staging_bytes(qwen35 ? 4096 : 1024));
++            llama_memory_category::io, llama_atomic_dflash2_slot_staging_bytes((qwen35 || flash8) ? 4096 : 1024));
+     if (!contract.draft_slot_staging) { return false; }
+     if (qwen35 && contract.qwen35_profile_layers == 40 &&
+             (cap == (size_t(24) << 30) || cap == (size_t(26) << 30))) {
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -196,7 +196,8 @@
+                  model.n_gpu_layers() > model.hparams.n_layer_all || !params.op_offload)) {
+             throw std::runtime_error("CUDA boundary reduction requires partially offloaded LFM2 MoE with op offload");
+         }
+-        const bool dflash_profile = (model.arch == LLM_ARCH_QWEN4EXP && params.n_ctx == 1024) ||
++        const bool dflash_profile = (model.arch == LLM_ARCH_QWEN4EXP && (params.n_ctx == 1024 ||
++            (model.memory_contract->dflash2_target && std::getenv("FLASH_LIVE_DRAFT") && params.n_ctx == 4096 && params.n_batch == 4096))) ||
+             (model.arch == LLM_ARCH_QWEN35MOE && params.n_ctx == 4096 && params.n_batch == 4096);
+         const bool rollback_allowed = model.memory_contract->dflash2_target && dflash_profile &&
+             params.n_ubatch == 8 && params.n_rs_seq < params.n_ubatch - 1;
+@@ -2446,7 +2447,8 @@
+     memory_update(false);
+ 
+     const bool write_h_nextn = cparams.embeddings_nextn_dev && h_nextn_dev != nullptr;
+-    const bool wide_dflash = layer_inp_dev && model.arch == LLM_ARCH_QWEN35MOE &&
++    const bool wide_dflash = layer_inp_dev && (model.arch == LLM_ARCH_QWEN35MOE ||
++            (model.arch == LLM_ARCH_QWEN4EXP && std::getenv("FLASH_LIVE_FEATURE_PREFILL"))) &&
+             model.memory_contract && model.memory_contract->dflash2_target;
+     const bool can_window = budget_control && budget_control->prefill_window.enabled && batch_inp.embd.empty() &&
+             batch_inp.state.empty() && !has_samplers &&
+--- a/src/llama-prefill-window.cpp
++++ b/src/llama-prefill-window.cpp
+@@ -225,11 +225,12 @@
+     const bool wide_arch = flash || model.arch == LLM_ARCH_QWEN35MOE || model.arch == LLM_ARCH_LFM2MOE;
+     const bool smaller_wide = !partial_wide && wide_arch && rows == prefill_smaller_wide_rows;
+     const bool native_wide = partial_wide || (wide_arch && (rows == prefill_wide_rows || smaller_wide));
+-    const bool wide_dflash = native_wide && model.arch == LLM_ARCH_QWEN35MOE &&
++    const bool flash_features = flash && partial_wide && std::getenv("FLASH_LIVE_FEATURE_PREFILL");
++    const bool wide_dflash = native_wide && (model.arch == LLM_ARCH_QWEN35MOE || flash_features) &&
+         model.memory_contract->dflash2_target && cparams.embeddings_layer_inp_dev && layer_inp_dev;
+     // Reuse layer-local Metal temporaries across the same wide workers.
+     // Live outputs at layer boundaries and draft feature rows stay private.
+-    const bool shared_dflash = wide_dflash && !smaller_wide && try_shared_wide;
++    const bool shared_dflash = !flash_features && wide_dflash && !smaller_wide && try_shared_wide;
+     // Three smaller workers reduce the number of complete weight traversals
+     // compared with one 1024-row worker. Leave admission room for staging.
+     const bool shared_wide = flash && smaller_wide && try_shared_wide;
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1,3 +1,4 @@
++extern void flash_verify_enable_size_lru();
+ #include "atomic-budget.h"
+ #include "atomic-dflash-depth.h"
+ #include "server-context.h"
+@@ -4860,6 +4861,15 @@
+                  batch.slot_batched->n_remaining() > params_base.speculative.draft.n_max);
+         int64_t verify_us = 0;
+         queue_tasks.yield_to_queue([&]() {
++            // Single measured request, following an eight-token serial warmup.
++            // Activate only after prefill so both policies start with the same cache.
++            static const bool size_lru = std::getenv("FLASH_LIVE_SIZE_LRU") != nullptr;
++            static bool enabled = false;
++            if (size_lru && !enabled && !batch.tokens[off].is_prompt && batch.slot_batched &&
++                    batch.slot_batched->task->params.n_predict == 64) {
++                flash_verify_enable_size_lru();
++                enabled = true;
++            }
+             const int64_t verify_start = measure_verify ? ggml_time_us() : 0;
+             if (params_base.engine_budget && batch.tokens[off].is_prompt) {
+                 // Managed mode has one slot. Use the same uncached prefill size

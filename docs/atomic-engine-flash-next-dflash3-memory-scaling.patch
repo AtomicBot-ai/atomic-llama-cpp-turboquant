@@ -1,0 +1,112 @@
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2524,7 +2524,10 @@
+             batch_inp.tokens.front().pos[0] == 0;
+     if (stream_wide) {
+         // Balance real prompt rows across streamed graphs within the prompt scratch limit.
+-        constexpr uint32_t max_rows = 912;
++        const char * test_rows = std::getenv("FLASH_SCALING_24_ROWS");
++        const bool budget_24 = budget_control->budget_requested == (size_t(24) << 30);
++        const uint32_t max_rows = budget_24 && test_rows && !std::strcmp(test_rows, "4000") ? 4000 :
++            budget_24 && test_rows && !std::strcmp(test_rows, "2000") ? 2000 : 912;
+         const uint32_t blocks = (n_tokens_all + max_rows - 1) / max_rows;
+         window_rows = (n_tokens_all + blocks - 1) / blocks;
+         partial_wide = false;
+--- a/src/llama-flash-next-prompt-tiles.inc
++++ b/src/llama-flash-next-prompt-tiles.inc
+@@ -37,21 +37,27 @@
+         ggml_backend_buffer_clear(buf.get(), 0);
+         std::array<int32_t, batch_rows> rows, slots;
+         const size_t stride = info.expert_bytes();
++        const bool record = std::getenv("FLASH_SCALING_COUNTERS") != nullptr;
++        int64_t transferred = 0, reads = 0, read_us = 0, gpu_us = 0, calls = 0;
+         for (int first = 0; first < p.experts; first += experts_per_tile) {
+             int packed = 0;
+             bool loaded = false;
+             auto flush_tile = [&]() {
+                 if (!packed) { return; }
+                 if (!loaded) {
++                    const int64_t start = record ? ggml_time_us() : 0;
+                     row_source->read_expert_range(p.name, first, first + experts_per_tile,
+                             weights->data, stride * experts_per_tile);
++                    if (record) { ++reads; transferred += stride * experts_per_tile; read_us += ggml_time_us() - start; }
+                     loaded = true;
+                 }
+                 // The unused rows carry valid expert IDs; their results are discarded.
+                 std::fill_n(static_cast<int32_t *>(index->data) + packed, batch_rows - packed, 0);
++                const int64_t start = record ? ggml_time_us() : 0;
+                 if (ggml_backend_graph_compute(backend.get(), graph) != GGML_STATUS_SUCCESS) {
+                     throw std::runtime_error("Metal prompt tile failed");
+                 }
++                if (record) { ++calls; gpu_us += ggml_time_us() - start; }
+                 for (int i = 0; i < packed; ++i) {
+                     std::memcpy(static_cast<char *>(dst->data) + rows[i]*dst->nb[2] + slots[i]*dst->nb[1],
+                             static_cast<const char *>(y->data) + i*y->nb[2], p.output*sizeof(float));
+@@ -75,5 +81,10 @@
+             }
+             flush_tile();
+         }
++        if (record) {
++            std::fprintf(stderr, "SCALE_TILE %s %lld %lld %lld %lld %lld %lld\n", p.name.c_str(),
++                (long long) ids->ne[1], (long long) transferred, (long long) reads,
++                (long long) read_us, (long long) calls, (long long) gpu_us);
++        }
+     }
+ #endif
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -4860,6 +4860,14 @@
+                  batch.slot_batched->n_remaining() > params_base.speculative.draft.n_max);
+         int64_t verify_us = 0;
+         queue_tasks.yield_to_queue([&]() {
++            const bool detail = std::getenv("FLASH_SCALING_COUNTERS") && batch.slot_batched &&
++                    batch.slot_batched->task->n_tokens() >= 320 && !batch.tokens[off].is_prompt && batch.view.size() > 1;
++            llama_expert_streaming_data before{}, after{};
++            if (detail) {
++                GGML_ASSERT(llama_get_expert_streaming_stats(ctx_tgt, &before));
++                GGML_ASSERT(llama_expert_profile_set(ctx_tgt, true));
++            }
++            const int64_t probe_start = detail ? ggml_time_us() : 0;
+             const int64_t verify_start = measure_verify ? ggml_time_us() : 0;
+             if (params_base.engine_budget && batch.tokens[off].is_prompt) {
+                 // Managed mode has one slot. Use the same uncached prefill size
+@@ -4876,6 +4884,39 @@
+             }
+             if (ret == 0 && has_output) {
+                 llama_synchronize(ctx_tgt);
++            }
++            if (detail && ret == 0) {
++                const int64_t target_us = ggml_time_us() - probe_start;
++                llama_expert_profile_data profile{};
++                GGML_ASSERT(llama_expert_profile_get(ctx_tgt, &profile));
++                GGML_ASSERT(llama_expert_profile_set(ctx_tgt, false));
++                GGML_ASSERT(llama_get_expert_streaming_stats(ctx_tgt, &after));
++                std::fprintf(stderr, "SCALE_VERIFY rows=%d target_us=%lld"
++                    " demand_queue_wait_ns=%llu"
++                    " gpu_command_ns=%llu"
++                    " gpu_timed_submissions=%llu"
++                    " wait_ns=%llu"
++                    " projection_ns=%llu"
++                    " logical_read_bytes=%llu"
++                    " hits=%llu"
++                    " misses=%llu"
++                    " evictions=%llu"
++                    " submissions=%llu"
++                    " buffer_allocations=%llu"
++                    " buffer_reuses=%llu"
++                    "\n", batch.view.size(), (long long) target_us,
++                    (unsigned long long) (profile.demand_queue_wait_ns),
++                    (unsigned long long) (profile.gpu_command_ns),
++                    (unsigned long long) (profile.gpu_timed_submissions),
++                    (unsigned long long) (profile.wait_ns),
++                    (unsigned long long) (profile.projection_ns),
++                    (unsigned long long) (after.logical_read_bytes - before.logical_read_bytes),
++                    (unsigned long long) (after.hits - before.hits),
++                    (unsigned long long) (after.misses - before.misses),
++                    (unsigned long long) (after.evictions - before.evictions),
++                    (unsigned long long) (after.submissions - before.submissions),
++                    (unsigned long long) (after.buffer_allocations - before.buffer_allocations),
++                    (unsigned long long) (after.buffer_reuses - before.buffer_reuses));
+             }
+             if (measure_verify && ret == 0) {
+                 verify_us = ggml_time_us() - verify_start;

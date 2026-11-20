@@ -42,15 +42,21 @@ bool llama_atomic_dflash2_enable(llama_model * target) {
 }
 
 bool llama_atomic_dflash2_enable(llama_model * target, bool flash_long_profile) {
+    return llama_atomic_dflash2_enable(target, flash_long_profile ? 4096u : 0u);
+}
+
+bool llama_atomic_dflash2_enable(llama_model * target, uint32_t flash_context) {
+    if (flash_context && flash_context != 4096 && flash_context != 40960) { return false; }
     if (!target || !target->memory_contract || target->memory_contract->discrete.device || !target->expert_source) {
         return false;
     }
     const size_t cap = target->memory_contract->ledger->snapshot(llama_memory_domain::host).requested;
     const auto & hp = target->hparams;
-    const bool flash_long = flash_long_profile && cap >= (size_t(8) << 30) && cap <= (size_t(24) << 30) &&
+    const bool flash_long = flash_context && cap >= (size_t(8) << 30) && cap <= (size_t(24) << 30) &&
         target->arch == LLM_ARCH_QWEN4EXP && hp.n_expert == 512;
     const bool flash = (flash_long || cap == (size_t(18) << 30)) && target->arch == LLM_ARCH_QWEN4EXP &&
         hp.n_layer() == 48 && target->streamed_ple;
+    if (flash_context == 40960 && !(flash && flash_long)) { return false; }
     const bool qwen35 = (target->memory_contract->qwen35_profile_layers || cap == (size_t(8) << 30)) && target->arch == LLM_ARCH_QWEN35MOE &&
         hp.n_layer() == 40 && hp.n_embd == 2048 && hp.n_expert == 256 && hp.n_expert_used_max() == 8;
     const auto device = target->dev_output();
@@ -61,7 +67,7 @@ bool llama_atomic_dflash2_enable(llama_model * target, bool flash_long_profile) 
     // host staging for saving or loading the draft appendix before evaluation.
     auto & contract = *target->memory_contract;
     contract.draft_slot_staging = contract.ledger->reserve(llama_memory_domain::host,
-            llama_memory_category::io, llama_atomic_dflash2_slot_staging_bytes((qwen35 || flash_long) ? 4096 : 1024));
+            llama_memory_category::io, llama_atomic_dflash2_slot_staging_bytes(flash_long ? flash_context : (qwen35 ? 4096 : 1024)));
     if (!contract.draft_slot_staging) { return false; }
     if (qwen35 && contract.qwen35_profile_layers == 40 &&
             (cap == (size_t(24) << 30) || cap == (size_t(26) << 30))) {
@@ -74,6 +80,7 @@ bool llama_atomic_dflash2_enable(llama_model * target, bool flash_long_profile) 
         }
     }
     contract.flash_next_dflash3 = flash_long;
+    contract.flash_next_40k = flash_long && flash_context == 40960;
     contract.dflash2_target = true;
     return true;
 }

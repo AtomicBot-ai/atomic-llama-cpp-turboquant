@@ -1,0 +1,818 @@
+{
+  "model": "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "hardware": "Apple M4 Max, 48 GiB",
+  "cap_gib": 8,
+  "base_commit": "a46a2c27cb85d82e450827b6a98f2d2ca814209b",
+  "fixture": "atomic-engine-flash-next-default-8-16gib.json#fixtures.handover",
+  "input_ids_sha256_u32le": "c597d496af2d062bb95b31fd48b587034385f0a8325e2afa1dd20837a74d4b84",
+  "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+  "server_args": [
+    "-m",
+    "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "-c",
+    "4096",
+    "-b",
+    "4096",
+    "-ub",
+    "8",
+    "-np",
+    "1",
+    "-t",
+    "8",
+    "-tb",
+    "8",
+    "-ngl",
+    "99",
+    "-ctk",
+    "bf16",
+    "-ctv",
+    "bf16",
+    "-fit",
+    "off",
+    "--cache-ram",
+    "0",
+    "--ctx-checkpoints",
+    "0",
+    "--no-warmup",
+    "--metrics",
+    "--no-webui",
+    "--engine-budget-mib",
+    "8192",
+    "--host",
+    "127.0.0.1"
+  ],
+  "reference_output_ids": [
+    2,
+    25662,
+    35312,
+    286,
+    25,
+    5711,
+    69041,
+    7673,
+    5606,
+    271,
+    550,
+    220,
+    16,
+    13,
+    3976,
+    278,
+    417,
+    8845,
+    318,
+    2432,
+    12296,
+    8,
+    198,
+    760,
+    2614,
+    2250,
+    43303,
+    3371,
+    6290,
+    494,
+    279,
+    5129,
+    27370,
+    321,
+    1325,
+    3050,
+    5975,
+    1518,
+    781,
+    628,
+    10046,
+    310,
+    3286,
+    466,
+    16111,
+    13,
+    271,
+    91,
+    32783,
+    2937,
+    735,
+    24425,
+    735,
+    5411,
+    12296,
+    735,
+    25009,
+    735,
+    198,
+    91,
+    535,
+    4277,
+    735,
+    535
+  ],
+  "reference_file": "atomic-engine-flash-next-gdn-direct-8gib.json",
+  "stock_client_tps": 11.93972759224748,
+  "twice_stock_client_tps": 23.87945518449496,
+  "protocol": "One fresh server per width, sequentially 4, 1, 8. Same 912/64 prompt and greedy reference. Each gets the same 8/8 warmup and normal default prefill. Stock model libraries, separate QKV and Z and ordinary recurrent-state gather. Only the benchmark server requests output capacity equal to the width and supplies consecutive reference tokens on the actual target decode graph. The first output comes from normal prefill and is checked. The remaining 63 positions are teacher-forced at their original positions, requesting all logits. Each block is synchronized and each greedy argmax is compared with the next reference ID. Full-width blocks plus a final short block. No draft model, rollback, CPU or GPU profiler. The 8 GiB managed cap and per-process high-water were checked. OS file cache not controlled.",
+  "interpretation": "Target-only throughput divides the 63 positions by summed synchronized target time. Target plus argmax also includes scanning all returned logits. The measured rate assumes every supplied prefix is correct; a mismatch is scored against the serial reference, and the next block still uses the reference. Neither metric includes drafting, rejected tokens, client overhead or rollback. One measurement per width. This brackets the current verifier on this fixture; it is not a general upper bound for new kernels or other widths.",
+  "initial_attempt": "The original benchmark process inherited the normal one-output server limit and stopped before completing width 4. No timing from that process is used. The benchmark patch reserves the requested output width at context setup under the same cap.",
+  "probe_sha256": "9211b9a1f194e09144b80700229d8786a8116653a8543a4f1d4777fe0c9e23c4",
+  "benchmark_patch": "--- a/tools/server/server-context.cpp\n+++ b/tools/server/server-context.cpp\n@@ -1245,6 +1245,12 @@\n         const auto output_limits = server_output_limits(params_base);\n         params_base.n_outputs_max = output_limits.total;\n         params_base.n_outputs_max_per_seq = output_limits.per_seq;\n+        if (const char * value = getenv(\"FLASH_VERIFY_WIDTH\")) {\n+            const int rows = atoi(value);\n+            GGML_ASSERT(rows >= 1 && rows <= 8 && params_base.n_parallel == 1);\n+            params_base.n_outputs_max = rows;\n+            params_base.n_outputs_max_per_seq = rows;\n+        }\n \n         const bool has_mmproj = !params.mmproj.path.empty();\n         const bool has_draft = params_base.speculative.has_dft();\n@@ -4860,6 +4866,41 @@\n                  batch.slot_batched->n_remaining() > params_base.speculative.draft.n_max);\n         int64_t verify_us = 0;\n         queue_tasks.yield_to_queue([&]() {\n+            if (!batch.tokens[off].is_prompt && batch.slot_batched && batch.slot_batched->task->params.n_predict == 64 &&\n+                    getenv(\"FLASH_VERIFY_WIDTH\")) {\n+                static const llama_token gold[] = {2,25662,35312,286,25,5711,69041,7673,5606,271,550,220,16,13,3976,278,417,8845,318,2432,12296,8,198,760,2614,2250,43303,3371,6290,494,279,5129,27370,321,1325,3050,5975,1518,781,628,10046,310,3286,466,16111,13,271,91,32783,2937,735,24425,735,5411,12296,735,25009,735,198,91,535,4277,735,535};\n+                const int width = atoi(getenv(\"FLASH_VERIFY_WIDTH\"));\n+                GGML_ASSERT(width >= 1 && width <= 8 && batch.view.size() == 1);\n+                GGML_ASSERT(batch.tokens[off].pos[0] == 912 && batch.tokens[off].token == gold[0]);\n+                const int nv = llama_vocab_n_tokens(vocab);\n+                json blocks = json::array();\n+                std::vector<int> predicted = {gold[0]};\n+                common_batch probe(ctx_tgt);\n+                for (int first = 0; first < 63; first += width) {\n+                    const int rows = std::min(width, 63-first);\n+                    const int64_t t0 = ggml_time_us();\n+                    probe.clear();\n+                    for (int j = 0; j < rows; ++j) {\n+                        probe.add(gold[first+j], 912+first+j, 0, true);\n+                    }\n+                    GGML_ASSERT(llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, probe.get()) == 0);\n+                    llama_synchronize(ctx_tgt);\n+                    const int64_t t1 = ggml_time_us();\n+                    for (int j = 0; j < rows; ++j) {\n+                        const float * row = llama_get_logits_ith(ctx_tgt, j);\n+                        GGML_ASSERT(row);\n+                        predicted.push_back(int(std::max_element(row,row+nv)-row));\n+                    }\n+                    const int64_t t2 = ggml_time_us();\n+                    blocks.push_back({{\"rows\",rows},{\"synced_us\",t1-t0},{\"with_argmax_us\",t2-t0}});\n+                }\n+                llama_budget_data budget{};\n+                GGML_ASSERT(llama_memory_budget_get(ctx_tgt,&budget) && budget.applied == (size_t(8)<<30) && budget.high_water <= budget.applied);\n+                json record = {{\"width\",width},{\"blocks\",blocks},{\"predicted_ids\",predicted},{\"peak_managed_bytes\",budget.high_water}};\n+                fprintf(stderr,\"FLASH_VERIFY_RESULT %s\\n\",record.dump().c_str());\n+                fflush(stderr);\n+                std::_Exit(0); // Dedicated, single-request benchmark process.\n+            }\n             const int64_t verify_start = measure_verify ? ggml_time_us() : 0;\n             if (params_base.engine_budget && batch.tokens[off].is_prompt) {\n                 // Managed mode has one slot. Use the same uncached prefill size\n",
+  "runs": [
+    {
+      "width": 4,
+      "blocks": [
+        {
+          "rows": 4,
+          "synced_us": 380020,
+          "with_argmax_us": 380747
+        },
+        {
+          "rows": 4,
+          "synced_us": 301094,
+          "with_argmax_us": 301837
+        },
+        {
+          "rows": 4,
+          "synced_us": 270432,
+          "with_argmax_us": 271217
+        },
+        {
+          "rows": 4,
+          "synced_us": 264856,
+          "with_argmax_us": 265624
+        },
+        {
+          "rows": 4,
+          "synced_us": 305179,
+          "with_argmax_us": 305897
+        },
+        {
+          "rows": 4,
+          "synced_us": 309463,
+          "with_argmax_us": 310237
+        },
+        {
+          "rows": 4,
+          "synced_us": 314757,
+          "with_argmax_us": 315493
+        },
+        {
+          "rows": 4,
+          "synced_us": 288457,
+          "with_argmax_us": 289248
+        },
+        {
+          "rows": 4,
+          "synced_us": 308938,
+          "with_argmax_us": 309688
+        },
+        {
+          "rows": 4,
+          "synced_us": 270007,
+          "with_argmax_us": 270771
+        },
+        {
+          "rows": 4,
+          "synced_us": 286444,
+          "with_argmax_us": 287206
+        },
+        {
+          "rows": 4,
+          "synced_us": 296823,
+          "with_argmax_us": 297549
+        },
+        {
+          "rows": 4,
+          "synced_us": 245521,
+          "with_argmax_us": 246304
+        },
+        {
+          "rows": 4,
+          "synced_us": 185461,
+          "with_argmax_us": 186233
+        },
+        {
+          "rows": 4,
+          "synced_us": 285020,
+          "with_argmax_us": 285773
+        },
+        {
+          "rows": 3,
+          "synced_us": 199202,
+          "with_argmax_us": 199810
+        }
+      ],
+      "predicted_ids": [
+        2,
+        25662,
+        35312,
+        286,
+        25,
+        5711,
+        69041,
+        7673,
+        5606,
+        271,
+        550,
+        220,
+        16,
+        13,
+        3976,
+        278,
+        417,
+        8845,
+        318,
+        2432,
+        12296,
+        8,
+        198,
+        760,
+        2614,
+        2250,
+        43303,
+        3371,
+        6290,
+        494,
+        279,
+        5129,
+        27370,
+        321,
+        1325,
+        3050,
+        5975,
+        1518,
+        781,
+        628,
+        10046,
+        310,
+        3286,
+        466,
+        16111,
+        13,
+        271,
+        91,
+        32783,
+        2937,
+        735,
+        24425,
+        735,
+        5411,
+        12296,
+        735,
+        25009,
+        735,
+        198,
+        91,
+        535,
+        4277,
+        735,
+        535
+      ],
+      "peak_managed_bytes": 8589934586,
+      "matching_ids": 64,
+      "target_only_tps": 13.963774864939266,
+      "target_argmax_tps": 13.926856151492363,
+      "mismatches_1_based": [],
+      "headroom_ms_per_token_at_twice_client_baseline": -29.92671197247455,
+      "target_argmax_tps_excluding_first_block": 14.241276674937067,
+      "speedup_vs_width_1": 1.161624702617409
+    },
+    {
+      "width": 1,
+      "blocks": [
+        {
+          "rows": 1,
+          "synced_us": 176421,
+          "with_argmax_us": 176677
+        },
+        {
+          "rows": 1,
+          "synced_us": 176289,
+          "with_argmax_us": 176546
+        },
+        {
+          "rows": 1,
+          "synced_us": 112888,
+          "with_argmax_us": 113138
+        },
+        {
+          "rows": 1,
+          "synced_us": 65313,
+          "with_argmax_us": 65589
+        },
+        {
+          "rows": 1,
+          "synced_us": 85637,
+          "with_argmax_us": 85891
+        },
+        {
+          "rows": 1,
+          "synced_us": 109473,
+          "with_argmax_us": 109726
+        },
+        {
+          "rows": 1,
+          "synced_us": 82356,
+          "with_argmax_us": 82612
+        },
+        {
+          "rows": 1,
+          "synced_us": 74253,
+          "with_argmax_us": 74503
+        },
+        {
+          "rows": 1,
+          "synced_us": 83398,
+          "with_argmax_us": 83654
+        },
+        {
+          "rows": 1,
+          "synced_us": 104604,
+          "with_argmax_us": 104870
+        },
+        {
+          "rows": 1,
+          "synced_us": 71046,
+          "with_argmax_us": 71307
+        },
+        {
+          "rows": 1,
+          "synced_us": 84316,
+          "with_argmax_us": 84573
+        },
+        {
+          "rows": 1,
+          "synced_us": 71146,
+          "with_argmax_us": 71402
+        },
+        {
+          "rows": 1,
+          "synced_us": 75218,
+          "with_argmax_us": 75474
+        },
+        {
+          "rows": 1,
+          "synced_us": 99105,
+          "with_argmax_us": 99355
+        },
+        {
+          "rows": 1,
+          "synced_us": 72440,
+          "with_argmax_us": 72694
+        },
+        {
+          "rows": 1,
+          "synced_us": 82769,
+          "with_argmax_us": 83026
+        },
+        {
+          "rows": 1,
+          "synced_us": 66677,
+          "with_argmax_us": 66930
+        },
+        {
+          "rows": 1,
+          "synced_us": 79984,
+          "with_argmax_us": 80240
+        },
+        {
+          "rows": 1,
+          "synced_us": 79355,
+          "with_argmax_us": 79605
+        },
+        {
+          "rows": 1,
+          "synced_us": 91684,
+          "with_argmax_us": 91945
+        },
+        {
+          "rows": 1,
+          "synced_us": 93891,
+          "with_argmax_us": 94155
+        },
+        {
+          "rows": 1,
+          "synced_us": 68667,
+          "with_argmax_us": 68919
+        },
+        {
+          "rows": 1,
+          "synced_us": 95260,
+          "with_argmax_us": 95518
+        },
+        {
+          "rows": 1,
+          "synced_us": 81261,
+          "with_argmax_us": 81518
+        },
+        {
+          "rows": 1,
+          "synced_us": 74145,
+          "with_argmax_us": 74412
+        },
+        {
+          "rows": 1,
+          "synced_us": 74275,
+          "with_argmax_us": 74527
+        },
+        {
+          "rows": 1,
+          "synced_us": 104733,
+          "with_argmax_us": 104989
+        },
+        {
+          "rows": 1,
+          "synced_us": 69984,
+          "with_argmax_us": 70240
+        },
+        {
+          "rows": 1,
+          "synced_us": 88932,
+          "with_argmax_us": 89188
+        },
+        {
+          "rows": 1,
+          "synced_us": 90180,
+          "with_argmax_us": 90433
+        },
+        {
+          "rows": 1,
+          "synced_us": 72134,
+          "with_argmax_us": 72387
+        },
+        {
+          "rows": 1,
+          "synced_us": 84111,
+          "with_argmax_us": 84367
+        },
+        {
+          "rows": 1,
+          "synced_us": 96477,
+          "with_argmax_us": 96733
+        },
+        {
+          "rows": 1,
+          "synced_us": 82142,
+          "with_argmax_us": 82395
+        },
+        {
+          "rows": 1,
+          "synced_us": 78772,
+          "with_argmax_us": 79034
+        },
+        {
+          "rows": 1,
+          "synced_us": 79963,
+          "with_argmax_us": 80210
+        },
+        {
+          "rows": 1,
+          "synced_us": 96535,
+          "with_argmax_us": 96792
+        },
+        {
+          "rows": 1,
+          "synced_us": 81700,
+          "with_argmax_us": 81950
+        },
+        {
+          "rows": 1,
+          "synced_us": 71056,
+          "with_argmax_us": 71312
+        },
+        {
+          "rows": 1,
+          "synced_us": 77070,
+          "with_argmax_us": 77320
+        },
+        {
+          "rows": 1,
+          "synced_us": 70687,
+          "with_argmax_us": 70942
+        },
+        {
+          "rows": 1,
+          "synced_us": 70329,
+          "with_argmax_us": 70578
+        },
+        {
+          "rows": 1,
+          "synced_us": 84561,
+          "with_argmax_us": 84810
+        },
+        {
+          "rows": 1,
+          "synced_us": 72574,
+          "with_argmax_us": 72833
+        },
+        {
+          "rows": 1,
+          "synced_us": 86368,
+          "with_argmax_us": 86624
+        },
+        {
+          "rows": 1,
+          "synced_us": 80448,
+          "with_argmax_us": 80698
+        },
+        {
+          "rows": 1,
+          "synced_us": 86520,
+          "with_argmax_us": 86783
+        },
+        {
+          "rows": 1,
+          "synced_us": 91407,
+          "with_argmax_us": 91665
+        },
+        {
+          "rows": 1,
+          "synced_us": 73869,
+          "with_argmax_us": 74121
+        },
+        {
+          "rows": 1,
+          "synced_us": 65216,
+          "with_argmax_us": 65472
+        },
+        {
+          "rows": 1,
+          "synced_us": 68724,
+          "with_argmax_us": 68982
+        },
+        {
+          "rows": 1,
+          "synced_us": 64425,
+          "with_argmax_us": 64675
+        },
+        {
+          "rows": 1,
+          "synced_us": 56526,
+          "with_argmax_us": 56775
+        },
+        {
+          "rows": 1,
+          "synced_us": 57966,
+          "with_argmax_us": 58222
+        },
+        {
+          "rows": 1,
+          "synced_us": 64135,
+          "with_argmax_us": 64387
+        },
+        {
+          "rows": 1,
+          "synced_us": 70823,
+          "with_argmax_us": 71080
+        },
+        {
+          "rows": 1,
+          "synced_us": 66973,
+          "with_argmax_us": 67227
+        },
+        {
+          "rows": 1,
+          "synced_us": 80588,
+          "with_argmax_us": 80840
+        },
+        {
+          "rows": 1,
+          "synced_us": 93787,
+          "with_argmax_us": 94043
+        },
+        {
+          "rows": 1,
+          "synced_us": 76373,
+          "with_argmax_us": 76626
+        },
+        {
+          "rows": 1,
+          "synced_us": 86238,
+          "with_argmax_us": 86507
+        },
+        {
+          "rows": 1,
+          "synced_us": 64449,
+          "with_argmax_us": 64719
+        }
+      ],
+      "predicted_ids": [
+        2,
+        25662,
+        35312,
+        286,
+        25,
+        5711,
+        69041,
+        7673,
+        5606,
+        271,
+        550,
+        220,
+        16,
+        13,
+        3976,
+        278,
+        417,
+        8845,
+        318,
+        2432,
+        12296,
+        8,
+        198,
+        760,
+        2614,
+        2250,
+        43303,
+        3371,
+        6290,
+        494,
+        279,
+        5129,
+        27370,
+        321,
+        1325,
+        3050,
+        5975,
+        1518,
+        781,
+        628,
+        10046,
+        310,
+        3286,
+        466,
+        16111,
+        13,
+        271,
+        91,
+        32783,
+        2937,
+        735,
+        24425,
+        735,
+        5411,
+        12296,
+        735,
+        25009,
+        735,
+        198,
+        91,
+        535,
+        4277,
+        735,
+        535
+      ],
+      "peak_managed_bytes": 8589934410,
+      "matching_ids": 64,
+      "target_only_tps": 12.02600824716921,
+      "target_argmax_tps": 11.989118447732677,
+      "mismatches_1_based": [],
+      "headroom_ms_per_token_at_twice_client_baseline": -41.531965940728526,
+      "target_argmax_tps_excluding_first_block": 12.209319728212666,
+      "speedup_vs_width_1": 1.0
+    },
+    {
+      "width": 8,
+      "blocks": [
+        {
+          "rows": 8,
+          "synced_us": 601625,
+          "with_argmax_us": 603128
+        },
+        {
+          "rows": 8,
+          "synced_us": 489780,
+          "with_argmax_us": 491307
+        },
+        {
+          "rows": 8,
+          "synced_us": 534830,
+          "with_argmax_us": 536324
+        },
+        {
+          "rows": 8,
+          "synced_us": 543560,
+          "with_argmax_us": 545057
+        },
+        {
+          "rows": 8,
+          "synced_us": 518498,
+          "with_argmax_us": 519984
+        },
+        {
+          "rows": 8,
+          "synced_us": 533709,
+          "with_argmax_us": 535220
+        },
+        {
+          "rows": 8,
+          "synced_us": 390545,
+          "with_argmax_us": 392067
+        },
+        {
+          "rows": 7,
+          "synced_us": 479779,
+          "with_argmax_us": 481175
+        }
+      ],
+      "predicted_ids": [
+        2,
+        25662,
+        35312,
+        286,
+        25,
+        5711,
+        69041,
+        7673,
+        5606,
+        271,
+        550,
+        220,
+        16,
+        13,
+        3976,
+        278,
+        417,
+        8845,
+        318,
+        2432,
+        12296,
+        8,
+        198,
+        760,
+        2614,
+        2250,
+        43303,
+        3371,
+        6290,
+        494,
+        279,
+        5129,
+        27370,
+        321,
+        1325,
+        3050,
+        5975,
+        1518,
+        781,
+        628,
+        10046,
+        310,
+        3286,
+        466,
+        16111,
+        13,
+        271,
+        91,
+        32783,
+        2937,
+        735,
+        24425,
+        735,
+        5411,
+        12296,
+        735,
+        25009,
+        735,
+        198,
+        91,
+        535,
+        4277,
+        735,
+        535
+      ],
+      "peak_managed_bytes": 8589934586,
+      "matching_ids": 64,
+      "target_only_tps": 15.394667971222233,
+      "target_argmax_tps": 15.349897253148068,
+      "mismatches_1_based": [],
+      "headroom_ms_per_token_at_twice_client_baseline": -23.270013559776146,
+      "target_argmax_tps_excluding_first_block": 15.709195934802839,
+      "speedup_vs_width_1": 1.2803190926895016
+    }
+  ],
+  "prompt_lookup": {
+    "method": "Offline replay. At each step find the most recent prior occurrence of the last n IDs in prompt plus emitted prefix, propose up to 4 subsequent known IDs. Consume the matching proposal prefix plus one target token, bounded by the remaining output.",
+    "results": [
+      {
+        "prefix_ids": 2,
+        "rounds": 63,
+        "proposed": 16,
+        "accepted": 0,
+        "emitted_per_round": 1.0
+      },
+      {
+        "prefix_ids": 3,
+        "rounds": 63,
+        "proposed": 0,
+        "accepted": 0,
+        "emitted_per_round": 1.0
+      },
+      {
+        "prefix_ids": 4,
+        "rounds": 63,
+        "proposed": 0,
+        "accepted": 0,
+        "emitted_per_round": 1.0
+      }
+    ]
+  }
+}

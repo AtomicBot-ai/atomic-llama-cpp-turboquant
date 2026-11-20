@@ -1,0 +1,49 @@
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2311,7 +2311,7 @@
+             !draft->cparams.ctx_other || !draft->sched) { return; }
+     auto & target = *draft->cparams.ctx_other;
+     if (target.model.arch != LLM_ARCH_QWEN4EXP || !target.model.memory_contract ||
+-            !target.model.memory_contract->dflash2_target || target.cparams.n_rs_seq != 3 ||
++            !target.model.memory_contract->dflash2_target || (target.cparams.n_rs_seq != 2 && target.cparams.n_rs_seq != 3) ||
+             target.cparams.n_seq_max != 1 || !target.budget_control ||
+             target.budget_control->budget_requested != (size_t(8) << 30)) { return; }
+     draft->synchronize();
+@@ -2522,7 +2522,7 @@
+         }
+     }
+     const bool stream_wide = partial_wide && model.arch == LLM_ARCH_QWEN4EXP &&
+-            wide_dflash && model.memory_contract->dflash2_target && cparams.n_rs_seq == 3 &&
++            wide_dflash && model.memory_contract->dflash2_target && (cparams.n_rs_seq == 2 || cparams.n_rs_seq == 3) &&
+             budget_control->budget_requested == (size_t(8) << 30) && std::getenv("FLASH_STREAM_WIDE");
+     if (stream_wide) {
+         const uint32_t limit = n_tokens_all == 912 && std::getenv("FLASH_SINGLE_PREFILL") &&
+--- a/src/llama-expert-moe.h
++++ b/src/llama-expert-moe.h
+@@ -581,7 +581,7 @@
+         auto collect_ready = [&](group & g) {
+             llama_expert_timer timer(profile ? &profile->acquire_ns : nullptr);
+             g.n = demand->take(g.experts.data(), g.up.data(), g.gate.data(), g.down.data(),
+-                    flash_verify_ready8 && tokens == 4 ? size_t(8) : demand_min_ready);
++                    flash_verify_ready8 && (tokens == 3 || tokens == 4) ? size_t(8) : demand_min_ready);
+         };
+         group current;
+         if (was_published) {
+@@ -762,7 +762,7 @@
+                     // the readers the next known routes while Metal owns the current leases.
+                     // With publication disabled, the current leases and the unconsumed
+                     // portion of demand belong to one wave. Each wave is <= capacity/2.
+-                    if (flash_read_next_wave && tokens == 4 && !was_published && !staged &&
++                    if (flash_read_next_wave && (tokens == 3 || tokens == 4) && !was_published && !staged &&
+                             demand && demand->pending() && !following) {
+                         if (queue_plan(following) && profile) { ++profiled_early_waves; }
+                     }
+@@ -835,7 +835,7 @@
+             }
+             current = std::move(next);
+         }
+-        if (profile && flash_read_next_wave && tokens == 4 && !std::strcmp(p.up->name, "blk.47.ffn_up_exps.weight")) {
++        if (profile && flash_read_next_wave && (tokens == 3 || tokens == 4) && !std::strcmp(p.up->name, "blk.47.ffn_up_exps.weight")) {
+             std::fprintf(stderr, "VERIFY_EARLY_WAVES %llu\n", (unsigned long long)profiled_early_waves);
+             profiled_early_waves = 0;
+         }

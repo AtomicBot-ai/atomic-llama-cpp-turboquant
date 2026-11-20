@@ -1,0 +1,521 @@
+{
+  "policy": "Preselected threshold 0.5. Both modes compute the full depth-three DFlash2 draft. In the candidate, send the third proposal to target verification only if its conditional probability among the selector candidates given the chosen predecessor is at least 0.5. The first two proposals follow normal greedy decoding. Generation limits apply to either mode.",
+  "hardware": "Apple M4 Max, 48 GiB",
+  "base_commit": "a46a2c27cb85d82e450827b6a98f2d2ca814209b",
+  "prerequisite": "atomic-engine-flash-next-dflash-depth2-vs3-8gib.json",
+  "patch": "atomic-engine-flash-next-dflash-confidence-vs3-8gib.patch",
+  "patch_sha256": "89472d595f44b444a1d8565a13c95815c08e7517e3e4031cf4ef361dd390dbe5",
+  "binary_sha256": "72360f0f7005768b9016b7c3667967f8f598e43517fe36fd287d1ba8317d2fd2",
+  "fixture": "atomic-engine-flash-next-default-8-16gib.json#fixtures.handover",
+  "reference_output_file": "atomic-engine-flash-next-verify-ceiling-8gib.json",
+  "reference_output_ids": [
+    2,
+    25662,
+    35312,
+    286,
+    25,
+    5711,
+    69041,
+    7673,
+    5606,
+    271,
+    550,
+    220,
+    16,
+    13,
+    3976,
+    278,
+    417,
+    8845,
+    318,
+    2432,
+    12296,
+    8,
+    198,
+    760,
+    2614,
+    2250,
+    43303,
+    3371,
+    6290,
+    494,
+    279,
+    5129,
+    27370,
+    321,
+    1325,
+    3050,
+    5975,
+    1518,
+    781,
+    628,
+    10046,
+    310,
+    3286,
+    466,
+    16111,
+    13,
+    271,
+    91,
+    32783,
+    2937,
+    735,
+    24425,
+    735,
+    5411,
+    12296,
+    735,
+    25009,
+    735,
+    198,
+    91,
+    535,
+    4277,
+    735,
+    535
+  ],
+  "input_ids_sha256_u32le": "c597d496af2d062bb95b31fd48b587034385f0a8325e2afa1dd20837a74d4b84",
+  "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+  "launch": {
+    "args": [
+      "-m",
+      "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "-c",
+      "4096",
+      "-b",
+      "4096",
+      "-ub",
+      "8",
+      "-np",
+      "1",
+      "-t",
+      "8",
+      "-tb",
+      "8",
+      "-ngl",
+      "99",
+      "-ctk",
+      "bf16",
+      "-ctv",
+      "bf16",
+      "-fit",
+      "off",
+      "--cache-ram",
+      "0",
+      "--ctx-checkpoints",
+      "0",
+      "--no-warmup",
+      "--metrics",
+      "--no-webui",
+      "--engine-budget-mib",
+      "8192",
+      "--host",
+      "127.0.0.1",
+      "--spec-type",
+      "draft-dflash",
+      "-md",
+      "/private/tmp/flash-live.HsFIV6/compact.gguf",
+      "-ngld",
+      "99",
+      "--spec-draft-n-max",
+      "3",
+      "--spec-draft-n-ubatch",
+      "128"
+    ],
+    "shared_environment": {
+      "FLASH_LIVE_SIZE_LRU": "1",
+      "FLASH_LIVE_DRAFT": "1",
+      "LLAMA_EXPERIMENTAL_BUDGET_DFLASH2": "1",
+      "FLASH_VERIFY_READY8": "1",
+      "FLASH_VERIFY_NEXT_WAVE": "1",
+      "FLASH_SINGLE_PREFILL": "1",
+      "FLASH_PROMPT_TILES": "1",
+      "FLASH_STREAM_WIDE": "1",
+      "FLASH_ADMIT_TRACE": "1",
+      "FLASH_LIVE_FEATURE_PREFILL": "1"
+    },
+    "confidence_only_environment": {
+      "FLASH_DFLASH2_THIRD_CONFIDENCE": "1"
+    }
+  },
+  "protocol": "Five alternating sequential pairs. One fresh server per run, eight uncached archive input IDs and eight generated warmup tokens, then the same uncached 912-ID handover prompt with greedy sampling, seed 42, ignore_eos, single slot and 64 output IDs. The shared experimental binary allows single-block prefill at both depths, ready threshold eight and the next read after Metal submission for full three- or four-row verification. No prime-before-first-eight and no decode profiler. The confidence candidate emits its request-level counts of eligible third proposals offered and skipped at server shutdown after client timing ends. A single prompt admission marker confirms the measured 912-row block. Client TPS is 63 divided by the monotonic first-to-last token interval on the SSE stream. Rounds, generated proposals and acceptances are differences of server cumulative metrics after warmup and after measurement, cross-checked against response timings for proposal and acceptance counts. The high-water mark covers the life of the process and refers to the managed engine budget. OS file cache and thermals uncontrolled.",
+  "summary": {
+    "confidence": {
+      "median_tps": 14.777967921223475,
+      "min_tps": 14.567938923464164,
+      "max_tps": 14.915994394707711,
+      "median_ttft_s": 9.416366250021383,
+      "rounds_per_request": [
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "offered_per_request": [
+        69,
+        69,
+        69,
+        69,
+        69
+      ],
+      "accepted_per_request": [
+        38,
+        38,
+        38,
+        38,
+        38
+      ],
+      "acceptance_fraction": 0.5507246376811594,
+      "exact_64": 5
+    },
+    "fixed": {
+      "median_tps": 14.79887332575294,
+      "min_tps": 14.437893831499261,
+      "max_tps": 14.906756759773673,
+      "median_ttft_s": 9.469962583039887,
+      "rounds_per_request": [
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "offered_per_request": [
+        72,
+        72,
+        72,
+        72,
+        72
+      ],
+      "accepted_per_request": [
+        38,
+        38,
+        38,
+        38,
+        38
+      ],
+      "acceptance_fraction": 0.5277777777777778,
+      "exact_64": 5
+    }
+  },
+  "comparison": {
+    "ratio_of_median_tps_confidence_over_fixed": 0.998587365127784,
+    "median_paired_tps_change": 0.07035990539879577,
+    "pairs_confidence_faster": 3
+  },
+  "pairs": [
+    {
+      "pair": 1,
+      "order": [
+        "confidence",
+        "fixed"
+      ],
+      "fixed_tps": 14.437893831499261,
+      "confidence_tps": 14.567938923464164,
+      "confidence_minus_fixed_tps": 0.13004509196490233
+    },
+    {
+      "pair": 2,
+      "order": [
+        "fixed",
+        "confidence"
+      ],
+      "fixed_tps": 14.79887332575294,
+      "confidence_tps": 14.740084347942114,
+      "confidence_minus_fixed_tps": -0.058788977810825926
+    },
+    {
+      "pair": 3,
+      "order": [
+        "confidence",
+        "fixed"
+      ],
+      "fixed_tps": 14.906756759773673,
+      "confidence_tps": 14.777967921223475,
+      "confidence_minus_fixed_tps": -0.1287888385501983
+    },
+    {
+      "pair": 4,
+      "order": [
+        "fixed",
+        "confidence"
+      ],
+      "fixed_tps": 14.809606057906867,
+      "confidence_tps": 14.915994394707711,
+      "confidence_minus_fixed_tps": 0.10638833680084403
+    },
+    {
+      "pair": 5,
+      "order": [
+        "confidence",
+        "fixed"
+      ],
+      "fixed_tps": 14.788761034556105,
+      "confidence_tps": 14.8591209399549,
+      "confidence_minus_fixed_tps": 0.07035990539879577
+    }
+  ],
+  "runs": [
+    {
+      "pair": 1,
+      "policy": "confidence",
+      "third_offered": 21,
+      "third_skipped_for_confidence": 3,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 69,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.567938923464164,
+      "ttft_s": 9.38232016703114,
+      "last_token_s": 13.706885250052437,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 1,
+      "policy": "fixed",
+      "third_offered": 24,
+      "third_skipped_for_confidence": 0,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.437893831499261,
+      "ttft_s": 9.469962583039887,
+      "last_token_s": 13.833479917026125,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 2,
+      "policy": "fixed",
+      "third_offered": 24,
+      "third_skipped_for_confidence": 0,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.79887332575294,
+      "ttft_s": 9.420568040921353,
+      "last_token_s": 13.677648874931037,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 2,
+      "policy": "confidence",
+      "third_offered": 21,
+      "third_skipped_for_confidence": 3,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 69,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.740084347942114,
+      "ttft_s": 9.583165999967605,
+      "last_token_s": 13.857225666986778,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 3,
+      "policy": "confidence",
+      "third_offered": 21,
+      "third_skipped_for_confidence": 3,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 69,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.777967921223475,
+      "ttft_s": 9.648011166951619,
+      "last_token_s": 13.911114208982326,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 3,
+      "policy": "fixed",
+      "third_offered": 24,
+      "third_skipped_for_confidence": 0,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.906756759773673,
+      "ttft_s": 9.560812124982476,
+      "last_token_s": 13.787083541043103,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 4,
+      "policy": "fixed",
+      "third_offered": 24,
+      "third_skipped_for_confidence": 0,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.809606057906867,
+      "ttft_s": 9.426306042005308,
+      "last_token_s": 13.680301708984189,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 4,
+      "policy": "confidence",
+      "third_offered": 21,
+      "third_skipped_for_confidence": 3,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 69,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.915994394707711,
+      "ttft_s": 9.416366250021383,
+      "last_token_s": 13.640020290971734,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 5,
+      "policy": "confidence",
+      "third_offered": 21,
+      "third_skipped_for_confidence": 3,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 69,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.8591209399549,
+      "ttft_s": 9.39871195901651,
+      "last_token_s": 13.638532083947212,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 5,
+      "policy": "fixed",
+      "third_offered": 24,
+      "third_skipped_for_confidence": 0,
+      "rounds_with_generation_limit_below_three": 0,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.788761034556105,
+      "ttft_s": 9.534765583928674,
+      "last_token_s": 13.794757333933376,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    }
+  ]
+}

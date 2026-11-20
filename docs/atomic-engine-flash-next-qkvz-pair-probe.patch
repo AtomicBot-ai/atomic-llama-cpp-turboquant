@@ -1,0 +1,207 @@
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -6,6 +6,8 @@
+ 
+ #include <algorithm>
+ #include <cinttypes>
++#include <cstdlib>
++#include <cstring>
+ 
+ // bad metadata must be catchable: GGML_ASSERT aborts the whole process
+ static void qwen4exp_require_nonzero(const llama_model_loader & ml, llm_kv kid, uint32_t value) {
+@@ -690,12 +692,27 @@
+     }
+ 
+     ggml_tensor * qkv_mixed = build_lora_mm(model.layers[il].wqkv, input, model.layers[il].wqkv_s);
++    ggml_tensor * qkv_op = qkv_mixed;
+     qkv_mixed = ggml_reshape_3d(ctx0, qkv_mixed, qkv_mixed->ne[0], n_seq_tokens, n_seqs);
+     cb(qkv_mixed, "linear_attn_qkv_mixed", il);
+ 
+     ggml_tensor * z = build_lora_mm(model.layers[il].wqkv_gate, input, model.layers[il].wqkv_gate_s);
+     cb(z, "z", il);
+ 
++    static const bool pair_decode = [] {
++        const char * value = std::getenv("LLAMA_FLASH_QKVZ_PAIR");
++        return value && std::strcmp(value, "1") == 0;
++    }();
++    if (pair_decode && expert_executor && n_seqs == 1 && n_seq_tokens == 1 && il < 64 &&
++            !prefill_expert_weights && qkv_op->op == GGML_OP_MUL_MAT && z->op == GGML_OP_MUL_MAT &&
++            qkv_op->src[1] == z->src[1] && input->ne[0] == 2560 &&
++            qkv_op->ne[0] == 10240 && z->ne[0] == 6144) {
++        // Keep the two real outputs live and adjacent. Backends may still encode them separately.
++        qkv_op->op_params[15] = 0x515a00 + il;
++        z->op_params[15] = -qkv_op->op_params[15];
++        ggml_build_forward_expand(gf, qkv_op);
++        ggml_build_forward_expand(gf, z);
++    }
+     return { qkv_mixed, z };
+ }
+ 
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include "../ggml-atomic-attention.h"
+ #include <cassert>
++#include <atomic>
+ #include <algorithm>
+ #include <limits>
+ #include <cmath>
+@@ -2746,7 +2747,117 @@
+     return 1;
+ }
+ 
++struct flash_mv_format {
++    int16_t id;
++    int16_t rows;
++    size_t scratch;
++};
++
++static flash_mv_format flash_mv_type(ggml_type type) {
++    switch (type) {
++        case GGML_TYPE_Q4_K:   return {0, N_R0_Q4_K, 0};
++        case GGML_TYPE_Q5_K:   return {1, N_R0_Q5_K, 0};
++        case GGML_TYPE_Q6_K:   return {2, N_R0_Q6_K, 0};
++        case GGML_TYPE_IQ4_XS: return {3, N_R0_IQ4_XS, 32*sizeof(float)};
++        case GGML_TYPE_IQ3_S:  return {4, N_R0_IQ3_S, 512*4};
++        default:               return {-1, 0, 0};
++    }
++}
++
++static bool flash_mv_disjoint(const ggml_tensor * a, const ggml_tensor * b) {
++    const auto x = ggml_metal_get_buffer_id(a);
++    const auto y = ggml_metal_get_buffer_id(b);
++    return x.metal != y.metal || (x.offs <= y.offs ?
++            y.offs - x.offs >= ggml_nbytes(a) : x.offs - y.offs >= ggml_nbytes(b));
++}
++
++static bool flash_mv_pair(ggml_metal_op_t ctx, int idx) {
++    if (!ctx->use_fusion() || idx + 1 >= ctx->n_nodes()) {
++        return false;
++    }
++    const auto * q = ctx->node(idx);
++    const auto * z = ctx->node(idx+1);
++    const auto * x = q->src[1];
++    if (z->op != GGML_OP_MUL_MAT || z->op_params[15] != -q->op_params[15] ||
++            !(z->flags & GGML_TENSOR_FLAG_COMPUTE) || z->src[1] != x ||
++            x->type != GGML_TYPE_F32 || !ggml_is_vector(x) || !ggml_is_contiguous(x) || x->ne[0] != 2560 ||
++            q->ne[0] != 10240 || z->ne[0] != 6144) {
++        return false;
++    }
++    const ggml_tensor * ops[] = {q,z};
++    ggml_metal_kargs_mul_mv args[2];
++    flash_mv_format formats[2];
++    int groups = 0;
++    constexpr short nsg = 2;
++    for (int i = 0; i < 2; ++i) {
++        const auto * op = ops[i];
++        const auto * w = op->src[0];
++        const auto fmt = flash_mv_type(w->type);
++        if (fmt.id < 0 || !ggml_is_matrix(w) || !ggml_is_contiguous(w) || !ggml_is_vector(op) ||
++                op->type != GGML_TYPE_F32 || !ggml_is_contiguous(op) || w->ne[1] % (fmt.rows*nsg) ||
++                !flash_mv_disjoint(q,w) || !flash_mv_disjoint(z,w) || !flash_mv_disjoint(op,x)) {
++            return false;
++        }
++        formats[i] = fmt;
++        args[i] = {(int32_t)w->ne[0], (int32_t)w->ne[1], 1, w->nb[0], w->nb[1], w->nb[2], w->nb[3],
++                   (int32_t)x->ne[0], 1, 1, x->nb[0], x->nb[1], x->nb[2], x->nb[3],
++                   (int32_t)op->ne[0], 1, fmt.rows, 1, 1};
++        groups += w->ne[1] / (nsg*fmt.rows);
++    }
++    if (!flash_mv_disjoint(q,z)) {
++        return false;
++    }
++
++    const char * base = "kernel_mul_mv_flash_qkvz";
++    char name[80];
++    snprintf(name, sizeof(name), "%s_%d_%d", base, formats[0].id, formats[1].id);
++    auto pipeline = ggml_metal_library_get_pipeline(ctx->lib, name);
++    if (!pipeline.pipeline) {
++        auto cv = ggml_metal_cv_init();
++        ggml_metal_cv_set_int16(cv, nsg, FC_MUL_MV);
++        ggml_metal_cv_set_int16(cv, 1, FC_MUL_MV + 2);
++        ggml_metal_cv_set_int16(cv, 1, FC_MUL_MV + 3);
++        ggml_metal_cv_set_int16(cv, 1, FC_MUL_MV + 4);
++        ggml_metal_cv_set_bool(cv, false, FC_MUL_MV + 5);
++        ggml_metal_cv_set_int16(cv, formats[0].id, FC_MUL_MV + 6);
++        ggml_metal_cv_set_int16(cv, formats[1].id, FC_MUL_MV + 7);
++        pipeline = ggml_metal_library_compile_pipeline(ctx->lib, base, name, cv);
++        ggml_metal_cv_free(cv);
++        if (!pipeline.pipeline) {
++            return false;
++        }
++    }
++
++    // The ordinary encoder tested q. z introduces a second read and write.
++    if (!ggml_metal_op_concurrency_check(ctx, z)) {
++        ggml_metal_op_concurrency_reset(ctx);
++    }
++    auto enc = ctx->enc;
++    ggml_metal_encoder_set_pipeline(enc, pipeline);
++    ggml_metal_encoder_set_bytes(enc, args, sizeof(args), 0);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(q->src[0]), 1);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(z->src[0]), 2);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(x), 3);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(q), 4);
++    ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(z), 5);
++    ggml_metal_encoder_set_threadgroup_memory_size(enc, std::max(formats[0].scratch,formats[1].scratch), 0);
++    ggml_metal_encoder_dispatch_threadgroups(enc, groups, 1, 1, 32, nsg, 1);
++    // One line per layer during warmup. No per-token counters or GPU timestamps.
++    static std::atomic<uint64_t> seen{0};
++    const int layer = q->op_params[15] - 0x515a00;
++    const uint64_t bit = UINT64_C(1) << layer;
++    if (!(seen.load(std::memory_order_relaxed) & bit) && !(seen.fetch_or(bit) & bit)) {
++        fprintf(stderr, "FLASH_QKVZ layer=%d qkv=%s z=%s\n", layer, ggml_type_name(q->src[0]->type), ggml_type_name(z->src[0]->type));
++    }
++    return true;
++}
++
+ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
++    const int marker = ctx->node(idx)->op_params[15];
++    if (marker >= 0x515a00 && marker < 0x515a40 && flash_mv_pair(ctx, idx)) {
++        return 2;
++    }
++
+     ggml_tensor * op = ctx->node(idx);
+ 
+     ggml_metal_library_t lib = ctx->lib;
+--- a/ggml/src/ggml-metal/kernels/mul_mv.metal
++++ b/ggml/src/ggml-metal/kernels/mul_mv.metal
+@@ -3548,3 +3548,37 @@
+ template [[host_name("kernel_mul_mv_id_iq4_nl_f32_address")]]  kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq4_nl_f32_impl <N_R0_IQ4_NL>>>;
+ template [[host_name("kernel_mul_mv_id_iq4_xs_f32_address")]]  kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_iq4_xs_f32_impl <N_R0_IQ4_XS>>>;
+ template [[host_name("kernel_mul_mv_id_tq2_0_f32_address")]]   kernel kernel_mul_mv_address_t kernel_mul_mv_address<mmv_fn<kernel_mul_mv_tq2_0_f32_impl  <N_R0_TQ2_0>>>;
++
++constant short qkv_format [[function_constant(FC_MUL_MV + 6)]];
++constant short z_format   [[function_constant(FC_MUL_MV + 7)]];
++
++// The row arithmetic and simd reductions are the ordinary one-token kernels.
++// Every thread in a threadgroup takes the same side, including its barriers.
++static inline void flash_quant_projection(short format, constant ggml_metal_kargs_mul_mv & args,
++        device const char * weight, device const char * x, device char * y,
++        threadgroup char * scratch, uint3 pos, ushort lane, ushort simd) {
++    switch (format) {
++        case 0: kernel_mul_mv_q4_K_f32_impl<N_R0_Q4_K, constant ggml_metal_kargs_mul_mv &>(args, weight, x, y, scratch, pos, lane, simd); break;
++        case 1: kernel_mul_mv_q5_K_f32_impl<N_R0_Q5_K, constant ggml_metal_kargs_mul_mv &>(args, weight, x, y, scratch, pos, lane, simd); break;
++        case 2: kernel_mul_mv_q6_K_f32_impl<N_R0_Q6_K, constant ggml_metal_kargs_mul_mv &>(args, weight, x, y, scratch, pos, lane, simd); break;
++        case 3: kernel_mul_mv_iq4_xs_f32_impl<N_R0_IQ4_XS, constant ggml_metal_kargs_mul_mv &>(args, weight, x, y, scratch, pos, lane, simd); break;
++        case 4: kernel_mul_mv_iq3_s_f32_impl<N_R0_IQ3_S, constant ggml_metal_kargs_mul_mv &>(args, weight, x, y, scratch, pos, lane, simd); break;
++    }
++}
++
++kernel void kernel_mul_mv_flash_qkvz(
++        constant ggml_metal_kargs_mul_mv * args [[buffer(0)]],
++        device const char * wq [[buffer(1)]], device const char * wz [[buffer(2)]],
++        device const char * x [[buffer(3)]],
++        device char * q [[buffer(4)]], device char * z [[buffer(5)]],
++        threadgroup char * scratch [[threadgroup(0)]],
++        uint3 pos [[threadgroup_position_in_grid]], ushort lane [[thread_index_in_simdgroup]],
++        ushort simd [[simdgroup_index_in_threadgroup]]) {
++    const uint split = args[0].ne01 / (FC_mul_mv_nsg * args[0].nr0);
++    if (pos.x < split) {
++        flash_quant_projection(qkv_format, args[0], wq, x, q, scratch, pos, lane, simd);
++    } else {
++        pos.x -= split;
++        flash_quant_projection(z_format, args[1], wz, x, z, scratch, pos, lane, simd);
++    }
++}

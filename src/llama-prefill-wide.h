@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <mutex>
@@ -36,7 +37,14 @@ public:
         uint64_t tail_bytes = 0;
     };
 
-    explicit llama_prefill_wide_weights(llama_expert_source & source) : source(source) {}
+    explicit llama_prefill_wide_weights(llama_expert_source & source) : source(source) {
+#if defined(__APPLE__)
+        if (source.architecture() == "qwen4exp") {
+            const char * option = std::getenv("LLAMA_FLASH_WIDE_BULK_READ");
+            bulk_read = option && std::strcmp(option, "1") == 0;
+        }
+#endif
+    }
 
     ~llama_prefill_wide_weights() { stop_reader(); }
 
@@ -225,6 +233,12 @@ private:
 
     void read_range(const llama_expert_tensor_info & info, int64_t first, int64_t end, char * destination) {
         const size_t stride = info.expert_bytes();
+#if defined(__APPLE__)
+        if (bulk_read && first < end) {
+            source.read_expert_range(info.name, first, end, destination, size_t(end - first) * stride);
+            return;
+        }
+#endif
         std::array<llama_expert_source::read_request, 16> reads;
         const int64_t origin = first;
         for (; first < end; first += reads.size()) {
@@ -310,6 +324,9 @@ private:
     }
 
     llama_expert_source & source;
+#if defined(__APPLE__)
+    bool bulk_read = false;
+#endif
     ggml_backend_buffer_type_t buft = nullptr;
     shared_base_fn shared_base = nullptr;
     std::array<size_t, 3> bank_sizes {};

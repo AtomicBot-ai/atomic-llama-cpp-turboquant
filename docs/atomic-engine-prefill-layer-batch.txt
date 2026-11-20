@@ -101,6 +101,15 @@ waited 6.52 s and 0.68 s for weights respectively. Both modes read 42.91 GB
 of logical GGUF data. Logits, generated tokens and serialized slots matched
 the earlier 13.72 s wide replay bitwise. Both slots passed save/restore.
 
+Flash Next wide prefill accepts LLAMA_FLASH_WIDE_BULK_READ=1 for a
+diagnostic comparison on Metal. It reads contiguous GGUF expert slices in
+chunks of up to 64 MiB directly into the existing bank or staging range.
+In one 8 GiB handover pair (912 input, 64 output), enabling it increased
+client TTFT from 7.34 to 7.81 s and the coordinator's weight wait from
+4.99 to 5.48 s. Both runs returned identical IDs. The default uses the
+existing batched reader. See atomic-engine-flash-next-low-budget-tuning.json
+for the individual runs, short-prompt comparisons and decode profiles.
+
 Optional controls for the experiment:
 - LLAMA_EXPERIMENTAL_PREFILL_EXPERT_VECTOR=1 batches existing FP32 vector
   calls through the private Metal address-table operation.

@@ -32,3 +32,19 @@ The [measurement record](atomic-engine-flash-next-dflash3-8-24gib.json) includes
 | 24 | 45.07 | 16.36 | 9.38 | 17.44 |
 
 The two archive values at 20 GiB show the initial run and its repeat in that order. Every run matched all 64 reference output IDs for its prompt and stayed within the managed budget.
+
+## Live throughput demo
+
+From the repository root or the extracted macOS bundle, point `FLASH_NEXT_MODEL` at the first IQ3_XXS target shard and `FLASH_NEXT_DRAFT` at the compact Q4_0/BF16-selector draft. Keep both target shards together.
+
+```sh
+python3 tools/expert-source/demo-flash-next.py ./llama-server "$FLASH_NEXT_MODEL" "$FLASH_NEXT_DRAFT"
+```
+
+The demo starts a fresh loopback server on port 8082 with a 20 GiB budget and a 4096-token context. It warms up on eight tokens, streams the 912-token Handover fixture and checks the 64 greedy output IDs. Live decode throughput covers the 63 intervals between the first and last tokens. After printing the result it keeps the web chat open until Ctrl-C. Use `--measure-only` to stop after the comparison. The recorded M4 Max run reached 17.45 tok/s at this budget.
+
+## Experimental 40,960-token context
+
+For the long-context web chat, use the server invocation above with `-c 40960` and `--engine-budget-mib 12288`. Keep the batch at 4096, one slot and the explicit DFlash2 opt-in. The target streams long prompt slices in balanced blocks of at most 912 rows. When the draft needs its compute buffers back, it can reclaim idle expert cache from the synchronized target sharing its budget. The 40k profile reserves 1280 MiB for bounded draft slot staging.
+
+On the M4 Max the experimental server processed 40,000 uncached input tokens and generated eight tokens at 12 GiB. macOS reported a peak process footprint of 9.14 GiB. At 8 GiB target KV allocation failed during startup. At 10 GiB the server started but failed during long prefill. The subsequent draft-buffer fix was exercised with a short chat followed by an uncached 501-token request. See the [40k measurement record](atomic-engine-flash-next-40k.json).

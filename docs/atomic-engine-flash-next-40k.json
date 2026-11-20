@@ -1,0 +1,60 @@
+{
+  "hardware": "Apple M4 Max, 48 GiB unified memory",
+  "profile": "Flash Next, BF16 KV, 40960 context, fixed depth 3, compact Q4_0 draft with BF16 selectors",
+  "prompt": "Ten repetitions of the 4000-ID archive from atomic-engine-flash-next-default-8-16gib.json. Eight greedy output tokens.",
+  "long_prompt_before_draft_reclaim_fix": {
+    "input": 40000,
+    "elapsed": 464.19720266689546,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 40000,
+      "prompt_ms": 463126.889,
+      "prompt_per_token_ms": 11.578172225000001,
+      "prompt_per_second": 86.36941829564121,
+      "predicted_n": 8,
+      "predicted_ms": 1059.742,
+      "predicted_per_token_ms": 151.39171428571427,
+      "predicted_per_second": 6.605381309790497,
+      "draft_n": 9,
+      "draft_n_accepted": 3
+    },
+    "memory": {
+      "footprint": 9818136616,
+      "peak_footprint": 9818562600,
+      "rss": 8656470016,
+      "budget_applied_bytes": 12884901888,
+      "budget_minimum_bytes": 10682242714,
+      "budget_used_bytes": 12883935258,
+      "budget_high_water_bytes": 12884901034,
+      "slot_ctx": 40960
+    }
+  },
+  "idle_before_long_prompt": {
+    "footprint": 7529781392,
+    "peak_footprint": 7529781392,
+    "rss": 7393411072,
+    "budget_applied_bytes": 12884901888,
+    "budget_minimum_bytes": 10679293594,
+    "budget_used_bytes": 10736688234,
+    "budget_high_water_bytes": 10736688234,
+    "slot_ctx": 40960
+  },
+  "failed_10_gib_after_9012_tokens": {
+    "footprint": 7755176608,
+    "peak_footprint": 7959452368,
+    "rss": 6961987584,
+    "budget_applied_bytes": 10737418240,
+    "budget_minimum_bytes": 10651965082,
+    "budget_used_bytes": 10709359722,
+    "budget_high_water_bytes": 10736688234,
+    "slot_ctx": 40960
+  },
+  "post_fix_chat_check": {
+    "input_tokens": 501,
+    "cached_tokens": 0,
+    "output_tokens": 32,
+    "managed_cap_gib": 12,
+    "managed_high_water_bytes": 12884901802,
+    "peak_process_footprint_bytes": 9995640896
+  }
+}

@@ -200,7 +200,10 @@ llama_context::llama_context(
             (model.arch == LLM_ARCH_QWEN35MOE && params.n_ctx == 4096 && params.n_batch == 4096);
         const bool rollback_allowed = model.memory_contract->dflash2_target && dflash_profile &&
             params.n_ubatch == 8 && params.n_rs_seq < params.n_ubatch - 1;
-        if (params.n_ctx == 0 || params.n_ctx > 4096 || params.n_batch > 4096 || params.n_ubatch > 256 ||
+        const bool flash_40k = params.n_ctx == 40960 && (model.memory_contract->flash_next_40k ||
+                (model.arch == LLM_ARCH_DFLASH && params.ctx_other && params.ctx_other->model.memory_contract &&
+                 params.ctx_other->model.memory_contract->flash_next_40k));
+        if (params.n_ctx == 0 || (params.n_ctx > 4096 && !flash_40k) || params.n_batch > 4096 || params.n_ubatch > 256 ||
             params.n_seq_max != 1 || (params.n_rs_seq && !rollback_allowed) || params.n_threads > 16 || params.n_threads_batch > 16 ||
             params.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT || params.embeddings) {
             throw std::runtime_error("engine budget profile requires explicit ctx <= 4096, batch <= 4096, ubatch <= 256, one sequence, <=16 threads, no embeddings/rollback");
@@ -735,7 +738,7 @@ llama_context::llama_context(
             expert_executor->configure_resident_layers(model);
         }
     }
-    if (budget_control && cparams.n_ctx == 4096 && cparams.n_batch == 4096 &&
+    if (budget_control && (cparams.n_ctx == 4096 || (model.memory_contract->flash_next_40k && cparams.n_ctx == 40960)) && cparams.n_batch == 4096 &&
             cparams.n_ubatch == 8 && cparams.n_seq_max == 1 &&
             params.type_k == GGML_TYPE_BF16 && params.type_v == GGML_TYPE_BF16) {
         const char * wide = std::getenv("LLAMA_EXPERIMENTAL_PREFILL_WIDE");
@@ -924,13 +927,23 @@ void llama_context::sched_new(const sched_params & params) {
 }
 
 void llama_context::sched_reserve() {
-    std::optional<llama_allocation_scope> allocation_scope;
-    if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
-            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
     if (!sched_need_reserve) {
         return;
     }
-
+    auto * owner = expert_executor.get();
+    auto * target = cparams.ctx_other;
+    if (model.arch == LLM_ARCH_DFLASH && cparams.n_ctx == 40960 && target &&
+            target->model.memory_contract && target->model.memory_contract->flash_next_40k &&
+            model.memory_contract && model.memory_contract->ledger == target->model.memory_contract->ledger) {
+        target->synchronize();
+        owner = target->expert_executor.get();
+    }
+    std::optional<llama_allocation_scope> allocation_scope;
+    if (model.memory_contract) {
+        allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch,
+                [owner] { if (owner) { owner->trim(); } }, model.memory_contract->discrete,
+                owner ? owner->allocation_reclaimer() : llama_memory_reclaimer{});
+    }
     sched_need_reserve = false;
 
     LLAMA_LOG_INFO("%s: reserving ...\n", __func__);
@@ -2520,8 +2533,14 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
         }
     }
     const bool stream_wide = flash_draft && can_window && budget_control->prefill_window_wide_default &&
-            n_tokens_all >= 320 && n_tokens_all == uncached_prompt_tokens && n_outputs_all == 1 &&
-            batch_inp.tokens.front().pos[0] == 0;
+            n_tokens_all >= 320 && [&] {
+                if (cparams.n_ctx == 40960 && uncached_prompt_tokens > cparams.n_batch) {
+                    // Only the last server batch of a long prompt needs logits.
+                    return n_outputs_all <= 1 && batch_inp.tokens.front().pos[0] >= 0;
+                }
+                return n_tokens_all == uncached_prompt_tokens && n_outputs_all == 1 &&
+                        batch_inp.tokens.front().pos[0] == 0;
+            }();
     if (stream_wide) {
         // Balance real prompt rows across streamed graphs within the prompt scratch limit.
         constexpr uint32_t max_rows = 912;

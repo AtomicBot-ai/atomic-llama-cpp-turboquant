@@ -1,0 +1,179 @@
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -48,6 +48,51 @@
+ #endif
+ #include <windows.h>
+ #endif
++
++// Single-slot measurement: keep disjoint wall-clock intervals in memory until the last ID is queued.
++namespace {
++struct decode_event { const char * name; int arg; int64_t begin; int64_t end; };
++struct decode_trace {
++    decode_event events[1024];
++    size_t count = 0;
++    bool active = false;
++    bool fence = false;
++    bool first_draft = false;
++    void add(const char * name, int arg, int64_t begin, int64_t end) {
++        GGML_ASSERT(count < 1024);
++        events[count++] = {name, arg, begin, end};
++    }
++    void token(int n) {
++        if (n == 1) {
++            count = 0;
++            active = true;
++            fence = std::getenv("FLASH_PHASE_FENCE") != nullptr;
++            first_draft = true;
++        }
++        if (active) {
++            const int64_t t = ggml_time_us();
++            add("emit", n, t, t);
++            if (n == 64) {
++                active = false;
++                for (size_t i = 0; i < count; ++i) {
++                    const auto & e = events[i];
++                    std::fprintf(stderr, "DECODE_PHASE %s %d %" PRId64 " %" PRId64 "\n",
++                            e.name, e.arg, e.begin, e.end);
++                }
++            }
++        }
++    }
++};
++static thread_local decode_trace phases;
++struct decode_span {
++    const char * name;
++    int arg;
++    int64_t begin;
++    decode_span(const char * name, int arg = 0) : name(name), arg(arg),
++        begin(phases.active ? ggml_time_us() : 0) {}
++    ~decode_span() { if (begin) { phases.add(name, arg, begin, ggml_time_us()); } }
++};
++} // namespace
+ 
+ constexpr int HTTP_POLLING_SECONDS = 1;
+ 
+@@ -2459,6 +2504,9 @@
+         }
+ 
+         queue_results.send(std::move(res));
++        if (slot.task->params.n_predict == 64 && !is_progress && !is_begin && std::getenv("FLASH_PHASES")) {
++            phases.token(slot.stats.n_gen);
++        }
+     }
+ 
+     void send_tts_result(server_slot & slot, int32_t sample_rate, const char * data, size_t data_len, bool final) {
+@@ -4029,6 +4077,7 @@
+                                 llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id));
+ 
+                         if (use_ckpt_dft) {
++                            decode_span span("checkpoint_save");
+                             slot.spec_ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                         }
+ 
+@@ -4058,7 +4107,14 @@
+         // generate the actual drafts (if any)
+         if (!drafting.empty()) {
+             queue_tasks.yield_to_queue([&]() {
++                if (phases.active && phases.fence && phases.first_draft) {
++                    decode_span pending("carry_features");
++                    llama_synchronize(ctx_dft);
++                }
++                phases.first_draft = false;
++                decode_span span("propose");
+                 common_speculative_draft(spec.get());
++                if (phases.active && phases.fence) { llama_synchronize(ctx_dft); }
+             });
+         }
+ 
+@@ -4073,6 +4129,7 @@
+             const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
+ 
+             if (ctx_dft) {
++                decode_span span("draft_trim", int(draft.size()));
+                 if (use_ckpt_dft) {
+                     GGML_ASSERT(ckpt.load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY));
+                 }
+@@ -4093,6 +4150,7 @@
+                 if (use_ckpt_tgt) {
+                     //const int64_t t_start = ggml_time_us();
+ 
++                    decode_span span("checkpoint_save");
+                     ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+ 
+                     //const int64_t t_total = ggml_time_us() - t_start;
+@@ -4105,6 +4163,7 @@
+                 }
+ 
+                 if (use_ckpt_dft) {
++                    decode_span span("checkpoint_save");
+                     ckpt.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                 }
+             }
+@@ -4885,9 +4944,11 @@
+                 }
+                 ret = llama_expert_prefill_decode(ctx_tgt, batch.view.get(), uncached);
+             } else {
++                decode_span span(batch.view.size() > 1 ? "verify_graph" : "serial_graph", batch.view.size());
+                 ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());
+-            }
+-            if (ret == 0 && has_output) {
++                if (ret == 0 && has_output) { llama_synchronize(ctx_tgt); }
++            }
++            if (params_base.engine_budget && batch.tokens[off].is_prompt && ret == 0 && has_output) {
+                 llama_synchronize(ctx_tgt);
+             }
+             if (measure_verify && ret == 0) {
+@@ -4971,7 +5032,9 @@
+         if (spec) {
+             bool ok = true;
+             queue_tasks.yield_to_queue([&]() {
++                decode_span span("features", batch.view.size());
+                 ok = common_speculative_process(spec.get(), batch.view);
++                if (phases.active && phases.fence) { llama_synchronize(ctx_dft); }
+             });
+ 
+             if (!ok) {
+@@ -5092,6 +5155,7 @@
+             llama_token id;
+             {
+                 scoped_timer timer(t_sampl, n_sampl);
++                decode_span span("serial_sample");
+                 id = common_sampler_sample(slot.smpl.get(), slot.ctx_tgt, tok_idx);
+             }
+ 
+@@ -5150,6 +5214,7 @@
+ 
+             // verify and try to accept the draft
+             {
++                const int64_t sample_start = phases.active ? ggml_time_us() : 0;
+                 common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
+ 
+                 GGML_ASSERT(spec_i_batch.size() == n_draft + 1);
+@@ -5173,6 +5238,7 @@
+                     accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, spec_i_batch, slot.spec_draft);
+                 }
+ 
++                if (sample_start) { phases.add("verify_sample", int(accepted.size()-1), sample_start, ggml_time_us()); }
+                 GGML_ASSERT(accepted.size() >= 1);
+ 
+                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
+@@ -5190,6 +5256,7 @@
+                         }
+ 
+                         // partial acceptance is not supported by the context -> truncate the draft and restore the state
++                        decode_span span("checkpoint_replay", n_rollback);
+                         slot.spec_is_replay = true;
+                         slot.spec_draft = std::move(accepted);
+ 
+@@ -5250,7 +5317,10 @@
+             slot.sampled = ids.back(); // last accepted token
+             SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
+ 
+-            slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
++            {
++                decode_span span(n_accepted < n_draft ? "rollback" : "accepted_trim", int(n_draft - n_accepted));
++                slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
++            }
+ 
+             for (size_t i = 0; i < ids.size(); ++i) {
+                 completion_token_output result;

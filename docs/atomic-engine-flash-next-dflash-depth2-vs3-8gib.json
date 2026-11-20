@@ -1,0 +1,482 @@
+{
+  "hardware": "Apple M4 Max, 48 GiB",
+  "base_commit": "a46a2c27cb85d82e450827b6a98f2d2ca814209b",
+  "prerequisite": "atomic-engine-flash-next-dflash3-ready8-next-wave-8gib.json",
+  "patch": "atomic-engine-flash-next-dflash-depth2-vs3-8gib.patch",
+  "patch_sha256": "4efb04aa956ae7b1ef90c772fb43bc07787ddafb44cd50b412e17c61a3d292fb",
+  "binary_sha256": "a98ddd774096b67814836b534ca25335c09407f3bdfeae728a2f599b1c36b019",
+  "fixture": "atomic-engine-flash-next-default-8-16gib.json#fixtures.handover",
+  "reference_output_file": "atomic-engine-flash-next-verify-ceiling-8gib.json",
+  "reference_output_ids": [
+    2,
+    25662,
+    35312,
+    286,
+    25,
+    5711,
+    69041,
+    7673,
+    5606,
+    271,
+    550,
+    220,
+    16,
+    13,
+    3976,
+    278,
+    417,
+    8845,
+    318,
+    2432,
+    12296,
+    8,
+    198,
+    760,
+    2614,
+    2250,
+    43303,
+    3371,
+    6290,
+    494,
+    279,
+    5129,
+    27370,
+    321,
+    1325,
+    3050,
+    5975,
+    1518,
+    781,
+    628,
+    10046,
+    310,
+    3286,
+    466,
+    16111,
+    13,
+    271,
+    91,
+    32783,
+    2937,
+    735,
+    24425,
+    735,
+    5411,
+    12296,
+    735,
+    25009,
+    735,
+    198,
+    91,
+    535,
+    4277,
+    735,
+    535
+  ],
+  "input_ids_sha256_u32le": "c597d496af2d062bb95b31fd48b587034385f0a8325e2afa1dd20837a74d4b84",
+  "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+  "launch": {
+    "args": [
+      "-m",
+      "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "-c",
+      "4096",
+      "-b",
+      "4096",
+      "-ub",
+      "8",
+      "-np",
+      "1",
+      "-t",
+      "8",
+      "-tb",
+      "8",
+      "-ngl",
+      "99",
+      "-ctk",
+      "bf16",
+      "-ctv",
+      "bf16",
+      "-fit",
+      "off",
+      "--cache-ram",
+      "0",
+      "--ctx-checkpoints",
+      "0",
+      "--no-warmup",
+      "--metrics",
+      "--no-webui",
+      "--engine-budget-mib",
+      "8192",
+      "--host",
+      "127.0.0.1",
+      "--spec-type",
+      "draft-dflash",
+      "-md",
+      "/private/tmp/flash-live.HsFIV6/compact.gguf",
+      "-ngld",
+      "99",
+      "--spec-draft-n-max",
+      "{depth}",
+      "--spec-draft-n-ubatch",
+      "128"
+    ],
+    "environment": {
+      "FLASH_LIVE_SIZE_LRU": "1",
+      "FLASH_LIVE_DRAFT": "1",
+      "LLAMA_EXPERIMENTAL_BUDGET_DFLASH2": "1",
+      "FLASH_VERIFY_READY8": "1",
+      "FLASH_VERIFY_NEXT_WAVE": "1",
+      "FLASH_SINGLE_PREFILL": "1",
+      "FLASH_PROMPT_TILES": "1",
+      "FLASH_STREAM_WIDE": "1",
+      "FLASH_ADMIT_TRACE": "1",
+      "FLASH_LIVE_FEATURE_PREFILL": "1"
+    }
+  },
+  "protocol": "Five alternating sequential pairs. One fresh server per run, eight uncached archive input IDs and eight generated warmup tokens, then the same uncached 912-ID handover prompt with greedy sampling, seed 42, ignore_eos, single slot and 64 output IDs. The shared experimental binary allows single-block prefill at both depths, ready threshold eight and the next read after Metal submission for full three- or four-row verification. No prime-before-first-eight and no decode profiler. A single prompt admission marker confirms the measured 912-row block. Client TPS is 63 divided by the monotonic first-to-last token interval on the SSE stream. Rounds, generated proposals and acceptances are differences of server cumulative metrics after warmup and after measurement, cross-checked against response timings for proposal and acceptance counts. The high-water mark covers the life of the process and refers to the managed engine budget. OS file cache and thermals uncontrolled.",
+  "summary": {
+    "2": {
+      "median_tps": 14.630396983590057,
+      "min_tps": 14.381474468292767,
+      "max_tps": 14.774350521241804,
+      "median_ttft_s": 9.428351125097834,
+      "rounds_per_request": [
+        28,
+        28,
+        28,
+        28,
+        28
+      ],
+      "offered_per_request": [
+        56,
+        56,
+        56,
+        56,
+        56
+      ],
+      "accepted_per_request": [
+        35,
+        35,
+        35,
+        35,
+        35
+      ],
+      "acceptance_fraction": 0.625,
+      "exact_64": 5
+    },
+    "3": {
+      "median_tps": 15.179652235930343,
+      "min_tps": 14.860575224232774,
+      "max_tps": 15.497264157954822,
+      "median_ttft_s": 9.550147125031799,
+      "rounds_per_request": [
+        24,
+        24,
+        24,
+        24,
+        24
+      ],
+      "offered_per_request": [
+        72,
+        72,
+        72,
+        72,
+        72
+      ],
+      "accepted_per_request": [
+        38,
+        38,
+        38,
+        38,
+        38
+      ],
+      "acceptance_fraction": 0.5277777777777778,
+      "exact_64": 5
+    }
+  },
+  "comparison": {
+    "ratio_of_median_tps_2_over_3": 0.9638163481084109,
+    "median_paired_tps_change": -0.6928891005871325,
+    "pairs_depth2_faster": 0
+  },
+  "pairs": [
+    {
+      "pair": 1,
+      "order": [
+        2,
+        3
+      ],
+      "depth3_tps": 15.497264157954822,
+      "depth2_tps": 14.774350521241804,
+      "depth2_minus_depth3_tps": -0.7229136367130184
+    },
+    {
+      "pair": 2,
+      "order": [
+        3,
+        2
+      ],
+      "depth3_tps": 15.41149973569998,
+      "depth2_tps": 14.630396983590057,
+      "depth2_minus_depth3_tps": -0.7811027521099234
+    },
+    {
+      "pair": 3,
+      "order": [
+        2,
+        3
+      ],
+      "depth3_tps": 15.179652235930343,
+      "depth2_tps": 14.659221813963471,
+      "depth2_minus_depth3_tps": -0.5204304219668714
+    },
+    {
+      "pair": 4,
+      "order": [
+        3,
+        2
+      ],
+      "depth3_tps": 14.860575224232774,
+      "depth2_tps": 14.480185891070608,
+      "depth2_minus_depth3_tps": -0.3803893331621655
+    },
+    {
+      "pair": 5,
+      "order": [
+        2,
+        3
+      ],
+      "depth3_tps": 15.0743635688799,
+      "depth2_tps": 14.381474468292767,
+      "depth2_minus_depth3_tps": -0.6928891005871325
+    }
+  ],
+  "runs": [
+    {
+      "pair": 1,
+      "depth": 2,
+      "rounds": 28,
+      "offered": 56,
+      "accepted": 35,
+      "accepted_by_proposal_position": [
+        21,
+        14
+      ],
+      "client_tps": 14.774350521241804,
+      "ttft_s": 9.234949207981117,
+      "last_token_s": 13.499096042010933,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934506,
+      "minimum_bytes": 8143902186
+    },
+    {
+      "pair": 1,
+      "depth": 3,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 15.497264157954822,
+      "ttft_s": 9.25376445800066,
+      "last_token_s": 13.318998124916106,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 2,
+      "depth": 3,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 15.41149973569998,
+      "ttft_s": 9.261040500015952,
+      "last_token_s": 13.348897040938027,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 2,
+      "depth": 2,
+      "rounds": 28,
+      "offered": 56,
+      "accepted": 35,
+      "accepted_by_proposal_position": [
+        21,
+        14
+      ],
+      "client_tps": 14.630396983590057,
+      "ttft_s": 9.401112332940102,
+      "last_token_s": 13.707215582951903,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934506,
+      "minimum_bytes": 8143902186
+    },
+    {
+      "pair": 3,
+      "depth": 2,
+      "rounds": 28,
+      "offered": 56,
+      "accepted": 35,
+      "accepted_by_proposal_position": [
+        21,
+        14
+      ],
+      "client_tps": 14.659221813963471,
+      "ttft_s": 9.428351125097834,
+      "last_token_s": 13.72598716604989,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934506,
+      "minimum_bytes": 8143902186
+    },
+    {
+      "pair": 3,
+      "depth": 3,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 15.179652235930343,
+      "ttft_s": 9.550147125031799,
+      "last_token_s": 13.700439834035933,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 4,
+      "depth": 3,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 14.860575224232774,
+      "ttft_s": 9.594653583946638,
+      "last_token_s": 13.834058791981079,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    },
+    {
+      "pair": 4,
+      "depth": 2,
+      "rounds": 28,
+      "offered": 56,
+      "accepted": 35,
+      "accepted_by_proposal_position": [
+        21,
+        14
+      ],
+      "client_tps": 14.480185891070608,
+      "ttft_s": 10.071647875010967,
+      "last_token_s": 14.422420750022866,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934506,
+      "minimum_bytes": 8143902186
+    },
+    {
+      "pair": 5,
+      "depth": 2,
+      "rounds": 28,
+      "offered": 56,
+      "accepted": 35,
+      "accepted_by_proposal_position": [
+        21,
+        14
+      ],
+      "client_tps": 14.381474468292767,
+      "ttft_s": 9.650999917066656,
+      "last_token_s": 14.031635584076867,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934506,
+      "minimum_bytes": 8143902186
+    },
+    {
+      "pair": 5,
+      "depth": 3,
+      "rounds": 24,
+      "offered": 72,
+      "accepted": 38,
+      "accepted_by_proposal_position": [
+        18,
+        11,
+        9
+      ],
+      "client_tps": 15.0743635688799,
+      "ttft_s": 9.584053416969255,
+      "last_token_s": 13.763334334013052,
+      "matched_output_ids": 64,
+      "output_ids_sha256_u32le": "2b71c5c62fa0c3429eb0963591114c7e6fa432eccef197bbd62ccf0a0e290068",
+      "prompt_blocks": [
+        912
+      ],
+      "uncached_prompt_tokens": 912,
+      "high_water_bytes": 8589934490,
+      "minimum_bytes": 8263833066
+    }
+  ]
+}

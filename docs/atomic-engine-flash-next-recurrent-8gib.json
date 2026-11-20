@@ -1,0 +1,773 @@
+{
+  "date": "2026-11-19",
+  "base_commit": "a46a2c27c",
+  "model": "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "hardware": "Apple M4 Max, 48 GiB unified memory",
+  "cap_gib": 8,
+  "fixture": "atomic-engine-flash-next-default-8-16gib.json#fixtures.handover",
+  "input_sha256_u32le": "c597d496af2d062bb95b31fd48b587034385f0a8325e2afa1dd20837a74d4b84",
+  "output_ids": [
+    2,
+    25662,
+    35312,
+    286,
+    25,
+    5711,
+    69041,
+    7673,
+    5606,
+    271,
+    550,
+    220,
+    16,
+    13,
+    3976,
+    278,
+    417,
+    8845,
+    318,
+    2432,
+    12296,
+    8,
+    198,
+    760,
+    2614,
+    2250,
+    43303,
+    3371,
+    6290,
+    494,
+    279,
+    5129,
+    27370,
+    321,
+    1325,
+    3050,
+    5975,
+    1518,
+    781,
+    628,
+    10046,
+    310,
+    3286,
+    466,
+    16111,
+    13,
+    271,
+    91,
+    32783,
+    2937,
+    735,
+    24425,
+    735,
+    5411,
+    12296,
+    735,
+    25009,
+    735,
+    198,
+    91,
+    535,
+    4277,
+    735,
+    535
+  ],
+  "clean_binary_sha256": "22f32a3a760cdd3be204235c4e94c247bf78f1feda581245fb08da11befba228",
+  "probe_sha256": "9e876742a2d2955884709fcb15ca309fbc12d7052b5c7a606407ae1003d75378",
+  "prior_reference": "atomic-engine-flash-next-outer-decode.json",
+  "prior_whole_block_mean_ms": 8.747253,
+  "method": "Sequential fresh production and probe servers. Same 8/8 warmup, default wide prefill, 912 prompt IDs, zero cached, greedy 64 tokens, seed 42. First output is from prefill. Metal GPU timestamps on top-level graph encoder boundaries, across all recurrent layers in one decode step. Steps 7/23/39/55 measure the entire recurrent block; the next steps use stage labels from the recurrent graph builder, including explicitly tagged GATED_DELTA_NET. No changes to model arithmetic or Metal kernel selection. Adjacent steps are paired controls at different token positions. GPU spans are calibrated and unioned. Extra encoder boundaries perturb scheduling; detail timings are reported directly without rescaling to the coarse total. No inference of end-to-end speedup.",
+  "scope": "QKV and Z weights plus beta/alpha weights form input projections. Conv history includes gathering, concatenating and storing its rolling state. Conv engine includes SiLU. GDN update includes any fused cache write. Separate GDN state input and unfused cache copy are reported when present. Norms and gate activations are reported separately. Fused operations use their leading encoded operation. Prior trace format is retained; K lines add stage, leading opcode, first source type, fusion length, first source ne0 and ne1, count. K counts are for step 8.",
+  "validation": "All recurrent spans were checked against completed top-level Metal command windows. Step 40 has one zero-start command and incomplete coverage of other families, mostly the output head. Only recurrent spans are used for these stage timings.",
+  "trace": "atomic-engine-flash-next-recurrent-8gib.trace.gz",
+  "trace_sha256": "5892cd8c1cd106d0d684814e2ac028d0e8e37f295f1c59a347249e25b74e576e",
+  "labels": {
+    "8": "qkv_z",
+    "9": "beta_alpha",
+    "10": "gate_activations",
+    "11": "conv_history",
+    "12": "gdn_state_input",
+    "13": "conv_silu",
+    "14": "qk_l2_norm",
+    "15": "gated_delta_net",
+    "16": "output_norm_gate",
+    "17": "ssm_out",
+    "18": "gdn_state_store"
+  },
+  "groups": {
+    "input_projections": [
+      8,
+      9
+    ],
+    "convolution_and_history": [
+      11,
+      13
+    ],
+    "gdn_update_and_state": [
+      12,
+      15,
+      18
+    ],
+    "output_projection": [
+      17
+    ],
+    "gates_and_qk_norm": [
+      10,
+      14,
+      16
+    ]
+  },
+  "request_runs": {
+    "wide": {
+      "ttft_s": 7.108089957968332,
+      "tps": 12.282197924756552,
+      "ledger": {
+        "budget_requested_bytes": 8589934592,
+        "budget_applied_bytes": 8589934592,
+        "budget_minimum_bytes": 6563632618,
+        "budget_used_bytes": 8588970426,
+        "budget_high_water_bytes": 8589934410,
+        "budget_released_bytes": 11658175824
+      },
+      "command": [
+        "/Users/aleksejkalina/code/atomicbot/atomic-chat-workspace/atomic-turbine/build-metal/bin/llama-server",
+        "-m",
+        "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "-c",
+        "4096",
+        "-b",
+        "4096",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "8",
+        "-tb",
+        "8",
+        "-ngl",
+        "99",
+        "-ctk",
+        "bf16",
+        "-ctv",
+        "bf16",
+        "-fit",
+        "off",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--no-warmup",
+        "--metrics",
+        "--no-webui",
+        "--engine-budget-mib",
+        "8192",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "60452"
+      ],
+      "settings": {
+        "ATOMIC_WINDOW_PROFILE": "1"
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 912,
+        "prompt_ms": 7107.443,
+        "prompt_per_token_ms": 7.793248903508772,
+        "prompt_per_second": 128.3161890992302,
+        "predicted_n": 64,
+        "predicted_ms": 5129.401,
+        "predicted_per_token_ms": 81.41906349206349,
+        "predicted_per_second": 12.282135867326419
+      },
+      "output_matches_reference": true,
+      "wide": true
+    },
+    "outer": {
+      "ttft_s": 6.931830583955161,
+      "tps": 11.765765370143471,
+      "ledger": {
+        "budget_requested_bytes": 8589934592,
+        "budget_applied_bytes": 8589934592,
+        "budget_minimum_bytes": 6563632618,
+        "budget_used_bytes": 8588970426,
+        "budget_high_water_bytes": 8589934410,
+        "budget_released_bytes": 11658175824
+      },
+      "command": [
+        "/private/tmp/flash-gdn-parts.91uyEl/outer-server",
+        "-m",
+        "/Users/aleksejkalina/code/models/qwen38-iq3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+        "-c",
+        "4096",
+        "-b",
+        "4096",
+        "-ub",
+        "8",
+        "-np",
+        "1",
+        "-t",
+        "8",
+        "-tb",
+        "8",
+        "-ngl",
+        "99",
+        "-ctk",
+        "bf16",
+        "-ctv",
+        "bf16",
+        "-fit",
+        "off",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--no-warmup",
+        "--metrics",
+        "--no-webui",
+        "--engine-budget-mib",
+        "8192",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "60478"
+      ],
+      "settings": {
+        "ATOMIC_WINDOW_PROFILE": "1"
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 912,
+        "prompt_ms": 6931.18,
+        "prompt_per_token_ms": 7.599978070175439,
+        "prompt_per_second": 131.57932704099446,
+        "predicted_n": 64,
+        "predicted_ms": 5354.538,
+        "predicted_per_token_ms": 84.99266666666666,
+        "predicted_per_second": 11.765720964161615
+      },
+      "output_matches_reference": true,
+      "wide": true
+    }
+  },
+  "coarse_block_ms": {
+    "mean": 6.919074999999999,
+    "min": 6.707954,
+    "max": 7.210675
+  },
+  "detailed_block_ms": {
+    "mean": 7.496427000000001,
+    "min": 7.26746,
+    "max": 7.658651
+  },
+  "group_ms": {
+    "input_projections": {
+      "mean": 2.903397,
+      "min": 2.839876,
+      "max": 2.954123
+    },
+    "convolution_and_history": {
+      "mean": 1.3695495,
+      "min": 1.289035,
+      "max": 1.4709590000000001
+    },
+    "gdn_update_and_state": {
+      "mean": 1.26787325,
+      "min": 1.23946,
+      "max": 1.30379
+    },
+    "output_projection": {
+      "mean": 1.2298977500000001,
+      "min": 1.207126,
+      "max": 1.27325
+    },
+    "gates_and_qk_norm": {
+      "mean": 0.7257095,
+      "min": 0.6919630000000001,
+      "max": 0.75192
+    }
+  },
+  "stages_ms": {
+    "qkv_z": {
+      "mean": 2.70489625,
+      "min": 2.651375,
+      "max": 2.763915
+    },
+    "beta_alpha": {
+      "mean": 0.19850075,
+      "min": 0.184627,
+      "max": 0.230667
+    },
+    "gate_activations": {
+      "mean": 0.28434475000000003,
+      "min": 0.272006,
+      "max": 0.305251
+    },
+    "conv_history": {
+      "mean": 0.59129075,
+      "min": 0.568505,
+      "max": 0.635919
+    },
+    "gdn_state_input": {
+      "mean": 0.84453975,
+      "min": 0.824042,
+      "max": 0.884542
+    },
+    "conv_silu": {
+      "mean": 0.77825875,
+      "min": 0.718374,
+      "max": 0.83504
+    },
+    "qk_l2_norm": {
+      "mean": 0.11281425,
+      "min": 0.107958,
+      "max": 0.120376
+    },
+    "gated_delta_net": {
+      "mean": 0.42333350000000003,
+      "min": 0.410209,
+      "max": 0.448459
+    },
+    "output_norm_gate": {
+      "mean": 0.3285505,
+      "min": 0.311999,
+      "max": 0.348753
+    },
+    "ssm_out": {
+      "mean": 1.2298977500000001,
+      "min": 1.207126,
+      "max": 1.27325
+    },
+    "gdn_state_store": {
+      "mean": 0,
+      "min": 0,
+      "max": 0
+    }
+  },
+  "marked_steps": [
+    {
+      "step": 7,
+      "level": "whole_block",
+      "whole_block_ms": 7.210675,
+      "groups_ms": {},
+      "stages_ms": {},
+      "timestamped_encoders": 994,
+      "recurrent_outside_command_ms": 0.0011070000000001912,
+      "all_tags_outside_command_ms": 0.002788000000002455,
+      "zero_start_command_records": 0
+    },
+    {
+      "step": 8,
+      "level": "detail",
+      "whole_block_ms": 7.429133,
+      "groups_ms": {
+        "input_projections": 2.881503,
+        "convolution_and_history": 1.31434,
+        "gdn_update_and_state": 1.30379,
+        "output_projection": 1.218836,
+        "gates_and_qk_norm": 0.710664
+      },
+      "stages_ms": {
+        "qkv_z": 2.696876,
+        "beta_alpha": 0.184627,
+        "gate_activations": 0.28096,
+        "conv_history": 0.568505,
+        "gdn_state_input": 0.884542,
+        "conv_silu": 0.745835,
+        "qk_l2_norm": 0.113418,
+        "gated_delta_net": 0.419248,
+        "output_norm_gate": 0.316286,
+        "ssm_out": 1.218836,
+        "gdn_state_store": 0
+      },
+      "timestamped_encoders": 1356,
+      "recurrent_outside_command_ms": 0.0008610000000004447,
+      "all_tags_outside_command_ms": 0.002829000000001969,
+      "zero_start_command_records": 0
+    },
+    {
+      "step": 23,
+      "level": "whole_block",
+      "whole_block_ms": 6.941246,
+      "groups_ms": {},
+      "stages_ms": {},
+      "timestamped_encoders": 994,
+      "recurrent_outside_command_ms": 0.0009019999999999584,
+      "all_tags_outside_command_ms": 0.0025009999999987542,
+      "zero_start_command_records": 0
+    },
+    {
+      "step": 24,
+      "level": "detail",
+      "whole_block_ms": 7.658651,
+      "groups_ms": {
+        "input_projections": 2.954123,
+        "convolution_and_history": 1.403864,
+        "gdn_update_and_state": 1.279123,
+        "output_projection": 1.27325,
+        "gates_and_qk_norm": 0.748291
+      },
+      "stages_ms": {
+        "qkv_z": 2.763915,
+        "beta_alpha": 0.190208,
+        "gate_activations": 0.279162,
+        "conv_history": 0.590078,
+        "gdn_state_input": 0.830664,
+        "conv_silu": 0.813786,
+        "qk_l2_norm": 0.120376,
+        "gated_delta_net": 0.448459,
+        "output_norm_gate": 0.348753,
+        "ssm_out": 1.27325,
+        "gdn_state_store": 0
+      },
+      "timestamped_encoders": 1356,
+      "recurrent_outside_command_ms": 0.0009839999999998739,
+      "all_tags_outside_command_ms": 0.002705999999999875,
+      "zero_start_command_records": 0
+    },
+    {
+      "step": 39,
+      "level": "whole_block",
+      "whole_block_ms": 6.707954,
+      "groups_ms": {},
+      "stages_ms": {},
+      "timestamped_encoders": 994,
+      "recurrent_outside_command_ms": 0.0010659999999997893,
+      "all_tags_outside_command_ms": 0.002746999999999389,
+      "zero_start_command_records": 0
+    },
+    {
+      "step": 40,
+      "level": "detail",
+      "whole_block_ms": 7.26746,
+      "groups_ms": {
+        "input_projections": 2.839876,
+        "convolution_and_history": 1.289035,
+        "gdn_update_and_state": 1.23946,
+        "output_projection": 1.207126,
+        "gates_and_qk_norm": 0.6919630000000001
+      },
+      "stages_ms": {
+        "qkv_z": 2.651375,
+        "beta_alpha": 0.188501,
+        "gate_activations": 0.272006,
+        "conv_history": 0.570661,
+        "gdn_state_input": 0.824042,
+        "conv_silu": 0.718374,
+        "qk_l2_norm": 0.107958,
+        "gated_delta_net": 0.415418,
+        "output_norm_gate": 0.311999,
+        "ssm_out": 1.207126,
+        "gdn_state_store": 0
+      },
+      "timestamped_encoders": 1356,
+      "recurrent_outside_command_ms": 0.0008200000000000429,
+      "all_tags_outside_command_ms": 1.2937490000000018,
+      "zero_start_command_records": 1
+    },
+    {
+      "step": 55,
+      "level": "whole_block",
+      "whole_block_ms": 6.816425,
+      "groups_ms": {},
+      "stages_ms": {},
+      "timestamped_encoders": 994,
+      "recurrent_outside_command_ms": 0.0009019999999999584,
+      "all_tags_outside_command_ms": 0.0025009999999987542,
+      "zero_start_command_records": 0
+    },
+    {
+      "step": 56,
+      "level": "detail",
+      "whole_block_ms": 7.630464000000001,
+      "groups_ms": {
+        "input_projections": 2.9380859999999998,
+        "convolution_and_history": 1.4709590000000001,
+        "gdn_update_and_state": 1.24912,
+        "output_projection": 1.220379,
+        "gates_and_qk_norm": 0.75192
+      },
+      "stages_ms": {
+        "qkv_z": 2.707419,
+        "beta_alpha": 0.230667,
+        "gate_activations": 0.305251,
+        "conv_history": 0.635919,
+        "gdn_state_input": 0.838911,
+        "conv_silu": 0.83504,
+        "qk_l2_norm": 0.109505,
+        "gated_delta_net": 0.410209,
+        "output_norm_gate": 0.337164,
+        "ssm_out": 1.220379,
+        "gdn_state_store": 0
+      },
+      "timestamped_encoders": 1356,
+      "recurrent_outside_command_ms": 0.000942999999999472,
+      "all_tags_outside_command_ms": 0.002705999999999875,
+      "zero_start_command_records": 0
+    }
+  ],
+  "leading_ops_step8": [
+    {
+      "stage": "gate_activations",
+      "op": "ADD",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 48,
+      "src_ne1": 1,
+      "count": 36
+    },
+    {
+      "stage": "gate_activations",
+      "op": "MUL",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 48,
+      "src_ne1": 1,
+      "count": 36
+    },
+    {
+      "stage": "gate_activations",
+      "op": "SIGMOID",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 1,
+      "src_ne1": 48,
+      "count": 36
+    },
+    {
+      "stage": "gate_activations",
+      "op": "SOFTPLUS",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 48,
+      "src_ne1": 1,
+      "count": 36
+    },
+    {
+      "stage": "conv_history",
+      "op": "CONCAT",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 3,
+      "src_ne1": 10240,
+      "count": 36
+    },
+    {
+      "stage": "conv_history",
+      "op": "CPY",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 3,
+      "src_ne1": 10240,
+      "count": 36
+    },
+    {
+      "stage": "conv_history",
+      "op": "GET_ROWS",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 30720,
+      "src_ne1": 1,
+      "count": 36
+    },
+    {
+      "stage": "gdn_state_input",
+      "op": "GET_ROWS",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 786432,
+      "src_ne1": 1,
+      "count": 36
+    },
+    {
+      "stage": "conv_silu",
+      "op": "SSM_CONV",
+      "first_src_type": "f32",
+      "fused_nodes": 2,
+      "src_ne0": 4,
+      "src_ne1": 10240,
+      "count": 36
+    },
+    {
+      "stage": "qk_l2_norm",
+      "op": "RMS_NORM",
+      "first_src_type": "f32",
+      "fused_nodes": 2,
+      "src_ne0": 128,
+      "src_ne1": 16,
+      "count": 72
+    },
+    {
+      "stage": "gated_delta_net",
+      "op": "GATED_DELTA_NET",
+      "first_src_type": "f32",
+      "fused_nodes": 2,
+      "src_ne0": 128,
+      "src_ne1": 16,
+      "count": 36
+    },
+    {
+      "stage": "output_norm_gate",
+      "op": "MUL",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 128,
+      "src_ne1": 48,
+      "count": 36
+    },
+    {
+      "stage": "output_norm_gate",
+      "op": "RMS_NORM",
+      "first_src_type": "f32",
+      "fused_nodes": 2,
+      "src_ne0": 128,
+      "src_ne1": 48,
+      "count": 36
+    },
+    {
+      "stage": "output_norm_gate",
+      "op": "SIGMOID",
+      "first_src_type": "f32",
+      "fused_nodes": 1,
+      "src_ne0": 128,
+      "src_ne1": 48,
+      "count": 36
+    },
+    {
+      "stage": "ssm_out",
+      "op": "MUL_MAT",
+      "first_src_type": "iq3_s",
+      "fused_nodes": 1,
+      "src_ne0": 6144,
+      "src_ne1": 2560,
+      "count": 3
+    },
+    {
+      "stage": "ssm_out",
+      "op": "MUL_MAT",
+      "first_src_type": "iq4_xs",
+      "fused_nodes": 1,
+      "src_ne0": 6144,
+      "src_ne1": 2560,
+      "count": 6
+    },
+    {
+      "stage": "ssm_out",
+      "op": "MUL_MAT",
+      "first_src_type": "q4_K",
+      "fused_nodes": 1,
+      "src_ne0": 6144,
+      "src_ne1": 2560,
+      "count": 4
+    },
+    {
+      "stage": "ssm_out",
+      "op": "MUL_MAT",
+      "first_src_type": "q5_K",
+      "fused_nodes": 1,
+      "src_ne0": 6144,
+      "src_ne1": 2560,
+      "count": 4
+    },
+    {
+      "stage": "ssm_out",
+      "op": "MUL_MAT",
+      "first_src_type": "q6_K",
+      "fused_nodes": 1,
+      "src_ne0": 6144,
+      "src_ne1": 2560,
+      "count": 19
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "iq3_s",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 6144,
+      "count": 10
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "iq4_xs",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 10240,
+      "count": 11
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "iq4_xs",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 6144,
+      "count": 11
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "q4_K",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 10240,
+      "count": 8
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "q4_K",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 6144,
+      "count": 7
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "q5_K",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 10240,
+      "count": 3
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "q5_K",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 6144,
+      "count": 3
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "q6_K",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 10240,
+      "count": 14
+    },
+    {
+      "stage": "qkv_z",
+      "op": "MUL_MAT",
+      "first_src_type": "q6_K",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 6144,
+      "count": 5
+    },
+    {
+      "stage": "beta_alpha",
+      "op": "MUL_MAT",
+      "first_src_type": "bf16",
+      "fused_nodes": 1,
+      "src_ne0": 2560,
+      "src_ne1": 48,
+      "count": 72
+    }
+  ]
+}

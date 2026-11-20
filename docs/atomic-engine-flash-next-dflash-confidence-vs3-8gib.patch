@@ -1,0 +1,65 @@
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1017,6 +1017,10 @@
+     std::vector<int64_t>      dflash2_seed;
+     std::unique_ptr<common_atomic_dflash_depth> atomic_depth; // experimental single-slot path
+ 
++    bool gate_third_proposal = false;
++    unsigned third_offered = 0;
++    unsigned third_skipped = 0;
++
+     // draft-dspark: the draft carries a Markov head and uses an anchor-first block layout
+     const bool is_dspark;
+ 
+@@ -1113,6 +1117,10 @@
+             this->params.n_min = std::min(this->params.n_min, n_draft_max);
+         }
+         this->n_max = this->params.n_max;
++        const char * third = std::getenv("FLASH_DFLASH2_THIRD_CONFIDENCE");
++        gate_third_proposal = third && std::strcmp(third, "1") == 0 && is_dflash2 && !is_lilicorr && !is_dspark &&
++                n_seq == 1 && this->n_max == 3 && this->params.n_min == 0 && this->params.p_min == 0.0f &&
++                !atomic_depth && !this->params.probabilistic;
+ 
+         batch        = common_batch(ctx_dft);
+         batch_inject = common_batch(ctx_dft);
+@@ -1173,6 +1181,9 @@
+     }
+ 
+     ~common_speculative_impl_draft_dflash() override {
++        if (gate_third_proposal) {
++            LOG_INF("DFlash2 third proposal: offered=%u skipped=%u\n", third_offered, third_skipped);
++        }
+         auto * ctx_dft = this->params.ctx_dft;
+         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) backend_chains.size(); ++seq_id) {
+             if (backend_chains[seq_id] == nullptr) {
+@@ -1193,6 +1204,10 @@
+ 
+         // reseed per request rather than per round, or two identical requests differ
+         dflash2_seed[seq_id] = -1;
++        if (gate_third_proposal) {
++            third_offered = 0;
++            third_skipped = 0;
++        }
+         if (atomic_depth) {
+             *atomic_depth = {};
+         }
+@@ -1421,6 +1436,19 @@
+ 
+                     predecessor = (int32_t) std::distance(scores,
+                             std::max_element(scores, scores + top_k));
++                    if (gate_third_proposal && i == 3 && dp.temp == 0.0f && (dp.n_max <= 0 || dp.n_max >= 3)) {
++                        // Conditional on the selected predecessor. A top candidate has at least
++                        // half of the selector probability when the max-shifted softmax sum is <= 2.
++                        float sum = 0.0f;
++                        for (int32_t k = 0; k < top_k; ++k) {
++                            sum += std::exp(scores[k] - scores[predecessor]);
++                        }
++                        if (!(sum <= 2.0f)) {
++                            ++third_skipped;
++                            break;
++                        }
++                        ++third_offered;
++                    }
+                     if (params.p_min > 0.0f || sample || adapt) {
+                         // softmax(scores / temp) at the argmax, i.e. 1 / sum(exp((s_k - s_max) / temp))
+                         probs.resize(top_k);

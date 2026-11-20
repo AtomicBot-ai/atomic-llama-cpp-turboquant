@@ -1,0 +1,73 @@
+--- a/src/llama-expert-moe.h
++++ b/src/llama-expert-moe.h
+@@ -77,6 +77,8 @@
+ 
+     size_t demand_min_ready = 4;
+     bool flash_verify_ready8 = false;
++    bool flash_read_next_wave = false;
++    uint64_t profiled_early_waves = 0;
+     bool metal_predictor = false;
+     bool graph_predictor = false;
+     using compute_prefix_t = ggml_status (*)(ggml_backend_t, ggml_cgraph *, int);
+@@ -558,15 +560,23 @@
+         std::unique_ptr<llama_expert_store::demand_batch> demand = std::move(published_demand);
+         published_count = 0; published_layer = nullptr;
+         const bool use_queue = was_published || (queued_demand && !metal_predictor && available > queue_headroom + 6 * max_allocation + max_payload);
+-        auto enqueue_ready = [&] {
+-            if (demand && demand->pending()) { return true; }
++        std::unique_ptr<llama_expert_store::demand_batch> following;
++        auto queue_plan = [&](std::unique_ptr<llama_expert_store::demand_batch> & destination) {
+             group plan;
+             take(plan);
+             if (!plan.n) { return false; }
+             llama_expert_timer timer(profile ? &profile->acquire_ns : nullptr);
+-            demand = store.enqueue_demand({p.up->name, p.gate->name, p.down->name},
++            destination = store.enqueue_demand({p.up->name, p.gate->name, p.down->name},
+                     plan.experts.data(), plan.n, ahead, readers.get(), false, staged);
+             return true;
++        };
++        auto enqueue_ready = [&] {
++            if (demand && demand->pending()) { return true; }
++            if (following) {
++                demand = std::move(following);
++                return true;
++            }
++            return queue_plan(demand);
+         };
+         auto collect_ready = [&](group & g) {
+             llama_expert_timer timer(profile ? &profile->acquire_ns : nullptr);
+@@ -748,6 +758,14 @@
+             }
+             if (status == GGML_STATUS_SUCCESS) {
+                 if (use_queue) {
++                    // Submission is asynchronous. Keep draining this wave first, but give
++                    // the readers the next known routes while Metal owns the current leases.
++                    // With publication disabled, the current leases and the unconsumed
++                    // portion of demand belong to one wave. Each wave is <= capacity/2.
++                    if (flash_read_next_wave && tokens == 4 && !was_published && !staged &&
++                            demand && demand->pending() && !following) {
++                        if (queue_plan(following) && profile) { ++profiled_early_waves; }
++                    }
+                     queued_next = enqueue_ready();
+                     if (queued_next) { ++pipeline_groups; }
+                 } else {
+@@ -816,6 +834,10 @@
+                 collect_ready(next);
+             }
+             current = std::move(next);
++        }
++        if (profile && flash_read_next_wave && tokens == 4 && !std::strcmp(p.up->name, "blk.47.ffn_up_exps.weight")) {
++            std::fprintf(stderr, "VERIFY_EARLY_WAVES %llu\n", (unsigned long long)profiled_early_waves);
++            profiled_early_waves = 0;
+         }
+         projections += 3;
+         ++calls;
+@@ -910,6 +932,8 @@
+         flash_verify_ready8 = automatic && source->architecture() == "qwen4exp" &&
+                 memory.requested == (size_t(8) << 30) && std::getenv("FLASH_LIVE_DRAFT") &&
+                 ready8 && std::strcmp(ready8, "1") == 0;
++        const char * next_wave = std::getenv("FLASH_VERIFY_NEXT_WAVE");
++        flash_read_next_wave = flash_verify_ready8 && next_wave && std::strcmp(next_wave, "1") == 0;
+         if (automatic && queued_demand) {
+             const size_t bytes = early_io::pool::memory_bytes();
+             if (memory.requested - memory.used() - working >= bytes) {

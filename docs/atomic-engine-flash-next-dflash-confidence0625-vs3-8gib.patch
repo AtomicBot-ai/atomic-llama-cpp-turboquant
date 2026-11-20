@@ -1,0 +1,72 @@
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1017,6 +1017,10 @@
+     std::vector<int64_t>      dflash2_seed;
+     std::unique_ptr<common_atomic_dflash_depth> atomic_depth; // experimental single-slot path
+ 
++    float third_softmax_sum_limit = 0.0f;
++    unsigned third_offered = 0;
++    unsigned third_skipped = 0;
++
+     // draft-dspark: the draft carries a Markov head and uses an anchor-first block layout
+     const bool is_dspark;
+ 
+@@ -1113,6 +1117,18 @@
+             this->params.n_min = std::min(this->params.n_min, n_draft_max);
+         }
+         this->n_max = this->params.n_max;
++        const char * third = std::getenv("FLASH_DFLASH2_THIRD_CONFIDENCE");
++        if (third && is_dflash2 && !is_lilicorr && !is_dspark &&
++                n_seq == 1 && this->n_max == 3 && this->params.n_min == 0 && this->params.p_min == 0.0f &&
++                !atomic_depth && !this->params.probabilistic) {
++            if (std::strcmp(third, "0.625") == 0) {
++                third_softmax_sum_limit = 1.0f / 0.625f;
++            } else if (std::strcmp(third, "0.75") == 0) {
++                third_softmax_sum_limit = 1.0f / 0.75f;
++            } else if (std::strcmp(third, "1") == 0) {
++                third_softmax_sum_limit = 2.0f; // Original 0.5 experiment.
++            }
++        }
+ 
+         batch        = common_batch(ctx_dft);
+         batch_inject = common_batch(ctx_dft);
+@@ -1173,6 +1189,9 @@
+     }
+ 
+     ~common_speculative_impl_draft_dflash() override {
++        if (third_softmax_sum_limit > 0.0f) {
++            LOG_INF("DFlash2 third proposal: offered=%u skipped=%u\n", third_offered, third_skipped);
++        }
+         auto * ctx_dft = this->params.ctx_dft;
+         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) backend_chains.size(); ++seq_id) {
+             if (backend_chains[seq_id] == nullptr) {
+@@ -1193,6 +1212,10 @@
+ 
+         // reseed per request rather than per round, or two identical requests differ
+         dflash2_seed[seq_id] = -1;
++        if (third_softmax_sum_limit > 0.0f) {
++            third_offered = 0;
++            third_skipped = 0;
++        }
+         if (atomic_depth) {
+             *atomic_depth = {};
+         }
+@@ -1421,6 +1444,18 @@
+ 
+                     predecessor = (int32_t) std::distance(scores,
+                             std::max_element(scores, scores + top_k));
++                    if (third_softmax_sum_limit > 0.0f && i == 3 && dp.temp == 0.0f && (dp.n_max <= 0 || dp.n_max >= 3)) {
++                        // The top candidate probability is the reciprocal of this max-shifted sum.
++                        float sum = 0.0f;
++                        for (int32_t k = 0; k < top_k; ++k) {
++                            sum += std::exp(scores[k] - scores[predecessor]);
++                        }
++                        if (!(sum <= third_softmax_sum_limit)) {
++                            ++third_skipped;
++                            break;
++                        }
++                        ++third_offered;
++                    }
+                     if (params.p_min > 0.0f || sample || adapt) {
+                         // softmax(scores / temp) at the argmax, i.e. 1 / sum(exp((s_k - s_max) / temp))
+                         probs.resize(top_k);

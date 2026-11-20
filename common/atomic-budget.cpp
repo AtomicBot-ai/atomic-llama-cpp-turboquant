@@ -234,7 +234,7 @@ void common_atomic_select_qwen35_profile(common_params & p) {
 
 bool common_atomic_flash_next_dflash3_profile(const common_params & params) {
     return params.engine_budget >= (size_t(8) << 30) && params.engine_budget <= (size_t(24) << 30) &&
-            params.n_ctx == 4096 && params.n_batch == 4096 && params.n_ubatch == 8 && params.n_parallel == 1 &&
+            (params.n_ctx == 4096 || params.n_ctx == 40960) && params.n_batch == 4096 && params.n_ubatch == 8 && params.n_parallel == 1 &&
             params.cache_type_k == GGML_TYPE_BF16 && params.cache_type_v == GGML_TYPE_BF16 &&
             params.speculative.draft.n_max == 3;
 }

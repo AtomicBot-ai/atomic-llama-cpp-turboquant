@@ -1,0 +1,146 @@
+--- a/src/llama-expert-store.cpp
++++ b/src/llama-expert-store.cpp
+@@ -17,6 +17,11 @@
+ #include <mutex>
+ #include <stdexcept>
+ #include <utility>
++
++// Single-request verifier sets this switch after prefill, before timed decode.
++static bool flash_verify_size_lru = false;
++void flash_verify_enable_size_lru();
++void flash_verify_enable_size_lru() { flash_verify_size_lru = true; }
+ 
+ namespace {
+ 
+@@ -301,7 +306,25 @@
+         return bytes;
+     }
+ 
++    // The verifier fixture uses six 64 KiB-aligned Metal size classes.
++    // Other geometries fall back to the existing LRU admission policy.
++    static constexpr size_t slot_alignment = 64 * 1024;
++    std::array<entry *, 16> oldest_size {};
++
++    static bool indexed_size(size_t bytes) {
++        return bytes && bytes <= 16 * slot_alignment && bytes % slot_alignment == 0;
++    }
++
++    static entry * next_size(entry * start, size_t bytes) {
++        while (start && start->buffer_charge.size() != bytes) { start = start->newer; }
++        return start;
++    }
++
+     void unlink_lru(entry & e) {
++        if (flash_verify_size_lru && !history && indexed_size(e.buffer_charge.size())) {
++            auto & first = oldest_size[e.buffer_charge.size() / slot_alignment - 1];
++            if (first == &e) { first = next_size(e.newer, e.buffer_charge.size()); }
++        }
+         if (e.older) { e.older->newer = e.newer; }
+         else { lru_first[e.frequency_class] = e.newer; }
+         if (e.newer) { e.newer->older = e.older; }
+@@ -328,7 +351,7 @@
+         return candidate;
+     }
+ 
+-    std::shared_ptr<entry> take_victim() {
++    std::shared_ptr<entry> take_victim(size_t preferred_bytes = 0) {
+         llama_expert_timer timer(profile ? &profile->eviction_search_ns : nullptr);
+         entry * chosen = nullptr;
+         if (history) {
+@@ -380,6 +403,15 @@
+             }
+         } else {
+             chosen = oldest_unpinned(0);
++            if (indexed_size(preferred_bytes)) {
++                auto & first = oldest_size[preferred_bytes / slot_alignment - 1];
++                if (!first) { first = next_size(lru_first[0], preferred_bytes); }
++                auto * candidate = first;
++                while (candidate && (candidate->pins || candidate->retiring)) {
++                    candidate = next_size(candidate->newer, preferred_bytes);
++                }
++                if (candidate) { chosen = candidate; }
++            }
+         }
+         if (!chosen) { return {}; }
+         auto victim = entries.find(chosen->key);
+@@ -974,7 +1006,7 @@
+             charges = pimpl->reserve(arena_bytes, buffer_bytes, data_bytes);
+             if (charges.complete()) { break; }
+             charges = {};
+-            auto victim = pimpl->take_victim();
++            auto victim = pimpl->take_victim(flash_verify_size_lru ? buffer_bytes : 0);
+             if (!victim) {
+                 // Tight budgets must not fail merely because spares are held.
+                 if (pimpl->release_recycled()) { continue; }
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1,3 +1,4 @@
++extern void flash_verify_enable_size_lru();
+ #include "atomic-budget.h"
+ #include "atomic-dflash-depth.h"
+ #include "server-context.h"
+@@ -1245,6 +1246,12 @@
+         const auto output_limits = server_output_limits(params_base);
+         params_base.n_outputs_max = output_limits.total;
+         params_base.n_outputs_max_per_seq = output_limits.per_seq;
++        if (const char * value = getenv("FLASH_VERIFY_WIDTH")) {
++            const int rows = atoi(value);
++            GGML_ASSERT(rows >= 1 && rows <= 8 && params_base.n_parallel == 1);
++            params_base.n_outputs_max = rows;
++            params_base.n_outputs_max_per_seq = rows;
++        }
+ 
+         const bool has_mmproj = !params.mmproj.path.empty();
+         const bool has_draft = params_base.speculative.has_dft();
+@@ -4860,6 +4867,51 @@
+                  batch.slot_batched->n_remaining() > params_base.speculative.draft.n_max);
+         int64_t verify_us = 0;
+         queue_tasks.yield_to_queue([&]() {
++            if (!batch.tokens[off].is_prompt && batch.slot_batched && batch.slot_batched->task->params.n_predict == 64 &&
++                    getenv("FLASH_VERIFY_WIDTH")) {
++                static const llama_token gold[] = {2,25662,35312,286,25,5711,69041,7673,5606,271,550,220,16,13,3976,278,417,8845,318,2432,12296,8,198,760,2614,2250,43303,3371,6290,494,279,5129,27370,321,1325,3050,5975,1518,781,628,10046,310,3286,466,16111,13,271,91,32783,2937,735,24425,735,5411,12296,735,25009,735,198,91,535,4277,735,535};
++                const int width = atoi(getenv("FLASH_VERIFY_WIDTH"));
++                GGML_ASSERT(width >= 1 && width <= 8 && batch.view.size() == 1);
++                GGML_ASSERT(batch.tokens[off].pos[0] == 912 && batch.tokens[off].token == gold[0]);
++                const int nv = llama_vocab_n_tokens(vocab);
++                json blocks = json::array();
++                std::vector<int> predicted = {gold[0]};
++                common_batch probe(ctx_tgt);
++                if (getenv("FLASH_VERIFY_SIZE_LRU")) flash_verify_enable_size_lru();
++                llama_expert_streaming_data start{},last{};
++                GGML_ASSERT(llama_get_expert_streaming_stats(ctx_tgt,&start));
++                for (int first = 0; first < 63; first += width) {
++                    const int rows = std::min(width, 63-first);
++                    const int64_t t0 = ggml_time_us();
++                    probe.clear();
++                    for (int j = 0; j < rows; ++j) {
++                        probe.add(gold[first+j], 912+first+j, 0, true);
++                    }
++                    GGML_ASSERT(llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, probe.get()) == 0);
++                    llama_synchronize(ctx_tgt);
++                    const int64_t t1 = ggml_time_us();
++                    for (int j = 0; j < rows; ++j) {
++                        const float * row = llama_get_logits_ith(ctx_tgt, j);
++                        GGML_ASSERT(row);
++                        predicted.push_back(int(std::max_element(row,row+nv)-row));
++                    }
++                    const int64_t t2 = ggml_time_us();
++                    blocks.push_back({{"rows",rows},{"synced_us",t1-t0},{"with_argmax_us",t2-t0}});
++                }
++                llama_budget_data budget{};
++                GGML_ASSERT(llama_memory_budget_get(ctx_tgt,&budget) && budget.applied == (size_t(8)<<30) && budget.high_water <= budget.applied);
++                json record = {{"width",width},{"blocks",blocks},{"predicted_ids",predicted},{"peak_managed_bytes",budget.high_water}};
++                GGML_ASSERT(llama_get_expert_streaming_stats(ctx_tgt,&last));
++                record["buffer_allocations"]=last.buffer_allocations-start.buffer_allocations;
++                record["buffer_reuses"]=last.buffer_reuses-start.buffer_reuses;
++                record["evictions"]=last.evictions-start.evictions;
++                record["hits"]=last.hits-start.hits;
++                record["misses"]=last.misses-start.misses;
++                record["logical_read_bytes"]=last.logical_read_bytes-start.logical_read_bytes;
++                fprintf(stderr,"FLASH_VERIFY_RESULT %s\n",record.dump().c_str());
++                fflush(stderr);
++                std::_Exit(0); // Dedicated, single-request benchmark process.
++            }
+             const int64_t verify_start = measure_verify ? ggml_time_us() : 0;
+             if (params_base.engine_budget && batch.tokens[off].is_prompt) {
+                 // Managed mode has one slot. Use the same uncached prefill size

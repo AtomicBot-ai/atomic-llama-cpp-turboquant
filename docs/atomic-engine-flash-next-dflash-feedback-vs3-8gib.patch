@@ -1,0 +1,85 @@
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1017,6 +1017,11 @@
+     std::vector<int64_t>      dflash2_seed;
+     std::unique_ptr<common_atomic_dflash_depth> atomic_depth; // experimental single-slot path
+ 
++    // Single-slot DFlash2 experiment. Zero keeps fixed-depth behavior.
++    int32_t feedback_depth = 0;
++    size_t feedback_offered = 0;
++    std::array<unsigned, 2> feedback_rounds{};
++
+     // draft-dspark: the draft carries a Markov head and uses an anchor-first block layout
+     const bool is_dspark;
+ 
+@@ -1113,6 +1118,11 @@
+             this->params.n_min = std::min(this->params.n_min, n_draft_max);
+         }
+         this->n_max = this->params.n_max;
++        const char * feedback = std::getenv("FLASH_DFLASH2_FEEDBACK_DEPTH");
++        if (feedback && std::strcmp(feedback, "1") == 0 && is_dflash2 && !is_lilicorr && !is_dspark &&
++                n_seq == 1 && this->n_max == 3 && this->params.n_min == 0 && !atomic_depth && !this->params.probabilistic) {
++            feedback_depth = 3;
++        }
+ 
+         batch        = common_batch(ctx_dft);
+         batch_inject = common_batch(ctx_dft);
+@@ -1173,6 +1183,9 @@
+     }
+ 
+     ~common_speculative_impl_draft_dflash() override {
++        if (feedback_depth) {
++            LOG_INF("DFlash2 feedback last request: depth2=%u depth3=%u\n", feedback_rounds[0], feedback_rounds[1]);
++        }
+         auto * ctx_dft = this->params.ctx_dft;
+         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) backend_chains.size(); ++seq_id) {
+             if (backend_chains[seq_id] == nullptr) {
+@@ -1193,6 +1206,11 @@
+ 
+         // reseed per request rather than per round, or two identical requests differ
+         dflash2_seed[seq_id] = -1;
++        if (feedback_depth) {
++            feedback_depth = 3;
++            feedback_offered = 0;
++            feedback_rounds = {};
++        }
+         if (atomic_depth) {
+             *atomic_depth = {};
+         }
+@@ -1352,7 +1370,7 @@
+ 
+             const int32_t n = (int32_t) dp.pos0;
+ 
+-            const int32_t n_draft = params.n_max;
++            const int32_t n_draft = feedback_depth && dp.temp == 0.0f ? feedback_depth : params.n_max;
+             const int32_t n_block_tokens = is_lilicorr ? block_size : n_draft + (is_dspark && sample_from_anchor ? 0 : 1);
+             i_block_beg[seq_id] = batch.size();
+             n_block    [seq_id] = n_block_tokens;
+@@ -1473,6 +1491,11 @@
+                         dp.result_q->clear();
+                     }
+                 }
++                if (feedback_depth) {
++                    // The dispatcher can shorten the last offer to the remaining generation budget.
++                    feedback_offered = dp.temp != 0.0f ? 0 : dp.n_max > 0 ?
++                            std::min(result.size(), (size_t) dp.n_max) : result.size();
++                }
+                 if (adapt) {
+                     const size_t offered = dp.n_max > 0 ? std::min(result.size(), (size_t) dp.n_max) : result.size();
+                     if (offered >= (size_t) params.n_min) {
+@@ -1544,6 +1567,15 @@
+     }
+ 
+     void accept(llama_seq_id /*seq_id*/, uint16_t n_accepted, bool is_other) override {
++        if (feedback_offered && !is_other) {
++            ++feedback_rounds[feedback_depth - 2];
++            if (n_accepted == 0) {
++                feedback_depth = 2;
++            } else if (n_accepted == feedback_offered) {
++                feedback_depth = 3;
++            }
++            feedback_offered = 0;
++        }
+         if (atomic_depth && !is_other) {
+             atomic_depth->observe(n_accepted);
+         }

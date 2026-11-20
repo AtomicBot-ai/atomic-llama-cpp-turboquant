@@ -26,8 +26,10 @@ LLAMA_API bool llama_expert_profile_get(const struct llama_context * ctx, llama_
 LLAMA_API bool llama_atomic_qwen35_profile_set(struct llama_model * target, uint32_t layers);
 LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target);
 LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target, bool flash_long_profile);
+LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target, uint32_t flash_context);
 LLAMA_API void llama_atomic_park_flash_draft(struct llama_context * draft);
 constexpr size_t llama_atomic_dflash2_slot_staging_bytes(uint32_t context) {
+    if (context == 40960) { return size_t(1280) << 20; }
     return size_t(context == 4096 ? 128 : 32) << 20;
 }
 LLAMA_API struct llama_model * llama_atomic_dflash2_load(

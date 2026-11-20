@@ -1,0 +1,33 @@
+--- a/src/llama-expert-moe.h
++++ b/src/llama-expert-moe.h
+@@ -76,6 +76,7 @@
+     static constexpr size_t queue_headroom = 64 * 1024;
+ 
+     size_t demand_min_ready = 4;
++    size_t flash_verify_min_ready = 0;
+     bool metal_predictor = false;
+     bool graph_predictor = false;
+     using compute_prefix_t = ggml_status (*)(ggml_backend_t, ggml_cgraph *, int);
+@@ -569,7 +570,8 @@
+         };
+         auto collect_ready = [&](group & g) {
+             llama_expert_timer timer(profile ? &profile->acquire_ns : nullptr);
+-            g.n = demand->take(g.experts.data(), g.up.data(), g.gate.data(), g.down.data(), demand_min_ready);
++            g.n = demand->take(g.experts.data(), g.up.data(), g.gate.data(), g.down.data(),
++                    flash_verify_min_ready && tokens == 4 ? flash_verify_min_ready : demand_min_ready);
+         };
+         group current;
+         if (was_published) {
+@@ -904,6 +906,12 @@
+             throw std::runtime_error("combined MoE minimum working set does not fit");
+         }
+ #ifdef __APPLE__
++        const char * ready = std::getenv("FLASH_VERIFY_MIN_READY");
++        if (automatic && source->architecture() == "qwen4exp" && memory.requested == (size_t(8) << 30) &&
++                std::getenv("FLASH_LIVE_DRAFT") && ready) {
++            if (std::strcmp(ready, "8") == 0) { flash_verify_min_ready = 8; }
++            if (std::strcmp(ready, "16") == 0) { flash_verify_min_ready = 16; }
++        }
+         if (automatic && queued_demand) {
+             const size_t bytes = early_io::pool::memory_bytes();
+             if (memory.requested - memory.used() - working >= bytes) {

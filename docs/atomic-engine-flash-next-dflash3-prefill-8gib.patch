@@ -1,0 +1,403 @@
+--- a/src/llama-expert-store.cpp
++++ b/src/llama-expert-store.cpp
+@@ -17,6 +17,11 @@
+ #include <mutex>
+ #include <stdexcept>
+ #include <utility>
++
++// Single-request verifier sets this switch after prefill, before timed decode.
++static bool flash_verify_size_lru = false;
++void flash_verify_enable_size_lru();
++void flash_verify_enable_size_lru() { flash_verify_size_lru = true; }
+ 
+ namespace {
+ 
+@@ -301,7 +306,25 @@
+         return bytes;
+     }
+ 
++    // The verifier fixture uses six 64 KiB-aligned Metal size classes.
++    // Other geometries fall back to the existing LRU admission policy.
++    static constexpr size_t slot_alignment = 64 * 1024;
++    std::array<entry *, 16> oldest_size {};
++
++    static bool indexed_size(size_t bytes) {
++        return bytes && bytes <= 16 * slot_alignment && bytes % slot_alignment == 0;
++    }
++
++    static entry * next_size(entry * start, size_t bytes) {
++        while (start && start->buffer_charge.size() != bytes) { start = start->newer; }
++        return start;
++    }
++
+     void unlink_lru(entry & e) {
++        if (flash_verify_size_lru && !history && indexed_size(e.buffer_charge.size())) {
++            auto & first = oldest_size[e.buffer_charge.size() / slot_alignment - 1];
++            if (first == &e) { first = next_size(e.newer, e.buffer_charge.size()); }
++        }
+         if (e.older) { e.older->newer = e.newer; }
+         else { lru_first[e.frequency_class] = e.newer; }
+         if (e.newer) { e.newer->older = e.older; }
+@@ -328,7 +351,7 @@
+         return candidate;
+     }
+ 
+-    std::shared_ptr<entry> take_victim() {
++    std::shared_ptr<entry> take_victim(size_t preferred_bytes = 0) {
+         llama_expert_timer timer(profile ? &profile->eviction_search_ns : nullptr);
+         entry * chosen = nullptr;
+         if (history) {
+@@ -380,6 +403,15 @@
+             }
+         } else {
+             chosen = oldest_unpinned(0);
++            if (indexed_size(preferred_bytes)) {
++                auto & first = oldest_size[preferred_bytes / slot_alignment - 1];
++                if (!first) { first = next_size(lru_first[0], preferred_bytes); }
++                auto * candidate = first;
++                while (candidate && (candidate->pins || candidate->retiring)) {
++                    candidate = next_size(candidate->newer, preferred_bytes);
++                }
++                if (candidate) { chosen = candidate; }
++            }
+         }
+         if (!chosen) { return {}; }
+         auto victim = entries.find(chosen->key);
+@@ -974,7 +1006,7 @@
+             charges = pimpl->reserve(arena_bytes, buffer_bytes, data_bytes);
+             if (charges.complete()) { break; }
+             charges = {};
+-            auto victim = pimpl->take_victim();
++            auto victim = pimpl->take_victim(flash_verify_size_lru ? buffer_bytes : 0);
+             if (!victim) {
+                 // Tight budgets must not fail merely because spares are held.
+                 if (pimpl->release_recycled()) { continue; }
+--- a/src/llama-context-atomic.cpp
++++ b/src/llama-context-atomic.cpp
+@@ -43,7 +43,8 @@
+     }
+     const size_t cap = target->memory_contract->ledger->snapshot(llama_memory_domain::host).requested;
+     const auto & hp = target->hparams;
+-    const bool flash = cap == (size_t(18) << 30) && target->arch == LLM_ARCH_QWEN4EXP &&
++    const bool flash8 = cap == (size_t(8) << 30) && std::getenv("FLASH_LIVE_DRAFT");
++    const bool flash = (flash8 || cap == (size_t(18) << 30)) && target->arch == LLM_ARCH_QWEN4EXP &&
+         hp.n_layer() == 48 && target->streamed_ple;
+     const bool qwen35 = (target->memory_contract->qwen35_profile_layers || cap == (size_t(8) << 30)) && target->arch == LLM_ARCH_QWEN35MOE &&
+         hp.n_layer() == 40 && hp.n_embd == 2048 && hp.n_expert == 256 && hp.n_expert_used_max() == 8;
+@@ -55,7 +56,7 @@
+     // host staging for saving or loading the draft appendix before evaluation.
+     auto & contract = *target->memory_contract;
+     contract.draft_slot_staging = contract.ledger->reserve(llama_memory_domain::host,
+-            llama_memory_category::io, llama_atomic_dflash2_slot_staging_bytes(qwen35 ? 4096 : 1024));
++            llama_memory_category::io, llama_atomic_dflash2_slot_staging_bytes((qwen35 || flash8) ? 4096 : 1024));
+     if (!contract.draft_slot_staging) { return false; }
+     if (qwen35 && contract.qwen35_profile_layers == 40 &&
+             (cap == (size_t(24) << 30) || cap == (size_t(26) << 30))) {
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -196,7 +196,8 @@
+                  model.n_gpu_layers() > model.hparams.n_layer_all || !params.op_offload)) {
+             throw std::runtime_error("CUDA boundary reduction requires partially offloaded LFM2 MoE with op offload");
+         }
+-        const bool dflash_profile = (model.arch == LLM_ARCH_QWEN4EXP && params.n_ctx == 1024) ||
++        const bool dflash_profile = (model.arch == LLM_ARCH_QWEN4EXP && (params.n_ctx == 1024 ||
++            (model.memory_contract->dflash2_target && std::getenv("FLASH_LIVE_DRAFT") && params.n_ctx == 4096 && params.n_batch == 4096))) ||
+             (model.arch == LLM_ARCH_QWEN35MOE && params.n_ctx == 4096 && params.n_batch == 4096);
+         const bool rollback_allowed = model.memory_contract->dflash2_target && dflash_profile &&
+             params.n_ubatch == 8 && params.n_rs_seq < params.n_ubatch - 1;
+@@ -2446,7 +2447,8 @@
+     memory_update(false);
+ 
+     const bool write_h_nextn = cparams.embeddings_nextn_dev && h_nextn_dev != nullptr;
+-    const bool wide_dflash = layer_inp_dev && model.arch == LLM_ARCH_QWEN35MOE &&
++    const bool wide_dflash = layer_inp_dev && (model.arch == LLM_ARCH_QWEN35MOE ||
++            (model.arch == LLM_ARCH_QWEN4EXP && std::getenv("FLASH_LIVE_FEATURE_PREFILL"))) &&
+             model.memory_contract && model.memory_contract->dflash2_target;
+     const bool can_window = budget_control && budget_control->prefill_window.enabled && batch_inp.embd.empty() &&
+             batch_inp.state.empty() && !has_samplers &&
+@@ -2499,6 +2501,14 @@
+             window_rows = (n_tokens_all + blocks - 1) / blocks;
+             partial_wide = true;
+         }
++    }
++    const bool stream_wide = partial_wide && model.arch == LLM_ARCH_QWEN4EXP &&
++            wide_dflash && model.memory_contract->dflash2_target && cparams.n_rs_seq == 3 &&
++            budget_control->budget_requested == (size_t(8) << 30) && std::getenv("FLASH_STREAM_WIDE");
++    if (stream_wide) {
++        const uint32_t blocks = (n_tokens_all + 455) / 456;
++        window_rows = (n_tokens_all + blocks - 1) / blocks;
++        partial_wide = false;
+     }
+     llama_memory_context_ptr mctx;
+ 
+@@ -2675,6 +2685,9 @@
+ 
+         ggml_status status;
+ 
++        if (stream_wide && std::getenv("FLASH_ADMIT_TRACE")) {
++            std::fprintf(stderr,"STREAM_PREFILL rows=%u previous=%lld outputs=%d\n",ubatch.n_tokens,(long long)n_tokens_prev,n_outputs);
++        }
+         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status, uncached_prompt_tokens == 0);
+ 
+         if (!res) {
+@@ -2915,6 +2928,16 @@
+         }
+     }
+ 
++    if (stream_wide) {
++        // Output copies and target feature writes must finish before replacing
++        // the prompt graph. KV, recurrent state and the feature buffer belong
++        // to the context, independently of this scheduler.
++        synchronize();
++        reset_expert_graphs();
++        sched.reset();
++        sched_need_reserve = true;
++        sched_reserve();
++    }
+     // wait for the computation to finish (automatically done when obtaining the model output)
+     //synchronize();
+ 
+--- a/src/llama-prefill-window.cpp
++++ b/src/llama-prefill-window.cpp
+@@ -225,11 +225,12 @@
+     const bool wide_arch = flash || model.arch == LLM_ARCH_QWEN35MOE || model.arch == LLM_ARCH_LFM2MOE;
+     const bool smaller_wide = !partial_wide && wide_arch && rows == prefill_smaller_wide_rows;
+     const bool native_wide = partial_wide || (wide_arch && (rows == prefill_wide_rows || smaller_wide));
+-    const bool wide_dflash = native_wide && model.arch == LLM_ARCH_QWEN35MOE &&
++    const bool flash_features = flash && partial_wide && std::getenv("FLASH_LIVE_FEATURE_PREFILL");
++    const bool wide_dflash = native_wide && (model.arch == LLM_ARCH_QWEN35MOE || flash_features) &&
+         model.memory_contract->dflash2_target && cparams.embeddings_layer_inp_dev && layer_inp_dev;
+     // Reuse layer-local Metal temporaries across the same wide workers.
+     // Live outputs at layer boundaries and draft feature rows stay private.
+-    const bool shared_dflash = wide_dflash && !smaller_wide && try_shared_wide;
++    const bool shared_dflash = !flash_features && wide_dflash && !smaller_wide && try_shared_wide;
+     // Three smaller workers reduce the number of complete weight traversals
+     // compared with one 1024-row worker. Leave admission room for staging.
+     const bool shared_wide = flash && smaller_wide && try_shared_wide;
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1,3 +1,4 @@
++extern void flash_verify_enable_size_lru();
+ #include "atomic-budget.h"
+ #include "atomic-dflash-depth.h"
+ #include "server-context.h"
+@@ -4860,6 +4861,15 @@
+                  batch.slot_batched->n_remaining() > params_base.speculative.draft.n_max);
+         int64_t verify_us = 0;
+         queue_tasks.yield_to_queue([&]() {
++            // Single measured request, following an eight-token serial warmup.
++            // Activate only after prefill so both policies start with the same cache.
++            static const bool size_lru = std::getenv("FLASH_LIVE_SIZE_LRU") != nullptr;
++            static bool enabled = false;
++            if (size_lru && !enabled && !batch.tokens[off].is_prompt && batch.slot_batched &&
++                    batch.slot_batched->task->params.n_predict == 64) {
++                flash_verify_enable_size_lru();
++                enabled = true;
++            }
+             const int64_t verify_start = measure_verify ? ggml_time_us() : 0;
+             if (params_base.engine_budget && batch.tokens[off].is_prompt) {
+                 // Managed mode has one slot. Use the same uncached prefill size
+--- a/src/llama-expert-executor.cpp
++++ b/src/llama-expert-executor.cpp
+@@ -530,6 +530,86 @@
+         }
+     }
+ 
++#if defined(__APPLE__)
++    // Run a prompt projection against a tile of the original GGUF weights.
++    // Route rows are independent. Scatter each result to its original token/slot.
++    void compute_prompt_tiles(const projection & p, ggml_tensor * dst) {
++        constexpr int experts_per_tile = 32;
++        constexpr int batch_rows = 256;
++        const auto * input = dst->src[0];
++        const auto * ids = dst->src[1];
++        const auto & info = row_source->tensor(p.name);
++        const auto backend_type = ggml_backend_get_default_buffer_type(backend.get());
++        const auto reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend.get()));
++        using host_base_fn = void * (*)(ggml_backend_buffer_t);
++        const auto host_base = reinterpret_cast<host_base_fn>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_buffer_get_host_base"));
++        if (!host_base || p.experts != 512 || input->nb[0] != sizeof(float) || dst->nb[0] != sizeof(float)) {
++            throw std::runtime_error("unsupported prompt tile layout");
++        }
++        const size_t meta = 4 * ggml_tensor_overhead() + ggml_graph_overhead_custom(8, false);
++        auto metadata = admitted(*budget, llama_memory_category::scratch, meta + 2 * batch_rows * sizeof(int32_t));
++        ggml_context_ptr local(ggml_init({meta, nullptr, true}));
++        if (!local) { throw std::bad_alloc(); }
++        metadata.commit();
++        auto * weights = ggml_new_tensor_3d(local.get(), info.type, p.input, p.output, experts_per_tile);
++        auto * x = ggml_new_tensor_3d(local.get(), GGML_TYPE_F32, p.input, 1, batch_rows);
++        auto * index = ggml_new_tensor_2d(local.get(), GGML_TYPE_I32, 1, batch_rows);
++        auto * y = ggml_mul_mat_id(local.get(), weights, x, index);
++        if (!ggml_backend_supports_op(backend.get(), y)) { throw std::runtime_error("unsupported prompt tile matmul"); }
++        auto * graph = ggml_new_graph_custom(local.get(), 8, false);
++        ggml_build_forward_expand(graph, y);
++        llama_allocation_scope admission(budget, llama_memory_category::scratch, {}, {},
++                {[](void * user, llama_memory_domain domain, size_t bytes) {
++                    static_cast<llama_expert_store *>(user)->reclaim_to_fit(domain, bytes);
++                }, store.get()});
++        ggml_backend_buffer_ptr buf(ggml_backend_alloc_ctx_tensors_from_buft(local.get(), backend_type));
++        if (!buf || !host_base(buf.get()) || host_base(buf.get()) != ggml_backend_buffer_get_base(buf.get())) {
++            throw std::runtime_error("cannot admit shared Metal prompt tile");
++        }
++        ggml_backend_buffer_clear(buf.get(), 0);
++        std::array<int32_t, batch_rows> rows, slots;
++        const size_t stride = info.expert_bytes();
++        for (int first = 0; first < p.experts; first += experts_per_tile) {
++            int packed = 0;
++            bool loaded = false;
++            auto flush_tile = [&]() {
++                if (!packed) { return; }
++                if (!loaded) {
++                    row_source->read_expert_range(p.name, first, first + experts_per_tile,
++                            weights->data, stride * experts_per_tile);
++                    loaded = true;
++                }
++                // The unused rows carry valid expert IDs; their results are discarded.
++                std::fill_n(static_cast<int32_t *>(index->data) + packed, batch_rows - packed, 0);
++                if (ggml_backend_graph_compute(backend.get(), graph) != GGML_STATUS_SUCCESS) {
++                    throw std::runtime_error("Metal prompt tile failed");
++                }
++                for (int i = 0; i < packed; ++i) {
++                    std::memcpy(static_cast<char *>(dst->data) + rows[i]*dst->nb[2] + slots[i]*dst->nb[1],
++                            static_cast<const char *>(y->data) + i*y->nb[2], p.output*sizeof(float));
++                }
++                packed = 0;
++            };
++            for (int64_t token = 0; token < ids->ne[1]; ++token) {
++                for (int64_t slot = 0; slot < ids->ne[0]; ++slot) {
++                    const auto expert = id_at(ids, slot, token);
++                    if (expert < 0 || expert >= p.experts) { throw std::runtime_error("invalid prompt tile route"); }
++                    if (expert < first || expert >= first + experts_per_tile) { continue; }
++                    rows[packed] = token;
++                    slots[packed] = slot;
++                    static_cast<int32_t *>(index->data)[packed] = expert - first;
++                    const auto input_slot = input->ne[1] == 1 ? 0 : slot;
++                    std::memcpy(static_cast<char *>(x->data) + packed*x->nb[2],
++                            static_cast<const char *>(input->data) + token*input->nb[2] + input_slot*input->nb[1],
++                            p.input*sizeof(float));
++                    if (++packed == batch_rows) { flush_tile(); }
++                }
++            }
++            flush_tile();
++        }
++    }
++#endif
++
+     void compute(const projection & p, ggml_tensor * dst, bool keep_vector = false) {
+         llama_expert_timer projection_timer(profile ? &profile->projection_ns : nullptr);
+         llama_allocation_scope explicit_admission;
+@@ -540,6 +620,14 @@
+             (input->ne[1] != 1 && input->ne[1] != ids->ne[0])) {
+             throw std::runtime_error("unsupported routed projection input layout");
+         }
++#if defined(__APPLE__)
++        if (!keep_vector && ids->ne[1] >= 32 && metal && !p.on_cpu && row_source &&
++                row_source->architecture() == "qwen4exp" && std::getenv("FLASH_PROMPT_TILES")) {
++            compute_prompt_tiles(p, dst);
++            ++n_projections;
++            return;
++        }
++#endif
+         const projection * early_target = nullptr;
+         if (early) {
+             for (size_t i = 0; i < early->count; ++i) {
+--- a/src/llama-expert-source.h
++++ b/src/llama-expert-source.h
+@@ -66,6 +66,10 @@
+     };
+     void read_experts(const read_request * requests, size_t count, bool speculative = false,
+                     bool concurrent_demand = false, bool adjacent_ranges = false);
++#if defined(__APPLE__)
++    // Exact contiguous expert slices into one already admitted Metal or staging range.
++    void read_expert_range(const std::string & name, int64_t first, int64_t end, void * dst, size_t bytes);
++#endif
+     // Best-effort macOS file-cache hint for one known demand expert. No user
+     // buffer, published weight, offset change or validation bypass. False means
+     // unsupported, invalid or declined; demand must still use read_expert.
+--- a/src/llama-expert-source.cpp
++++ b/src/llama-expert-source.cpp
+@@ -335,6 +335,35 @@
+     }
+     return pimpl->tensors[it->second];
+ }
++
++#if defined(__APPLE__)
++void llama_expert_source::read_expert_range(const std::string & name, int64_t first, int64_t end,
++        void * dst, size_t bytes) {
++    const auto & info = tensor(name);
++    const size_t stride = info.expert_bytes();
++    if (!dst || first < 0 || first >= end || end > info.ne[2] || bytes != size_t(end - first) * stride) {
++        throw std::invalid_argument("invalid contiguous expert range");
++    }
++    std::lock_guard<std::mutex> lock(pimpl->mutex);
++    if (pimpl->failed) { throw std::runtime_error("expert source is invalid after an earlier read failure"); }
++    try {
++        for (const auto & shard : pimpl->shards) { shard.check(); }
++        const int fd = expert_fileno(pimpl->shards[info.shard].file.get());
++        const off_t offset = info.offset + size_t(first) * stride;
++        for (size_t done = 0; done < bytes;) {
++            const size_t chunk = std::min(bytes - done, size_t(64) << 20);
++            const auto n = ::pread(fd, static_cast<char *>(dst) + done, chunk, offset + done);
++            if (n < 0 && errno == EINTR) { continue; }
++            if (n <= 0) { throw std::runtime_error("incomplete contiguous expert read: " + name); }
++            done += size_t(n);
++        }
++        for (const auto & shard : pimpl->shards) { shard.check(); }
++    } catch (...) {
++        pimpl->failed = true;
++        throw;
++    }
++}
++#endif
+ 
+ void llama_expert_source::read_experts(const read_request * requests, size_t count, bool speculative,
+         bool concurrent_demand, bool adjacent_ranges) {
+--- a/src/llama-prefill-wide.h
++++ b/src/llama-prefill-wide.h
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <condition_variable>
++#include <cstdlib>
+ #include <cstring>
+ #include <exception>
+ #include <mutex>
+@@ -36,7 +37,14 @@
+         uint64_t tail_bytes = 0;
+     };
+ 
+-    explicit llama_prefill_wide_weights(llama_expert_source & source) : source(source) {}
++    explicit llama_prefill_wide_weights(llama_expert_source & source) : source(source) {
++#if defined(__APPLE__)
++        if (source.architecture() == "qwen4exp") {
++            const char * option = std::getenv("LLAMA_FLASH_WIDE_BULK_READ");
++            bulk_read = option && std::strcmp(option, "1") == 0;
++        }
++#endif
++    }
+ 
+     ~llama_prefill_wide_weights() { stop_reader(); }
+ 
+@@ -225,6 +233,12 @@
+ 
+     void read_range(const llama_expert_tensor_info & info, int64_t first, int64_t end, char * destination) {
+         const size_t stride = info.expert_bytes();
++#if defined(__APPLE__)
++        if (bulk_read && first < end) {
++            source.read_expert_range(info.name, first, end, destination, size_t(end - first) * stride);
++            return;
++        }
++#endif
+         std::array<llama_expert_source::read_request, 16> reads;
+         const int64_t origin = first;
+         for (; first < end; first += reads.size()) {
+@@ -310,6 +324,9 @@
+     }
+ 
+     llama_expert_source & source;
++#if defined(__APPLE__)
++    bool bulk_read = false;
++#endif
+     ggml_backend_buffer_type_t buft = nullptr;
+     shared_base_fn shared_base = nullptr;
+     std::array<size_t, 3> bank_sizes {};

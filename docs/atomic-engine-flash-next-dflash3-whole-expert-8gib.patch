@@ -1,0 +1,86 @@
+--- a/src/llama-expert-moe.h
++++ b/src/llama-expert-moe.h
+@@ -76,6 +76,7 @@
+     static constexpr size_t queue_headroom = 64 * 1024;
+ 
+     size_t demand_min_ready = 4;
++    bool whole_expert_verify = false;
+     bool metal_predictor = false;
+     bool graph_predictor = false;
+     using compute_prefix_t = ggml_status (*)(ggml_backend_t, ggml_cgraph *, int);
+@@ -564,7 +565,7 @@
+             if (!plan.n) { return false; }
+             llama_expert_timer timer(profile ? &profile->acquire_ns : nullptr);
+             demand = store.enqueue_demand({p.up->name, p.gate->name, p.down->name},
+-                    plan.experts.data(), plan.n, ahead, readers.get(), false, staged);
++                    plan.experts.data(), plan.n, ahead, readers.get(), false, staged, whole_expert_verify && tokens == 4);
+             return true;
+         };
+         auto collect_ready = [&](group & g) {
+@@ -904,6 +905,10 @@
+             throw std::runtime_error("combined MoE minimum working set does not fit");
+         }
+ #ifdef __APPLE__
++        const char * whole = std::getenv("FLASH_VERIFY_WHOLE_EXPERT");
++        whole_expert_verify = automatic && source->architecture() == "qwen4exp" &&
++                memory.requested == (size_t(8) << 30) && std::getenv("FLASH_LIVE_DRAFT") &&
++                whole && std::strcmp(whole, "1") == 0;
+         if (automatic && queued_demand) {
+             const size_t bytes = early_io::pool::memory_bytes();
+             if (memory.requested - memory.used() - working >= bytes) {
+--- a/src/llama-expert-store.h
++++ b/src/llama-expert-store.h
+@@ -106,7 +106,8 @@
+ 
+     std::unique_ptr<demand_batch> enqueue_demand(const std::array<const char *, 3> & names,
+                 const int64_t * experts, size_t count, llama_expert_lookahead * lookahead = nullptr,
+-                early_io::pool * readers = nullptr, bool early_timing = false, llama_expert_route_stage * staged = nullptr);
++                early_io::pool * readers = nullptr, bool early_timing = false, llama_expert_route_stage * staged = nullptr,
++                bool whole_expert = false);
+     // Pin an entirely resident batch under the store lock. A miss returns false
+     // without reads, admission, policy changes or partially populated results.
+     bool acquire_resident_many(const std::string & name, const int64_t * experts, size_t count, lease * results);
+--- a/src/llama-expert-store.cpp
++++ b/src/llama-expert-store.cpp
+@@ -834,7 +834,7 @@
+ 
+ std::unique_ptr<llama_expert_store::demand_batch> llama_expert_store::enqueue_demand(
+         const std::array<const char *, 3> & names, const int64_t * experts, size_t count,
+-        llama_expert_lookahead * lookahead, early_io::pool * readers, bool early_timing, llama_expert_route_stage * staged) {
++        llama_expert_lookahead * lookahead, early_io::pool * readers, bool early_timing, llama_expert_route_stage * staged, bool whole_expert) {
+ #ifdef __APPLE__
+     if (!count || count > demand_batch::state::limit || pimpl->trace || pimpl->history || pimpl->source->packed_stride()) {
+         throw std::invalid_argument("unsupported queued expert demand");
+@@ -855,8 +855,9 @@
+     auto & s = *batch->impl_;
+     s.priority_pool = shared_readers;
+     if (early_timing && shared_readers) s.timing = std::make_unique<demand_batch::state::early_times>();
++    const bool grouped = whole_expert && s.priority_pool && !staged && !early_timing;
+     if (s.priority_pool) {
+-        s.slice_jobs = true;
++        s.slice_jobs = !grouped;
+         s.scheduled_charge = std::move(metadata);
+         s.scheduled = std::make_unique<demand_batch::state::scheduled_jobs>();
+         s.scheduled_charge.commit();
+@@ -906,7 +907,20 @@
+             pimpl->counters.parallel_reads += s.experts[i].count;
+         }
+     }
+-    if (s.n_jobs && s.priority_pool) {
++    if (s.n_jobs && grouped) {
++        // Each worker takes a routed expert, reads its missing projections and
++        // publishes the complete triple. work() checks source identity around
++        // each batch and the demand batch joins every reader before releasing leases.
++        auto & pending = *s.scheduled;
++        pending.count = std::min(s.n_jobs, early_io::pool::workers);
++        for (size_t i = 0; i < pending.count; ++i) {
++            pending.tasks[i].context = &s;
++            pending.tasks[i].fn = [](void * ptr) noexcept {
++                static_cast<demand_batch::state *>(ptr)->work();
++            };
++        }
++        s.priority_pool->submit(pending.tasks.data(), pending.count, true);
++    } else if (s.n_jobs && s.priority_pool) {
+         auto & pending = *s.scheduled;
+         for (size_t i=0;i<s.n_jobs;++i) {
+             const size_t index = s.jobs[i];

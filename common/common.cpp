@@ -1306,7 +1306,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     if (params.engine_qwen35_layers && !llama_atomic_qwen35_profile_set(model, params.engine_qwen35_layers) && budget_dflash2) {
         throw std::invalid_argument("Qwen DFlash2 profile requires a fully offloaded Metal target");
     }
-    if (budget_dflash2 && !llama_atomic_dflash2_enable(model, common_atomic_flash_next_dflash3_profile(params))) {
+    if (budget_dflash2 && !llama_atomic_dflash2_enable(model, common_atomic_flash_next_dflash3_profile(params) ? uint32_t(params.n_ctx) : 0u)) {
         throw std::invalid_argument("budgeted DFlash2 requires a qualified streamed Metal target and memory profile");
     }
 

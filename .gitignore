@@ -43,6 +43,7 @@
 
 /tags
 /.build/
+/.work/
 /build*
 /release
 /debug

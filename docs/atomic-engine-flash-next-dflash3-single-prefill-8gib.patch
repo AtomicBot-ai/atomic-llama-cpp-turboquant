@@ -1,0 +1,69 @@
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2304,6 +2304,25 @@
+     return false; // all sequences use backend sampling
+ }
+ 
++// Called with the single slot idle between draft work and a fresh target prompt.
++// Draft KV, weights and extracted target features are owned outside the scheduler.
++void flash_single_park_draft(llama_context * draft) {
++    if (!draft || draft->model.arch != LLM_ARCH_DFLASH || !draft->model.hparams.dflash_selector_rank ||
++            !draft->cparams.ctx_other || !draft->sched) { return; }
++    auto & target = *draft->cparams.ctx_other;
++    if (target.model.arch != LLM_ARCH_QWEN4EXP || !target.model.memory_contract ||
++            !target.model.memory_contract->dflash2_target || target.cparams.n_rs_seq != 3 ||
++            target.cparams.n_seq_max != 1 || !target.budget_control ||
++            target.budget_control->budget_requested != (size_t(8) << 30)) { return; }
++    draft->synchronize();
++    draft->reset_expert_graphs();
++    // Keep a valid empty scheduler for synchronization and error cleanup. The
++    // next draft decode reserves its buffers through the normal entry point.
++    draft->sched.reset();
++    draft->sched_new(draft->sched_params_cur);
++    draft->sched_need_reserve = true;
++}
++
+ void llama_context::reset_expert_graphs() {
+     ggml_backend_sched_reset(sched.get());
+     for (auto & graph : gf_res_prev) { graph->reset(); }
+@@ -2506,7 +2525,9 @@
+             wide_dflash && model.memory_contract->dflash2_target && cparams.n_rs_seq == 3 &&
+             budget_control->budget_requested == (size_t(8) << 30) && std::getenv("FLASH_STREAM_WIDE");
+     if (stream_wide) {
+-        const uint32_t blocks = (n_tokens_all + 455) / 456;
++        const uint32_t limit = n_tokens_all == 912 && std::getenv("FLASH_SINGLE_PREFILL") &&
++                std::getenv("FLASH_PROMPT_TILES") ? 912 : 456;
++        const uint32_t blocks = (n_tokens_all + limit - 1) / limit;
+         window_rows = (n_tokens_all + blocks - 1) / blocks;
+         partial_wide = false;
+     }
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -60,6 +60,7 @@
+     //   - etc.
+     void sched_reserve();
+     void reset_expert_graphs();
++    friend void flash_single_park_draft(llama_context * draft);
+ 
+     void synchronize();
+ 
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1,4 +1,5 @@
+ extern void flash_verify_enable_size_lru();
++extern void flash_single_park_draft(struct llama_context * draft);
+ #include "atomic-budget.h"
+ #include "atomic-dflash-depth.h"
+ #include "server-context.h"
+@@ -4877,6 +4878,11 @@
+                 const auto & slot = *batch.slot_batched;
+                 const size_t total = slot.task->n_tokens();
+                 const size_t uncached = total - std::min(total, size_t(slot.stats.n_prompt_cached));
++                if (uncached == 912 && off == 0 && batch.view.size() == 912 &&
++                        std::getenv("FLASH_SINGLE_PREFILL") && std::getenv("FLASH_STREAM_WIDE") &&
++                        std::getenv("FLASH_LIVE_FEATURE_PREFILL") && std::getenv("FLASH_PROMPT_TILES")) {
++                    flash_single_park_draft(ctx_dft);
++                }
+                 ret = llama_expert_prefill_decode(ctx_tgt, batch.view.get(), uncached);
+             } else {
+                 ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());

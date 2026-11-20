@@ -1,0 +1,47 @@
+--- a/src/llama-expert-moe.h
++++ b/src/llama-expert-moe.h
+@@ -79,6 +79,8 @@
+     bool flash_verify_ready8 = false;
+     bool flash_read_next_wave = false;
+     uint64_t profiled_early_waves = 0;
++    bool flash_prime_next_wave = false;
++    uint64_t profiled_primed_waves = 0;
+     bool metal_predictor = false;
+     bool graph_predictor = false;
+     using compute_prefix_t = ggml_status (*)(ggml_backend_t, ggml_cgraph *, int);
+@@ -613,7 +615,14 @@
+         }
+         if (was_published && !current.n && demand) { collect_ready(current); }
+         if (!current.n) {
+-            if (use_queue && enqueue_ready()) { collect_ready(current); }
++            if (use_queue && enqueue_ready()) {
++                // Both route lists are exact. Send the second wave to the same readers while
++                // the first is loading; keep consuming in order with the existing eight-ready gate.
++                if (flash_prime_next_wave && tokens == 4 && !was_published && !staged && !following) {
++                    if (queue_plan(following) && profile) { ++profiled_primed_waves; }
++                }
++                collect_ready(current);
++            }
+             else { take(current); load(current); }
+         }
+         const bool use_batch = use_queue && batch_routes;
+@@ -837,6 +846,10 @@
+         }
+         if (profile && flash_read_next_wave && tokens == 4 && !std::strcmp(p.up->name, "blk.47.ffn_up_exps.weight")) {
+             std::fprintf(stderr, "VERIFY_EARLY_WAVES %llu\n", (unsigned long long)profiled_early_waves);
++            if (flash_prime_next_wave) {
++                std::fprintf(stderr, "VERIFY_PRIMED_WAVES %llu\n", (unsigned long long)profiled_primed_waves);
++                profiled_primed_waves = 0;
++            }
+             profiled_early_waves = 0;
+         }
+         projections += 3;
+@@ -934,6 +947,8 @@
+                 ready8 && std::strcmp(ready8, "1") == 0;
+         const char * next_wave = std::getenv("FLASH_VERIFY_NEXT_WAVE");
+         flash_read_next_wave = flash_verify_ready8 && next_wave && std::strcmp(next_wave, "1") == 0;
++        const char * prime = std::getenv("FLASH_VERIFY_PRIME_WAVE");
++        flash_prime_next_wave = flash_read_next_wave && prime && std::strcmp(prime, "1") == 0;
+         if (automatic && queued_demand) {
+             const size_t bytes = early_io::pool::memory_bytes();
+             if (memory.requested - memory.used() - working >= bytes) {
