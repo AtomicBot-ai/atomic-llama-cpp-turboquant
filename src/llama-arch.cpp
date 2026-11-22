@@ -373,7 +373,7 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
 
     { LLM_KV_SITU_BETA,             "%s.situ_beta"             },
     { LLM_KV_SITU_LINEAR_BETA,      "%s.situ_linear_beta"      },
-    { LLM_KV_ATTN_RES_BLOCK_SIZE,   "%s.attn_res_block_size"   },
+    { LLM_KV_ATTN_RES_BLOCK_SIZE,   "%s.attn_res.block_size"   },
     { LLM_KV_ACTIVATION_SITU_BETA,  "%s.activation.situ_beta"  },
     { LLM_KV_ACTIVATION_SITU_LINEAR_BETA, "%s.activation.situ_linear_beta" },
 

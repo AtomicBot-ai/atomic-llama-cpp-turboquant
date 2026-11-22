@@ -355,6 +355,8 @@ void llama_model_inkling2::graph::build_output(ggml_tensor * cur, const std::vec
     cur = ggml_cont(ctx0, ggml_view_2d(ctx0, cur, hparams.n_vocab_unpadded, cur->ne[1], cur->nb[1], 0));
     res->t_logits = cur;
     cb(cur, "result_output", -1);
+
+    ggml_build_forward_expand(gf, cur);
 }
 
 llama_model_inkling2::graph::graph(const llama_model & model, const llm_graph_params & params) :
