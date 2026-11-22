@@ -1489,7 +1489,6 @@ bool llm_arch_supports_sm_tensor(const llm_arch & arch) {
 
 bool llama_arch_supports_save(llm_arch arch) {
     switch (arch) {
-        case LLM_ARCH_SENSENOVA_U1:
         case LLM_ARCH_GEMMA3N:
         case LLM_ARCH_BITNET:
         case LLM_ARCH_T5:
@@ -1497,7 +1496,6 @@ bool llama_arch_supports_save(llm_arch arch) {
         case LLM_ARCH_STEP35:
         case LLM_ARCH_CLEF: // the head tensors are not saved
         case LLM_ARCH_INKLING2_LOOP: // the loop tensors are not saved and the cache slots are expanded at load
-        case LLM_ARCH_VLLM_DECISION2:
             return false;
         default:
             return true;
