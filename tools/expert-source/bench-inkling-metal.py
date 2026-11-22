@@ -95,6 +95,12 @@ def measure(url, prompt):
     return dict(ttft_s=first - start, decode_tps=timings["predicted_per_second"], timings=timings, tokens=tokens)
 
 
+def engine_metrics(url):
+    with HTTP.open(url + "/metrics", timeout=10) as response:
+        return {k: int(v) for k, v in re.findall(
+            r"^llamacpp:engine_memory_(\w+)\s+(\d+)$", response.read().decode(), re.M)}
+
+
 def run(args, budget, directory, env):
     log = directory / ("stock.log" if budget is None else f"atomic-{budget}gib.log")
     command = server_command(args, budget)
@@ -102,16 +108,19 @@ def run(args, budget, directory, env):
         process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT, env=env)
         try:
             url = wait_ready(process, log)
-            row = measure(url, fixed_prompt(url))
+            prompt = fixed_prompt(url)
+            before = engine_metrics(url) if budget is not None else {}
+            row = measure(url, prompt)
             if budget is not None:
-                with HTTP.open(url + "/metrics", timeout=10) as response:
-                    metrics = response.read().decode()
-                counters = {k: int(float(v)) for k, v in re.findall(
-                    r"^llamacpp:engine_memory_budget_(\w+)_bytes\s+(\S+)$", metrics, re.M)}
+                counters = engine_metrics(url)
                 cap = (budget * 1024 + 100) * 2**20
-                if counters["applied"] != cap or counters["high_water"] > cap:
+                peak = counters["budget_high_water_bytes"]
+                if counters["budget_applied_bytes"] != cap or peak > cap:
                     raise RuntimeError(f"Unexpected engine budget counters: {counters}")
-                row.update(budget_mib=cap // 2**20, peak_managed_bytes=counters["high_water"])
+                row.update(budget_mib=cap // 2**20, peak_managed_bytes=peak)
+                for key in ("expert_logical_read_bytes", "expert_cache_misses"):
+                    if key in before and key in counters:
+                        row[key] = counters[key] - before[key]
         finally:
             if process.poll() is None:
                 process.terminate()

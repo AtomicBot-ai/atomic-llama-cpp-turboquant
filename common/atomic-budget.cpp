@@ -141,6 +141,28 @@ int qwen35_grid_draft_layers(const std::string & path, int bf16_layers, int comp
 } // namespace
 
 #ifdef GGML_USE_METAL
+static bool inkling_profile_weights(const gguf_context * meta) {
+    if (metadata_u32(meta, "general.file_type", LLAMA_FTYPE_MOSTLY_Q4_K_M)) { return true; }
+    const bool iq3 = metadata_u32(meta, "general.file_type", LLAMA_FTYPE_MOSTLY_IQ3_S);
+    // AD-IQ2_M is tagged MOSTLY_IQ2_XXS. Inspect the expert tensors to
+    // distinguish its mixed down projections from other releases with that tag.
+    if ((!iq3 && !metadata_u32(meta, "general.file_type", LLAMA_FTYPE_MOSTLY_IQ2_XXS)) ||
+            !metadata_u32(meta, "inkling2_loop.block_count", 24)) { return false; }
+    int q2_down = 0;
+    for (int i = 0; i < 24; ++i) {
+        const auto prefix = "blk." + std::to_string(i) + ".ffn_";
+        const auto gate = gguf_find_tensor(meta, (prefix + "gate_up_exps.weight").c_str());
+        const auto down = gguf_find_tensor(meta, (prefix + "down_exps.weight").c_str());
+        if (gate < 0 || down < 0 || gguf_get_tensor_type(meta, gate) != (iq3 ? GGML_TYPE_IQ3_S : GGML_TYPE_IQ2_XXS)) {
+            return false;
+        }
+        const auto type = gguf_get_tensor_type(meta, down);
+        if (!iq3 && type == GGML_TYPE_Q2_0) { ++q2_down; }
+        else if (type != GGML_TYPE_IQ4_NL) { return false; }
+    }
+    return iq3 || q2_down == 16;
+}
+
 void common_atomic_select_inkling_metal_profile(const common_params & p) {
     const auto & draft = p.speculative.draft;
     if (!common_atomic_inkling_dspark_enabled(p) || p.fit_params || p.model.path.empty() ||
@@ -158,7 +180,7 @@ void common_atomic_select_inkling_metal_profile(const common_params & p) {
     gguf_context_ptr meta(gguf_init_from_file(p.model.path.c_str(), {true, nullptr}));
     if (!meta || !metadata_string(meta.get(), "general.architecture", "inkling2_loop") ||
             !metadata_string(meta.get(), "general.name", "Inkling-2-Mini") ||
-            !metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_Q4_K_M)) {
+            !inkling_profile_weights(meta.get())) {
         return;
     }
     // Set defaults before the first Metal context. Explicit experiment settings take precedence.

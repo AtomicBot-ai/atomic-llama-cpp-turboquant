@@ -3242,6 +3242,13 @@ private:
                                 {"pressure_level", int(policy.level)}, {"policy_reason", int(policy.reason)},
                                 {"policy_decisions", policy.decisions}, {"headroom_bytes", policy.headroom},
                                 {"headroom_valid", int(policy.headroom_valid)}};
+                            if (common_atomic_inkling_dspark_enabled(params_base)) {
+                                llama_expert_streaming_data experts {};
+                                if (llama_get_expert_streaming_stats(ctx_tgt, &experts)) {
+                                    res->engine_memory["expert_logical_read_bytes"] = experts.logical_read_bytes;
+                                    res->engine_memory["expert_cache_misses"] = experts.misses;
+                                }
+                            }
                         }
                     }
 

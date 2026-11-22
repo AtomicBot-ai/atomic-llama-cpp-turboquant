@@ -10,6 +10,17 @@
 #include <stdexcept>
 #include <vector>
 
+// The streamed FFN and resident banks use the same native Metal weight layouts.
+inline bool llama_inkling_native_expert_pair(const ggml_tensor * gate_up, const ggml_tensor * down) {
+    if (!gate_up || !down) { return false; }
+    switch (gate_up->type) {
+        case GGML_TYPE_Q4_K:    return down->type == GGML_TYPE_Q5_0;
+        case GGML_TYPE_IQ3_S:   return down->type == GGML_TYPE_IQ4_NL;
+        case GGML_TYPE_IQ2_XXS: return down->type == GGML_TYPE_IQ4_NL || down->type == GGML_TYPE_Q2_0;
+        default:                return false;
+    }
+}
+
 // The loop visits the same physical layers several times. A complete bank can
 // use Metal's ordinary routed matmul without a per-visit host callback.
 class llama_inkling_core_banks {
@@ -101,8 +112,7 @@ private:
             const size_t ip = (model.core_start + i) % model.n_phys;
             const auto & layer = model.layers[ip];
             const weights original = {layer.ffn_gate_up_exps, layer.ffn_down_exps};
-            if (model.dev_layer(ip) != dev || !original[0] || !original[1] ||
-                    original[0]->type != GGML_TYPE_Q4_K || original[1]->type != GGML_TYPE_Q5_0 ||
+            if (model.dev_layer(ip) != dev || !llama_inkling_native_expert_pair(original[0], original[1]) ||
                     !model.streamed_experts.count(original[0]) || !model.streamed_experts.count(original[1])) { break; }
             const size_t meta = 2 * ggml_tensor_overhead();
             if (ggml_nbytes(original[0]) + ggml_nbytes(original[1]) + meta > allowed - charged) { break; }

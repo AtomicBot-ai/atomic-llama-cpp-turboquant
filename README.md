@@ -60,6 +60,28 @@ The script runs stock llama.cpp first, then Atomic Engine at **8, 10, 12, 14, 16
 
 The table prints as each row finishes. The script saves `results.json` and the server logs in a new directory under `.work/inkling-bench/`. To run just stock and 20 GiB, append `--budgets 20`. For other installation paths, pass `--server`, `--stock-server`, `--model` or `--draft`.
 
+To benchmark the AD-IQ3_S or AD-IQ2_M target at 8 GiB plus KV, set the
+quant below and place that target and the original Q8_0 DSpark draft in
+`.work/models/`. Build the folded draft once per target (requires NumPy
+and the bundled `gguf-py` package), then run the same stock comparison:
+
+```sh
+quant=IQ3_S  # or IQ2_M
+model=".work/models/Inkling-2-Mini-AD-${quant}.gguf"
+draft=".work/models/dspark-Inkling-2-Mini-${quant}-folded.gguf"
+PYTHONPATH=gguf-py python3 tools/expert-source/fold-inkling-dspark.py \
+  "$model" .work/models/dspark-Inkling-2-Mini-Q8_0.gguf "$draft"
+python3 tools/expert-source/bench-inkling-metal.py --model "$model" --draft "$draft" --budgets 8
+```
+
+For interactive use, pass these same paths to `-m` and `-md` in the
+server command above and use `--engine-budget-mib 8292`. KV stays at Q4_0.
+In the benchmark JSON, `expert_logical_read_bytes` counts streamed expert
+weight bytes during the request, including reads served by the OS page
+cache. `expert_cache_misses` counts misses in the engine's expert cache.
+See the [measured M4 Max matrix](docs/atomic-engine-inkling-low-bit-metal.png)
+and [per-budget timings, token IDs and memory peaks](docs/atomic-engine-inkling-low-bit-metal.json).
+
 <details>
 <summary>Build the stock Metal server used for the comparison</summary>
 

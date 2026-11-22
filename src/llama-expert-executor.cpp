@@ -283,8 +283,10 @@ struct llama_expert_executor::impl {
             switch (w->type) {
                 case GGML_TYPE_F32: case GGML_TYPE_F16: case GGML_TYPE_Q4_0:
                 case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_IQ4_XS: break;
-                case GGML_TYPE_Q2_0: case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS:
-                case GGML_TYPE_IQ2_S: case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL:
+                case GGML_TYPE_Q2_0: case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL:
+                    if (inkling_metal) { break; }
+                    [[fallthrough]];
+                case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S: case GGML_TYPE_IQ3_XXS:
                     if (source->architecture() == "qwen4exp" && (metal || discrete.device)) { break; }
                     throw std::runtime_error("this expert format requires experimental Qwen4Exp Metal or CUDA streaming");
                 case GGML_TYPE_Q5_0:
@@ -1277,7 +1279,7 @@ ggml_tensor * llama_expert_executor::build_inkling_ffn(ggml_context * ctx, const
         const ggml_tensor * down, ggml_tensor * input, ggml_tensor * ids, float beta, float linear_beta) {
     if (!pimpl->inkling_fused_ffn || !pimpl->route_index || pimpl->tracing || pimpl->route_observer ||
             pimpl->early || pimpl->preview || pimpl->workspace_groups != max_wave_groups ||
-            !down || gate_up->type != GGML_TYPE_Q4_K || down->type != GGML_TYPE_Q5_0 ||
+            !llama_inkling_native_expert_pair(gate_up, down) ||
             gate_up->ne[0] != 2304 || gate_up->ne[1] != 2304 || down->ne[0] != 1152 || down->ne[1] != 2304 ||
             gate_up->ne[2] != down->ne[2] || !llama_expert_route_index::fits(ids, gate_up->ne[2]) ||
             ids->ne[1] < 1 || ids->ne[1] >= int64_t(max_wave_rows) ||
@@ -1343,8 +1345,7 @@ void llama_expert_executor::configure_resident_layers(const llama_model & model,
         const auto & inkling = static_cast<const llama_model_inkling2_loop &>(model);
         const auto & layer = inkling.layers[inkling.core_start];
         if ((!flag || prefer_full || std::strcmp(flag, "1") == 0) && inkling.n_passes > 1 &&
-                layer.ffn_gate_up_exps && layer.ffn_gate_up_exps->type == GGML_TYPE_Q4_K &&
-                layer.ffn_down_exps && layer.ffn_down_exps->type == GGML_TYPE_Q5_0) {
+                llama_inkling_native_expert_pair(layer.ffn_gate_up_exps, layer.ffn_down_exps)) {
             const auto state = stats();
             const char * prompt = std::getenv("LLAMA_EXPERIMENTAL_INKLING_PREFILL_MATRIX");
             const bool overlap_prompt = prompt && std::strcmp(prompt, "3") == 0;
