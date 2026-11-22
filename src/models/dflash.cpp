@@ -39,7 +39,9 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
     const bool has_markov   = ml.get_tensor_meta("markov_w1.weight")       != nullptr;
     const bool has_selector = ml.get_tensor_meta("selector_hidden.weight") != nullptr;
     const bool has_lilicorr = ml.get_key(LLM_KV_LILICORR_HIDDEN_SIZE, hparams.lilicorr_hidden_size, false);
-    hparams.inkling2_dspark = has_markov && ml.get_tensor_meta("dspark_hidden_out.weight");
+    hparams.inkling2_dspark = has_markov && (ml.get_tensor_meta("dspark_hidden_out.weight") ||
+            (ml.get_tensor_meta("markov_ctx_mix.weight") && ml.get_tensor_meta("blk.0.ctx_mix.weight") &&
+             ml.get_tensor_meta("markov_w2.bias") && ml.get_tensor_meta("token_embd_norm.weight")));
     if (has_markov) {
         variant = VARIANT_DSPARK;
     } else if (has_selector) {

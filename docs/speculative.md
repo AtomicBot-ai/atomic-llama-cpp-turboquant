@@ -108,6 +108,11 @@ See:
 
 ### DSpark (`draft-dspark`)
 
+For budgeted Inkling 2 Mini on Apple Silicon, pass AtomicChat's published
+`dspark-Inkling-2-Mini-Q8_0.gguf` directly with `-md`. The IQ2_M, IQ3_S and
+Q4_K targets share the same file. [Inkling Metal download and launch command](../README.md#run-inkling-2-mini-on-apple-silicon).
+
+
 [DSpark](https://arxiv.org/pdf/2607.05147) extends DFlash with a semi-autoregressive _Markov head_: the draft still emits a whole
 block per forward pass, but each block position's logits are biased by a low-rank term keyed on
 the previous token, chained in-graph across the block. This keeps drafting at one decode per

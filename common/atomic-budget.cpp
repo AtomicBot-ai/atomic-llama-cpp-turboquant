@@ -169,7 +169,7 @@ void common_atomic_select_inkling_metal_profile(common_params & p) {
     const bool profile_budget = p.engine_budget >= (8*1024 + 100)*mib && p.engine_budget <= (20*1024 + 100)*mib;
     const bool legacy_draft = draft.n_max == 3 && draft.n_ubatch == 32;
     const bool default_ubatch = !draft.n_ubatch_explicit && draft.n_ubatch == 0;
-    const bool matrix_draft = profile_budget && (draft.n_max == 3 || draft.n_max == 7) &&
+    const bool matrix_draft = profile_budget && (draft.n_max == 3 || draft.n_max == 4 || draft.n_max == 7) &&
             (default_ubatch || draft.n_ubatch == 32);
     if (!common_atomic_inkling_dspark_enabled(p) || p.fit_params || p.model.path.empty() ||
             p.n_ctx != 4096 || p.n_batch != 1024 || p.n_ubatch != 1024 ||

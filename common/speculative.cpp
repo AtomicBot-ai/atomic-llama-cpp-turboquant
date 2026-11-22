@@ -1379,6 +1379,7 @@ struct common_speculative_impl_draft_dspark final : public common_speculative_im
 
     // The recurrent head uses the anchor features from the injection.
     bool has_rnn_context = false;
+    bool use_prompt_lookup = false;
 
     size_t context_rows = 0;
     std::vector<float>     context_embd;
@@ -1397,6 +1398,10 @@ struct common_speculative_impl_draft_dspark final : public common_speculative_im
         }
 
         has_rnn_context = llama_atomic_is_inkling_dspark(model_dft);
+        if (has_rnn_context && n_seq == 1) {
+            const char * lookup = std::getenv("LLAMA_EXPERIMENTAL_INKLING_PROMPT_LOOKUP");
+            use_prompt_lookup = lookup && std::strcmp(lookup, "1") == 0;
+        }
 
         if (this->params.p_min > 0.0f) {
             char buf[16] = {};
@@ -1446,6 +1451,30 @@ struct common_speculative_impl_draft_dspark final : public common_speculative_im
     }
 
 protected:
+    // Copy a proposal from committed tokens. The target verifies it just like a DSpark block.
+    bool draft_from_prompt(common_speculative_draft_params & dp) const {
+        constexpr size_t suffix = 32;
+        constexpr size_t window = 8192;
+        const int32_t count = dp.n_max < 0 ? params.n_max : std::min(dp.n_max, params.n_max);
+        if (!dp.prompt || dp.result_q || dp.temp > 0 || count < std::max(1, params.n_min)) {
+            return false;
+        }
+        const auto & history = *dp.prompt;
+        if (history.size() < suffix + count) {
+            return false;
+        }
+        const size_t lower = std::max(suffix - 1, history.size() > window ? history.size() - window : 0);
+        for (size_t end = history.size() - count; end > lower; --end) {
+            if (history[end - 1] == dp.id_last &&
+                    std::equal(history.end() - (suffix - 1), history.end(), history.begin() + end - suffix)) {
+                dp.result->assign(history.begin() + end, history.begin() + end + count);
+                LOG_DBG("%s: matched %zu tokens, proposing %d tokens\n", __func__, suffix, count);
+                return true;
+            }
+        }
+        return false;
+    }
+
     void store_context_features(llama_seq_id seq_id, int32_t n_chunk) override {
         if (!has_rnn_context) {
             return;
@@ -1487,6 +1516,9 @@ public:
                 continue;
             }
 
+            if (use_prompt_lookup && draft_from_prompt(dp)) {
+                continue;
+            }
             common_sampler_reset(smpls[seq_id].get());
 
             const int32_t n = (int32_t) dp.pos0;

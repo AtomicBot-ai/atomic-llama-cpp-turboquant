@@ -1016,3 +1016,81 @@ template [[host_name("kernel_mul_mm_id_iq1_m_f16")]]   kernel mul_mm_id kernel_m
 template [[host_name("kernel_mul_mm_id_iq4_nl_f16")]]  kernel mul_mm_id kernel_mul_mm_id<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_iq4_nl,  2,     dequantize_iq4_nl,  float,  float4x4,  half, half2x4>;
 template [[host_name("kernel_mul_mm_id_iq4_xs_f16")]]  kernel mul_mm_id kernel_mul_mm_id<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_iq4_xs,  QK_NL, dequantize_iq4_xs,  float,  float4x4,  half, half2x4>;
 template [[host_name("kernel_mul_mm_id_tq2_0_f16")]]   kernel mul_mm_id kernel_mul_mm_id<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_tq2_0,   QK_NL, dequantize_tq2_0,   float,  float4x4,  half, half2x4>;
+
+// Short Inkling verification batches: store up to five route slots (slot+1
+// fits in six bits). Each leader owns the original output slots of its group.
+kernel void inkling_group_routes(constant uint2 & shape, device const int * ids,
+        device int2 * map, uint slot [[thread_index_in_threadgroup]]) {
+    threadgroup int expert[64];
+    if (slot < shape.x) { expert[slot] = ids[(slot / 8) * shape.y + slot % 8]; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (slot >= shape.x) { return; }
+    const int id = expert[slot];
+    uint prior = 0;
+    for (uint i = 0; i < slot; ++i) { prior += expert[i] == id; }
+    uint packed = 0;
+    if (prior % 5 == 0) {
+        uint bits = 0;
+        for (uint i = slot; i < shape.x && bits < 30; ++i) {
+            if (expert[i] == id) {
+                packed |= (i + 1) << bits;
+                bits += 6;
+            }
+        }
+    }
+    map[slot] = int2(id, int(packed));
+}
+
+// Specialize the number of accumulators so the inner dot products stay in registers.
+template<ushort count, typename block, short parts,
+         void (*unpack)(device const block *, short, thread float4x4 &)>
+inline void inkling_group_dot(constant ulong * a, device const char * weights, device const char * x,
+        device float * dst, int expert, uint packed, uint row, ushort lane) {
+    uint slots[count];
+    device const float4 * input[count];
+    for (ushort t = 0; t < count; ++t) {
+        const uint slot = (packed & 63) - 1;
+        slots[t] = slot;
+        input[t] = (device const float4 *)(x + (slot % 8 % a[4]) * a[5] + (slot / 8) * a[6]);
+        packed >>= 6;
+    }
+    float sums[count] = {};
+    if (expert >= 0) {
+        device const block * w = (device const block *)(weights + uint(expert) * a[3] + row * a[2]);
+        for (uint col = lane; col < uint(a[0]) / 16; col += 32) {
+            float4x4 decoded;
+            unpack(w + col / parts, short(col % parts), decoded);
+            for (ushort t = 0; t < count; ++t) {
+                for (ushort k = 0; k < 4; ++k) {
+                    sums[t] += dot(decoded[k], input[t][4 * col + k]);
+                }
+            }
+        }
+    }
+    for (ushort t = 0; t < count; ++t) {
+        const float y = simd_sum(sums[t]);
+        if (lane == 0) { dst[slots[t] * a[1] + row] = y; }
+    }
+}
+
+template<typename block, short parts, void (*unpack)(device const block *, short, thread float4x4 &)>
+kernel void inkling_group_project(constant ulong * a, device const char * weights, device const char * x,
+        device const int2 * map, device float * dst, uint2 group [[threadgroup_position_in_grid]],
+        ushort lane [[thread_index_in_simdgroup]], ushort sg [[simdgroup_index_in_threadgroup]]) {
+    const int2 entry = map[group.y];
+    const uint packed = uint(entry.y);
+    if (!packed) { return; }
+    const uint row = group.x * 8 + sg;
+    if      (packed < (1u <<  6)) { inkling_group_dot<1,block,parts,unpack>(a, weights, x, dst, entry.x, packed, row, lane); }
+    else if (packed < (1u << 12)) { inkling_group_dot<2,block,parts,unpack>(a, weights, x, dst, entry.x, packed, row, lane); }
+    else if (packed < (1u << 18)) { inkling_group_dot<3,block,parts,unpack>(a, weights, x, dst, entry.x, packed, row, lane); }
+    else if (packed < (1u << 24)) { inkling_group_dot<4,block,parts,unpack>(a, weights, x, dst, entry.x, packed, row, lane); }
+    else                          { inkling_group_dot<5,block,parts,unpack>(a, weights, x, dst, entry.x, packed, row, lane); }
+}
+
+typedef decltype(inkling_group_project<block_q5_0, 2, dequantize_q5_0>) inkling_group_fn;
+template [[host_name("inkling_group_iq2_xxs")]] kernel inkling_group_fn inkling_group_project<block_iq2_xxs, 16, dequantize_iq2_xxs>;
+template [[host_name("inkling_group_iq3_s")]]   kernel inkling_group_fn inkling_group_project<block_iq3_s, 16, dequantize_iq3_s>;
+template [[host_name("inkling_group_iq4_nl")]]  kernel inkling_group_fn inkling_group_project<block_iq4_nl, 2, dequantize_iq4_nl>;
+template [[host_name("inkling_group_q2_0")]]    kernel inkling_group_fn inkling_group_project<block_q2_0, 4, dequantize_q2_0>;
+template [[host_name("inkling_group_q5_0")]]    kernel inkling_group_fn inkling_group_project<block_q5_0, 2, dequantize_q5_0>;

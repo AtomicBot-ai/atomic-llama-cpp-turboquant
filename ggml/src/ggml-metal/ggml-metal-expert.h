@@ -6,6 +6,9 @@
 // Valid only for an exclusively owned single-expert 32-row op with immutable IDs.
 enum { GGML_METAL_PREPARED_SINGLE_EXPERT = 0x41544531 };
 
+// Set only on an immutable, private Inkling bank leaf (GGML_OP_NONE).
+enum { GGML_METAL_INKLING_GROUP_BANK = 0x41544742 };
+
 // The tag lives past the ordinary custom callback and its application data.
 enum { GGML_METAL_HOST_EXPERT_BRIDGE = 0x41544532 };
 enum { GGML_METAL_INKLING_REL_MASK = 0x41544534 };
@@ -13,6 +16,8 @@ enum { GGML_METAL_INKLING_CONV_RESIDUAL = 0x41544535 };
 enum { GGML_METAL_INKLING_CLIP = 0x41544536 };
 enum { GGML_METAL_INKLING_SITU = 0x41544537 };
 enum { GGML_METAL_INKLING_CONTROL = 0x41544538 };
+// Hint on a standard ADD node in the projected Inkling DSpark head.
+enum { GGML_METAL_INKLING_VOCAB_ADD = 0x41545732 };
 enum { GGML_METAL_INKLING_PREFILL_ATTN = 0x41544539 };
 static inline bool ggml_metal_is_host_expert(const struct ggml_tensor * node) {
     return node->op == GGML_OP_CUSTOM &&

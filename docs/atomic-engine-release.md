@@ -35,13 +35,13 @@ writable directory. The commands below serve HTTP on loopback.
 
 ### Inkling 2 Mini AD-Q4_K with DSpark-3
 
-Set `MODEL` to `Inkling-2-Mini-AD-Q4_K.gguf` and `DRAFT_GGUF` to the path
-of its folded `dspark-Inkling-2-Mini-Q8_0-folded-final.gguf` draft. Launch
-the Metal server built above with a 20 GiB budget plus 100 MiB for KV.
+Set `MODEL` to the local `Inkling-2-Mini-AD-Q4_K.gguf`. Use the same published
+AtomicChat Q8_0 draft as IQ2_M and IQ3_S. The command uses the Metal build above and a 20 GiB budget
+plus 100 MiB for KV. [Download the tested draft](../README.md#run-inkling-2-mini-on-apple-silicon).
 
 ```sh
 ./build-metal-release/bin/llama-server \
-  -m "$MODEL" -md "$DRAFT_GGUF" \
+  -m "$MODEL" -md .work/models/atomicchat-dspark-3095098/dspark-Inkling-2-Mini-Q8_0.gguf \
   --spec-type draft-dspark --spec-draft-n-max 3 --spec-draft-n-ubatch 32 \
   --engine-budget-mib 20580 -fit off -c 4096 -b 1024 -ub 1024 -np 1 \
   -fa on -ctk q4_0 -ctv q4_0 -ctkd q4_0 -ctvd q4_0 -ngl all -ngld 99 -t 8 -tb 8 \

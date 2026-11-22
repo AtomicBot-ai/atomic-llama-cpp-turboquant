@@ -6,9 +6,22 @@
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
 
+#include <cstdlib>
+#include <cstring>
+
 void llama_model_dflash::load_hparams_inkling2(llama_model_loader & ml) {
-    ml.get_key(LLM_KV_VOCAB_SIZE, hparams.n_vocab_padded);
-    ml.get_key(LLM_KV_VOCAB_SIZE_UNPADDED, hparams.n_vocab_unpadded);
+    // PR #32218 at e4b1cb5318f1 exports W2 over the true vocabulary and includes
+    // the anchor position in the serialized sliding window.
+    const auto * w2 = ml.get_tensor_meta("markov_w2.weight");
+    if (w2) {
+        if (w2->ne[1] <= 0 || w2->ne[1] > (1 << 24)) {
+            throw std::runtime_error("invalid Inkling2 DSpark output vocabulary");
+        }
+        hparams.n_vocab_padded = hparams.n_vocab_unpadded = w2->ne[1];
+    } else {
+        ml.get_key(LLM_KV_VOCAB_SIZE, hparams.n_vocab_padded);
+        ml.get_key(LLM_KV_VOCAB_SIZE_UNPADDED, hparams.n_vocab_unpadded);
+    }
     ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa);
     ml.get_key_or_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, hparams.is_swa_impl, hparams.n_layer());
 
@@ -34,7 +47,7 @@ void llama_model_dflash::load_hparams_inkling2(llama_model_loader & ml) {
         }
     }
     // The anchor row includes the anchor and the window before it.
-    hparams.n_swa += 1;
+    if (!w2) { hparams.n_swa += 1; }
     hparams.swa_type = LLAMA_SWA_TYPE_STANDARD;
     hparams.rope_freq_base_train_swa = hparams.rope_freq_base_train;
     hparams.rope_freq_scale_train_swa = hparams.rope_freq_scale_train;
@@ -52,14 +65,26 @@ void llama_model_dflash::load_tensors_inkling2() {
         throw std::runtime_error("invalid Inkling2 DSpark vocabulary size");
     }
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
-    dspark_mask_embd = create_tensor(tn(LLM_TENSOR_DSPARK_MASK_EMBD, "weight"), {n_embd}, 0);
-    dspark_fuse = create_tensor(tn(LLM_TENSOR_DSPARK_FUSE, "weight"), {(int64_t) target_layer_ids.size(), n_layer + 1}, 0);
-    dspark_norm = create_tensor(tn(LLM_TENSOR_DSPARK_NORM, "weight"), {n_embd}, 0);
+    const bool projected = ml->get_tensor_meta("markov_w2.weight") != nullptr;
+    if (projected) {
+        dspark_mask_embd = create_tensor(tn(LLM_TENSOR_DSPARK_MASK_EMBD, "weight"), {n_embd, hparams.dflash_block_size - 1}, 0);
+        tok_norm = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD_NORM, "weight", 0), {n_embd}, 0);
+        dspark_fuse = create_tensor(tn(LLM_TENSOR_DSPARK_MARKOV_CTX_MIX, "weight"), {(int64_t) target_layer_ids.size()}, 0);
+        dspark_norm = create_tensor(tn(LLM_TENSOR_DSPARK_MARKOV_CTX_NORM, "weight"), {n_embd}, 0);
+        dspark_markov_w2 = create_tensor(tn(LLM_TENSOR_DSPARK_MARKOV_W2, "weight"), {rank, n_vocab}, 0);
+        dspark_markov_w2_b = create_tensor(tn(LLM_TENSOR_DSPARK_MARKOV_W2, "bias"), {n_vocab}, 0);
+    } else {
+        dspark_mask_embd = create_tensor(tn(LLM_TENSOR_DSPARK_MASK_EMBD, "weight"), {n_embd}, 0);
+        dspark_fuse = create_tensor(tn(LLM_TENSOR_DSPARK_FUSE, "weight"), {(int64_t) target_layer_ids.size(), n_layer + 1}, 0);
+        dspark_norm = create_tensor(tn(LLM_TENSOR_DSPARK_NORM, "weight"), {n_embd}, 0);
+    }
     dspark_markov_w1 = create_tensor(tn(LLM_TENSOR_DSPARK_MARKOV_W1, "weight"), {rank, hparams.n_vocab_padded}, 0);
     dspark_joint_proj = create_tensor(tn(LLM_TENSOR_DSPARK_JOINT_PROJ, "weight"), {2*rank + 2*n_embd, 3*rank}, 0);
     dspark_joint_proj_b = create_tensor(tn(LLM_TENSOR_DSPARK_JOINT_PROJ, "bias"), {3*rank}, 0);
-    dspark_hidden_out = create_tensor(tn(LLM_TENSOR_DSPARK_HIDDEN_OUT, "weight"), {rank, n_embd}, 0);
-    dspark_hidden_out_b = create_tensor(tn(LLM_TENSOR_DSPARK_HIDDEN_OUT, "bias"), {n_embd}, 0);
+    if (!projected) {
+        dspark_hidden_out = create_tensor(tn(LLM_TENSOR_DSPARK_HIDDEN_OUT, "weight"), {rank, n_embd}, 0);
+        dspark_hidden_out_b = create_tensor(tn(LLM_TENSOR_DSPARK_HIDDEN_OUT, "bias"), {n_embd}, 0);
+    }
     const auto folded_name = tn(LLM_TENSOR_DSPARK_FOLDED_OUTPUT, "weight");
     if (const auto * folded = ml->get_tensor_meta(folded_name.str().c_str())) {
         if (folded->type != GGML_TYPE_F16) {
@@ -74,7 +99,10 @@ void llama_model_dflash::load_tensors_inkling2() {
         const int64_t kv = hd*hparams.n_head_kv(i);
         l.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
         l.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
-        l.dflare_norm = create_tensor(tn(LLM_TENSOR_DFLARE_NORM, "weight", i), {n_embd}, 0);
+        if (projected) {
+            l.dflash_ctx_mix = create_tensor(tn(LLM_TENSOR_DFLASH_CTX_MIX, "weight", i), {(int64_t) target_layer_ids.size()}, 0);
+        }
+        l.dflare_norm = create_tensor(tn(projected ? LLM_TENSOR_DFLASH_CTX_NORM : LLM_TENSOR_DFLARE_NORM, "weight", i), {n_embd}, 0);
         l.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q, "weight", i), {n_embd, q}, 0);
         l.wk = create_tensor(tn(LLM_TENSOR_ATTN_K, "weight", i), {n_embd, kv}, 0);
         l.wv = create_tensor(tn(LLM_TENSOR_ATTN_V, "weight", i), {n_embd, kv}, 0);
@@ -90,8 +118,10 @@ void llama_model_dflash::load_tensors_inkling2() {
     }
 }
 
+using inkling_mark_add = void (*)(ggml_tensor *);
+
 static ggml_tensor * build_inkling2_head(llm_graph_context & g, const llama_model & model, const llama_model & target,
-        ggml_tensor * prev, ggml_tensor * & state, ggml_tensor * hidden, ggml_tensor * base, ggml_tensor * context) {
+        ggml_tensor * prev, ggml_tensor * & state, ggml_tensor * hidden, ggml_tensor * base, ggml_tensor * context, inkling_mark_add mark_add) {
     auto * ctx0 = g.ctx0;
     const int64_t rank = model.dspark_markov_w1->ne[0];
     auto * joint = ggml_concat(ctx0, state, ggml_get_rows(ctx0, model.dspark_markov_w1, prev), 0);
@@ -105,7 +135,9 @@ static ggml_tensor * build_inkling2_head(llm_graph_context & g, const llama_mode
     state = ggml_add(ctx0, candidate, ggml_mul(ctx0, gate, ggml_sub(ctx0, state, candidate)));
     auto * latent = ggml_tanh(ctx0, chunk(2));
     ggml_tensor * bias;
-    if (model.dspark_folded_output && g.loras->empty() && !target.output_s) {
+    if (model.dspark_markov_w2) {
+        bias = g.build_lora_mm(model.dspark_markov_w2, latent);
+    } else if (model.dspark_folded_output && g.loras->empty() && !target.output_s) {
         // This optional sidecar tensor folds the target output projection
         // through the rank-sized DSpark correction, including its bias.
         auto * one = ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 1, latent->ne[1]), 1.0f);
@@ -117,10 +149,15 @@ static ggml_tensor * build_inkling2_head(llm_graph_context & g, const llama_mode
         bias = g.build_lora_mm(target.output, correction, target.output_s);
     }
     ggml_prec_set_acc(bias, GGML_PREC_F32);
+    if (model.dspark_markov_w2_b) {
+        bias = ggml_add(ctx0, bias, model.dspark_markov_w2_b);
+        if (mark_add) { mark_add(bias); }
+    }
     if (bias->ne[0] != base->ne[0]) {
         bias = ggml_cont(ctx0, ggml_view_2d(ctx0, bias, base->ne[0], bias->ne[1], bias->nb[1], 0));
     }
     auto * logits = ggml_add(ctx0, base, bias);
+    if (mark_add) { mark_add(logits); }
     const float cap = model.hparams.f_final_logit_softcapping;
     return ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, logits, 1.0f/cap)), cap);
 }
@@ -158,6 +195,12 @@ llama_model_dflash::graph_inkling2::graph_inkling2(const llm_graph_params & para
     const int64_t rank = model.dspark_markov_w1->ne[0];
     const int64_t ntarget = model.target_layer_ids.size();
     const auto mix = [&](ggml_tensor * features, int row, ggml_tensor * norm) {
+        if (model.dspark_markov_w2) {
+            auto * weights = row == n_layer ? model.dspark_fuse : model.layers[row].dflash_ctx_mix;
+            auto * taps = ggml_cont(ctx0, ggml_permute(ctx0, ggml_reshape_3d(ctx0, features, n_embd, ntarget, n_tokens), 1, 0, 2, 3));
+            auto * mixed = ggml_reshape_2d(ctx0, ggml_mul_mat(ctx0, weights, taps), n_embd, n_tokens);
+            return build_norm(mixed, norm, nullptr, LLM_NORM_RMS, row == n_layer ? -1 : row);
+        }
         auto * weights = ggml_soft_max(ctx0, ggml_view_1d(ctx0, model.dspark_fuse, ntarget, row*model.dspark_fuse->nb[1]));
         auto * x = ggml_reshape_3d(ctx0, features, n_embd, ntarget, n_tokens);
         x = ggml_cont(ctx0, ggml_permute(ctx0, x, 1, 0, 2, 3));
@@ -212,10 +255,17 @@ llama_model_dflash::graph_inkling2::graph_inkling2(const llm_graph_params & para
     const int64_t block = n_tokens/nb;
     auto * ids = ggml_cont_1d(ctx0, ggml_view_2d(ctx0, tokens, 1, nb, block*tokens->nb[0], 0), nb);
     auto * anchors = ggml_get_rows(ctx0, target->tok_embd, ids);
-    anchors = ggml_mul(ctx0, ggml_rms_norm(ctx0, anchors, target->hparams.f_norm_rms_eps), target->tok_norm);
+    anchors = ggml_mul(ctx0, ggml_rms_norm(ctx0, anchors, model.tok_norm ? hparams.f_norm_rms_eps : target->hparams.f_norm_rms_eps),
+            model.tok_norm ? model.tok_norm : target->tok_norm);
     auto * cur = ggml_reshape_3d(ctx0, anchors, n_embd, 1, nb);
-    if (block > 1) {
-        auto * masks = ggml_repeat_4d(ctx0, ggml_cast(ctx0, model.dspark_mask_embd, GGML_TYPE_F32), n_embd, block - 1, nb, 1);
+    if (model.dspark_markov_w2 && block > hparams.dflash_block_size) {
+        cur = ggml_get_rows(ctx0, target->tok_embd, tokens);
+    } else if (block > 1) {
+        auto * mask = model.dspark_mask_embd;
+        if (model.dspark_markov_w2) {
+            mask = ggml_view_2d(ctx0, mask, n_embd, block - 1, mask->nb[1], 0);
+        }
+        auto * masks = ggml_repeat_4d(ctx0, ggml_cast(ctx0, mask, GGML_TYPE_F32), n_embd, block - 1, nb, 1);
         cur = ggml_concat(ctx0, cur, masks, 1);
     }
     cur = ggml_reshape_2d(ctx0, cur, n_embd, n_tokens);
@@ -242,6 +292,9 @@ llama_model_dflash::graph_inkling2::graph_inkling2(const llm_graph_params & para
     res->t_embd = cur;
     auto * base = build_lora_mm(target->output, cur, target->output_s);
     ggml_prec_set_acc(base, GGML_PREC_F32);
+    if (model.dspark_markov_w2 && base->ne[0] > hparams.n_vocab_unpadded) {
+        base = ggml_view_2d(ctx0, base, hparams.n_vocab_unpadded, n_tokens, base->nb[1], 0);
+    }
     if (block > hparams.dflash_block_size) {
         res->t_logits = ggml_cont(ctx0, ggml_view_2d(ctx0, base, hparams.n_vocab_unpadded, n_tokens, base->nb[1], 0));
         return;
@@ -255,9 +308,17 @@ llama_model_dflash::graph_inkling2::graph_inkling2(const llm_graph_params & para
     auto * tie_rank = ggml_arange(ctx0, 0, hparams.n_vocab_unpadded, 1);
     tie_rank = ggml_scale_bias(ctx0, tie_rank, -1.0f, hparams.n_vocab_unpadded);
     auto * prev = ids;
+    inkling_mark_add mark_add = nullptr;
+    if (model.dspark_markov_w2 && model.memory_contract && nb == 1) {
+        const auto * opt = std::getenv("LLAMA_EXPERIMENTAL_INKLING_W2_PARALLEL_ADD");
+        if (!opt || std::strcmp(opt, "1") == 0) {
+            auto reg = ggml_backend_dev_backend_reg(model.dev_output());
+            mark_add = reinterpret_cast<inkling_mark_add>(ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_mark_inkling_vocab_add"));
+        }
+    }
     const int64_t head_rows = prefix_rows ? prefix_rows : block;
     for (int64_t i = 1; i < head_rows; ++i) {
-        auto * col = build_inkling2_head(*this, model, *target, prev, state, column(cur, i), column(base, i), context);
+        auto * col = build_inkling2_head(*this, model, *target, prev, state, column(cur, i), column(base, i), context, mark_add);
         logits = ggml_concat(ctx0, logits, col, 1);
         // Select the first maximum, independent of backend argmax tie order.
         auto * valid = ggml_cont(ctx0, ggml_view_2d(ctx0, col, hparams.n_vocab_unpadded, nb, col->nb[1], 0));

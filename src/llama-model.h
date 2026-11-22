@@ -716,6 +716,7 @@ struct llama_layer {
     struct ggml_tensor * attn_k_ctx      = nullptr;
     struct ggml_tensor * attn_v_ctx      = nullptr;
     struct ggml_tensor * attn_k_ctx_norm = nullptr;
+    struct ggml_tensor * dflash_ctx_mix = nullptr;
     struct ggml_tensor * dflare_norm     = nullptr;
 
     struct llama_layer_posnet posnet;
@@ -937,6 +938,7 @@ struct llama_model {
     // dspark
     struct ggml_tensor * dspark_markov_w1   = nullptr;
     struct ggml_tensor * dspark_markov_w2   = nullptr;
+    struct ggml_tensor * dspark_markov_w2_b = nullptr;
     struct ggml_tensor * dspark_markov_w2_s = nullptr;
     struct ggml_tensor * dspark_conf_proj   = nullptr;
     struct ggml_tensor * dspark_conf_proj_b = nullptr;

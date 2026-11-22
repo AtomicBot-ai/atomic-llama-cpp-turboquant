@@ -118,7 +118,7 @@ llama_model * llama_atomic_budget_draft_load(llama_model * target, const char * 
         constexpr int32_t visits[] = {5, 23, 41, 48};
         if (!llama_atomic_is_inkling_dspark(draft.get()) || draft->dev_output() != target->dev_output() ||
                 draft->n_gpu_layers() <= draft->hparams.n_layer_all ||
-                draft->hparams.n_vocab_padded != target->hparams.n_vocab_padded ||
+                (!draft->dspark_markov_w2 && draft->hparams.n_vocab_padded != target->hparams.n_vocab_padded) ||
                 !std::equal(draft->target_layer_ids.begin(), draft->target_layer_ids.end(), std::begin(visits), std::end(visits))) {
             return nullptr;
         }

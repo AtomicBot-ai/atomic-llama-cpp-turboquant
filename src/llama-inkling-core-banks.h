@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -102,6 +104,13 @@ private:
         const auto host_base = reinterpret_cast<host_base_fn>(ggml_backend_reg_get_proc_address(
                     ggml_backend_dev_backend_reg(dev), "ggml_backend_metal_buffer_get_host_base"));
         if (!host_base) { return; }
+        using mark_grouped_fn = void (*)(ggml_tensor *);
+        mark_grouped_fn mark_grouped = nullptr;
+        const char * grouped = std::getenv("LLAMA_EXPERIMENTAL_INKLING_GROUP_EXPERTS");
+        if (grouped && std::strcmp(grouped, "1") == 0) {
+            mark_grouped = reinterpret_cast<mark_grouped_fn>(ggml_backend_reg_get_proc_address(
+                    ggml_backend_dev_backend_reg(dev), "ggml_backend_metal_mark_inkling_group_bank"));
+        }
         const auto & budget = model.memory_contract->ledger;
         // Prioritize the repeated core, then the suffix and finally the prefix.
         // A shrink pops the least preferred banks first, retaining this order.
@@ -124,6 +133,7 @@ private:
             b.metadata_charge.commit();
             for (size_t k = 0; k < original.size(); ++k) {
                 b.tensors[k] = ggml_dup_tensor(b.ctx.get(), original[k]);
+                if (mark_grouped) { mark_grouped(b.tensors[k]); }
                 ggml_set_name(b.tensors[k], original[k]->name);
             }
             const size_t size = ggml_backend_alloc_ctx_tensors_from_buft_size(b.ctx.get(), buft);

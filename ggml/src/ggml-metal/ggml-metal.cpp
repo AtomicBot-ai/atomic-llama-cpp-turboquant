@@ -1077,6 +1077,12 @@ static bool ggml_backend_metal_host_expert_bridge_v1(ggml_backend_t backend, ggm
     return true;
 }
 
+static void ggml_backend_metal_mark_inkling_group_bank(ggml_tensor * weight) {
+    if (weight->op == GGML_OP_NONE && weight->ne[2] == 128 && ggml_is_contiguous(weight)) {
+        weight->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_GROUP_BANK;
+    }
+}
+
 static ggml_tensor * ggml_backend_metal_inkling_control_v1(ggml_context * ctx, ggml_tensor * cur,
         ggml_tensor * message, ggml_tensor * gain, ggml_tensor * forget) {
     ggml_tensor * args[] = {cur, message, gain, forget};
@@ -1107,6 +1113,13 @@ static ggml_tensor * ggml_backend_metal_inkling_situ_v1(ggml_context * ctx, ggml
     ggml_set_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2, linear_beta);
     node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_SITU;
     return node;
+}
+
+static void ggml_backend_metal_mark_inkling_vocab_add(ggml_tensor * node) {
+    if (node->op == GGML_OP_ADD && node->type == GGML_TYPE_F32 &&
+            ggml_is_vector(node) && ggml_are_same_shape(node->src[0], node->src[1])) {
+        node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_VOCAB_ADD;
+    }
 }
 
 static ggml_tensor * ggml_backend_metal_inkling_clip_v1(ggml_context * ctx, ggml_tensor * cur,
@@ -1255,8 +1268,14 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     if (strcmp(name, "ggml_backend_metal_inkling_rel_mask_v1") == 0) {
         return (void *) ggml_backend_metal_inkling_rel_mask_v1;
     }
+    if (strcmp(name, "ggml_backend_metal_mark_inkling_vocab_add") == 0) {
+        return (void *) ggml_backend_metal_mark_inkling_vocab_add;
+    }
     if (strcmp(name, "ggml_backend_metal_inkling_clip_v1") == 0) {
         return (void *) ggml_backend_metal_inkling_clip_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_mark_inkling_group_bank") == 0) {
+        return (void *) ggml_backend_metal_mark_inkling_group_bank;
     }
     if (strcmp(name, "ggml_backend_metal_inkling_control_v1") == 0) {
         return (void *) ggml_backend_metal_inkling_control_v1;

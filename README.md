@@ -21,16 +21,23 @@ and the [implementation status](docs/atomic-engine.md).
 
 ## Run Inkling 2 Mini on Apple Silicon
 
-The default low-bit benchmark uses AD-IQ2_M, fused prefill attention and DSpark 7/32
-(seven proposals per verification round, draft microbatch 32). Start the server
-with the target and its matching folded DSpark draft. Run from the repository
-root and adjust the two GGUF paths if needed. This example gives the engine
-14 GiB plus 100 MiB for KV:
+The budgeted Metal profiles for AD-IQ2_M, AD-IQ3_S and AD-Q4_K use the same
+AtomicChat Q8_0 DSpark GGUF. It contains its own Markov output projection
+and can be passed directly to `-md`. Download the tested revision once
+from the repository root. [AtomicChat DSpark weights](https://huggingface.co/AtomicChat/Inkling-2-Mini-GGUF/blob/309509848b3151419aa26d069eb03db57fd29a00/dspark-Inkling-2-Mini-Q8_0.gguf).
+
+```sh
+hf download AtomicChat/Inkling-2-Mini-GGUF dspark-Inkling-2-Mini-Q8_0.gguf \
+  --revision 309509848b3151419aa26d069eb03db57fd29a00 --local-dir .work/models/atomicchat-dspark-3095098
+```
+
+Start AD-IQ2_M with fused prefill attention, DSpark 7/32 (seven proposals per
+verification round, draft microbatch 32) and a 14 GiB budget plus 100 MiB for KV.
 
 ```sh
 ./build-metal/bin/llama-server \
   -m .work/models/Inkling-2-Mini-AD-IQ2_M.gguf \
-  -md .work/models/dspark-Inkling-2-Mini-IQ2_M-folded.gguf \
+  -md .work/models/atomicchat-dspark-3095098/dspark-Inkling-2-Mini-Q8_0.gguf \
   --spec-type draft-dspark --engine-budget-mib 14436 \
   -fit off -c 4096 -b 1024 -ub 1024 -np 1 \
   -fa on -ctk q4_0 -ctv q4_0 -ctkd q4_0 -ctvd q4_0 -ngl all -ngld 99 -t 8 -tb 8 \
@@ -46,6 +53,12 @@ and expert tensors, sets DSpark to seven proposals with a draft microbatch of
 32, and selects fused attention for supported prompt blocks. Expert streaming
 uses `pread` and KV uses Q4_0.
 
+For greedy single-slot decoding with repeated passages, prefix the server
+command with `LLAMA_EXPERIMENTAL_INKLING_PROMPT_LOOKUP=1`. When the last 32
+tokens match an earlier passage, the server can propose the already-seen
+continuation. The target checks every proposal. DSpark supplies the draft
+when the search finds no match.
+
 To compare prefill paths, prefix the same command with
 `LLAMA_EXPERIMENTAL_INKLING_PREFILL_ATTN=0`. To use three draft proposals,
 add `--spec-draft-n-max 3`. For the AD-Q4_K command and matching draft,
@@ -59,41 +72,63 @@ and [Inkling profile options](docs/atomic-engine-release.md#inkling-2-mini-ad-q4
 
 ### Benchmark Inkling against stock llama.cpp
 
-With both Metal servers built and the two GGUF files above in place, run from the repository root:
+Run from the repository root with both Metal servers built, the AtomicChat draft downloaded as above, and the three target files in `.work/models/`: `Inkling-2-Mini-AD-IQ2_M.gguf`, `Inkling-2-Mini-AD-IQ3_S.gguf` and `Inkling-2-Mini-AD-Q4_K.gguf`. The PNG renderer uses Pillow (`python3 -m pip install 'Pillow>=10.1'`).
 
 ```sh
 python3 tools/expert-source/bench-inkling-metal.py
 ```
 
-The script runs stock llama.cpp first, then Atomic Engine at **8, 10, 12, 14, 16, 18 and 20 GiB**, each with another 100 MiB for KV. Each row starts a fresh server on a private loopback port and sends the same 4,000 uncached input tokens. TTFT is the time from sending the request to receiving the first token. Decode uses the server's tokens/s for the 64-token greedy response. Each Atomic Engine row checks all 64 token IDs against stock and checks the managed memory peak against the cap. Run one benchmark at a time on the GPU.
+The default matrix covers **IQ2_M (DSpark 7/32 with fused prefill), IQ3_S (3/32) and Q4_K (3/32)**. For each GGUF the script measures uncapped stock llama.cpp once, then Atomic Engine at **8, 10, 12, 14, 16, 18 and 20 GiB**, each with another 100 MiB for KV. The 24 requests run sequentially. Each starts a fresh server and sends the same 4,000 uncached archive tokens for a 64-token greedy response. TTFT measures time from request submission to the first token. Decode uses the server's reported tokens/s. Each Atomic result must match all 64 stock token IDs for its own GGUF and stay within its managed memory cap.
 
-The table prints as each row finishes. The script saves `results.json` and the server logs in a new directory under `.work/inkling-bench/`. To run just stock and 20 GiB, append `--budgets 20`. For other installation paths, pass `--server`, `--stock-server`, `--model` or `--draft`.
+The script prints progress during the run, then prints one table with a TTFT/decode column pair per quant and a separate stock row. The output directory printed at startup contains **`matrix.png`**, `results.json` and per-quant server logs. Append `--budgets 14` for a one-budget matrix across all three quants. Pass `--model PATH` to benchmark a single GGUF. Use `--server`, `--stock-server` and `--draft` to override the binary and draft paths.
 
-To benchmark the AD-IQ3_S or AD-IQ2_M target at 8 GiB plus KV, set the
-quant below and place that target and the original Q8_0 DSpark draft in
-`.work/models/`. Build the folded draft once per target (requires NumPy
-and the bundled `gguf-py` package), then run the same stock comparison:
+To compare AtomicChat against a previous local draft on both 4,000-token fixtures,
+set `PREVIOUS_DRAFT` to the path of the folded IQ2_M draft. Each budget gets two
+runs per draft in opposite orders. The comparison requires all Atomic runs to
+reproduce the first folded-draft run's 64 output IDs. It also reports the first
+divergence from fresh stock, if any, and saves both checks alongside TTFT, decode
+throughput, the managed memory peak and the token IDs.
 
 ```sh
-quant=IQ3_S  # or IQ2_M
-model=".work/models/Inkling-2-Mini-AD-${quant}.gguf"
-draft=".work/models/dspark-Inkling-2-Mini-${quant}-folded.gguf"
-PYTHONPATH=gguf-py python3 tools/expert-source/fold-inkling-dspark.py \
-  "$model" .work/models/dspark-Inkling-2-Mini-Q8_0.gguf "$draft"
-python3 tools/expert-source/bench-inkling-metal.py --model "$model" --draft "$draft" --budgets 8
+PREVIOUS_DRAFT=.work/models/dspark-Inkling-2-Mini-IQ2_M-folded.gguf
+(set -e
+for prompt in archive handover; do
+  python3 tools/expert-source/bench-inkling-metal.py --prompt "$prompt" --draft-depth 4 \
+    --compare-draft "$PREVIOUS_DRAFT" --budgets 8 10 12 14 16
+done)
 ```
 
-For interactive AD-IQ3_S, use its target and folded draft in the server
-command above. With the same 8–20 GiB + KV settings, the server selects
-DSpark 3/32 and uses the standard prefill attention path by default.
+To repeat the archive comparison at the default depth, use `--prompt archive --draft-depth 7`.
+The server and benchmark use the AtomicChat draft in the commands above. With IQ2_M and
+14 GiB + KV on an M4 Max, handover at 4/32 averaged 72.34 tok/s with AtomicChat and
+70.74 with the folded draft. At 8 GiB + KV, archive at 7/32 averaged 66.25 and 67.34 tok/s,
+respectively. All 60 qualification requests at 8–16 GiB + KV matched their archived
+64-token references. A separate handover run of the command above at 14 GiB
+averaged 70.22 tok/s with AtomicChat and 70.44 with the folded draft. Both drafts
+produced identical IDs in both orders. Fresh stock first diverged at token 24.
+
+For an 8 GiB run with AD-IQ3_S or AD-Q4_K, change the target and keep the
+same AtomicChat draft. The benchmark uses DSpark 3/32 for these targets.
+
+```sh
+python3 tools/expert-source/bench-inkling-metal.py \
+  --model .work/models/Inkling-2-Mini-AD-IQ3_S.gguf --budgets 8
+```
+
+For interactive AD-IQ3_S, change only `-m` in the server command above.
+For AD-Q4_K, also supply `--spec-draft-n-max 3 --spec-draft-n-ubatch 32`.
+With the AtomicChat draft and a managed budget, the single-slot Metal path
+parallelizes the two additions over the vocabulary for all three target quants.
+Set `LLAMA_EXPERIMENTAL_INKLING_W2_PARALLEL_ADD=0` to benchmark the original additions.
+For IQ2_M on the handover prompt, add `--spec-draft-n-max 4` to run the 4/32 profile.
 
 In the benchmark JSON, `expert_logical_read_bytes` counts streamed expert
 weight bytes during the request, including reads served by the OS page
 cache. `expert_cache_misses` counts misses in the engine's expert cache.
-The matrix compares the AD-IQ2_M default with fused prompt attention disabled
-at the same draft depth. Each cell measures one uncached 4,000-token excerpt
+The historical matrix below used the earlier target-specific folded drafts.
+It compares fused prefill on and off for AD-IQ2_M at the same draft depth. Each cell measures one uncached 4,000-token excerpt
 from the repeated archive fixture and a 64-token greedy response. At
-14 GiB + KV the default accepted all 55 draft proposals in eight rounds (105.49 tok/s).
+14 GiB + KV the folded IQ2_M draft accepted all 55 draft proposals in eight rounds (105.49 tok/s).
 On the separate 4,000-token handover fixture, the same 7/32 profile accepted
 47 of 105 proposals in sixteen rounds (53.91 tok/s across two runs).
 The AD-IQ3_S columns use DSpark 3/32.
