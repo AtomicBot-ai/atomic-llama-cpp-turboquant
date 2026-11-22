@@ -48,6 +48,36 @@ full banks. Generation continues in the same process.
 See the [Metal build instructions](docs/atomic-engine-release.md#build-the-server)
 and [Inkling profile options](docs/atomic-engine-release.md#inkling-2-mini-ad-q4_k-with-dspark-3).
 
+### Benchmark Inkling against stock llama.cpp
+
+With both Metal servers built and the two GGUF files above in place, run from the repository root:
+
+```sh
+python3 tools/expert-source/bench-inkling-metal.py
+```
+
+The script runs stock llama.cpp first, then Atomic Engine at **8, 10, 12, 14, 16, 18 and 20 GiB**, each with another 100 MiB for KV. Each row starts a fresh server on a private loopback port and sends the same 4,000 uncached input tokens. TTFT is the time from sending the request to receiving the first token. Decode uses the server's tokens/s for the 64-token greedy response. Each Atomic Engine row checks all 64 token IDs against stock and checks the managed memory peak against the cap. Run one benchmark at a time on the GPU.
+
+The table prints as each row finishes. The script saves `results.json` and the server logs in a new directory under `.work/inkling-bench/`. To run just stock and 20 GiB, append `--budgets 20`. For other installation paths, pass `--server`, `--stock-server`, `--model` or `--draft`.
+
+<details>
+<summary>Build the stock Metal server used for the comparison</summary>
+
+The reference is upstream llama.cpp revision `e412c6f46`. To build it once at the path the script uses:
+
+```sh
+mkdir -p .work/inkling-stock
+git worktree add --detach .work/inkling-stock/upstream e412c6f46
+cmake -S .work/inkling-stock/upstream -B .work/inkling-stock/build \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_CCACHE=OFF \
+  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON \
+  -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF
+cmake --build .work/inkling-stock/build --target llama-server -j 6
+```
+
+</details>
+
 The upstream llama.cpp documentation follows.
 
 ## llama.cpp
