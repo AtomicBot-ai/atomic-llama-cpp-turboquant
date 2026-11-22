@@ -82,6 +82,26 @@ The default matrix covers **IQ2_M (DSpark 7/32 with fused prefill), IQ3_S (3/32)
 
 The script prints progress during the run, then prints one table with a TTFT/decode column pair per quant and a separate stock row. The output directory printed at startup contains **`matrix.png`**, `results.json` and per-quant server logs. Append `--budgets 14` for a one-budget matrix across all three quants. Pass `--model PATH` to benchmark a single GGUF. Use `--server`, `--stock-server` and `--draft` to override the binary and draft paths.
 
+#### Inkling 2 Mini results on Apple M4 Max
+
+Apple M4 Max with 48 GB unified memory, November 23, 2026. Each cell shows **time to first token (seconds) / decode speed (tokens/s)** for one request with the model already loaded. All three engines received the same 4,000 archive tokens and produced the same 64 output token IDs.
+
+| Engine and memory budget | IQ2_M | IQ3_S | Q4_K | SQ-10 |
+|---|---:|---:|---:|---:|
+| Atomic · 8 GiB + KV | 8.17 / 68.07 | 11.19 / 46.88 | 12.12 / 41.64 | — |
+| Atomic · 10 GiB + KV | 7.83 / 76.28 | 10.92 / 49.74 | 11.92 / 45.23 | — |
+| Atomic · 12 GiB + KV | 7.20 / 105.48 | 10.56 / 54.03 | 11.61 / 51.29 | — |
+| Atomic · 14 GiB + KV | 7.15 / 105.71 | 10.48 / 64.04 | 11.09 / 49.85 | — |
+| Atomic · 16 GiB + KV | 7.15 / 107.49 | 10.19 / 67.73 | 10.74 / 55.79 | — |
+| Atomic · 18 GiB + KV | 7.09 / 109.53 | 10.36 / 69.40 | 10.12 / 70.06 | — |
+| Atomic · 20 GiB + KV | 7.12 / 108.31 | 10.54 / 67.13 | 9.95 / 77.31 | — |
+| Stock llama.cpp · uncapped | 9.57 / 33.11 | 9.54 / 31.63 | 9.46 / 32.38 | — |
+| Strata · uncapped | — | — | — | 4.21 / 112.92 |
+
+Atomic (`95b0cb23e`) and stock llama.cpp (`e412c6f46`) used Q4_0 KV. Each Atomic budget includes an additional 100 MiB for KV. Strata (`strata-inkling` 0.1.65) ran separately with its native SQ-10 pack, DSpark and FP16 KV.
+
+#### Compare drafters or select one quant
+
 To compare AtomicChat against a previous local draft on both 4,000-token fixtures,
 set `PREVIOUS_DRAFT` to the path of the folded IQ2_M draft. Each budget gets two
 runs per draft in opposite orders. The comparison requires all Atomic runs to
