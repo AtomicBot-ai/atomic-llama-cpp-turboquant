@@ -21,7 +21,9 @@ and the [implementation status](docs/atomic-engine.md).
 
 ## Run Inkling 2 Mini on Apple Silicon
 
-Start AD-IQ2_M with its target-specific folded DSpark draft. Run from the repository
+The default low-bit benchmark uses AD-IQ2_M, fused prefill attention and DSpark 7/32
+(seven proposals per verification round, draft microbatch 32). Start the server
+with the target and its matching folded DSpark draft. Run from the repository
 root and adjust the two GGUF paths if needed. This example gives the engine
 14 GiB plus 100 MiB for KV:
 
@@ -60,9 +62,7 @@ and [Inkling profile options](docs/atomic-engine-release.md#inkling-2-mini-ad-q4
 With both Metal servers built and the two GGUF files above in place, run from the repository root:
 
 ```sh
-python3 tools/expert-source/bench-inkling-metal.py \
-  --model .work/models/Inkling-2-Mini-AD-IQ2_M.gguf \
-  --draft .work/models/dspark-Inkling-2-Mini-IQ2_M-folded.gguf
+python3 tools/expert-source/bench-inkling-metal.py
 ```
 
 The script runs stock llama.cpp first, then Atomic Engine at **8, 10, 12, 14, 16, 18 and 20 GiB**, each with another 100 MiB for KV. Each row starts a fresh server on a private loopback port and sends the same 4,000 uncached input tokens. TTFT is the time from sending the request to receiving the first token. Decode uses the server's tokens/s for the 64-token greedy response. Each Atomic Engine row checks all 64 token IDs against stock and checks the managed memory peak against the cap. Run one benchmark at a time on the GPU.
@@ -84,14 +84,19 @@ python3 tools/expert-source/bench-inkling-metal.py --model "$model" --draft "$dr
 ```
 
 For interactive AD-IQ3_S, use its target and folded draft in the server
-command above and add `--spec-draft-n-max 3 --spec-draft-n-ubatch 32`.
+command above. With the same 8–20 GiB + KV settings, the server selects
+DSpark 3/32 and uses the standard prefill attention path by default.
 
 In the benchmark JSON, `expert_logical_read_bytes` counts streamed expert
 weight bytes during the request, including reads served by the OS page
 cache. `expert_cache_misses` counts misses in the engine's expert cache.
 The matrix compares the AD-IQ2_M default with fused prompt attention disabled
-at the same draft depth. Each measurement includes one uncached 4,000-token
-prompt and a 64-token greedy response. The AD-IQ3_S columns use DSpark 3/32.
+at the same draft depth. Each cell measures one uncached 4,000-token excerpt
+from the repeated archive fixture and a 64-token greedy response. At
+14 GiB + KV the default accepted all 55 draft proposals in eight rounds (105.49 tok/s).
+On the separate 4,000-token handover fixture, the same 7/32 profile accepted
+47 of 105 proposals in sixteen rounds (53.91 tok/s across two runs).
+The AD-IQ3_S columns use DSpark 3/32.
 [Per-budget timings, token IDs and memory peaks](docs/atomic-engine-inkling-low-bit-metal.json).
 
 ![Inkling 2 Mini on Apple M4 Max, TTFT and decode at 8 to 20 GiB plus KV](docs/atomic-engine-inkling-low-bit-metal.png)

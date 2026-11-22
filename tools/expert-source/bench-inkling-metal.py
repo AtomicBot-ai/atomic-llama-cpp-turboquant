@@ -136,8 +136,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", type=Path, default=ROOT / "build-metal/bin/llama-server")
     parser.add_argument("--stock-server", type=Path, default=ROOT / ".work/inkling-stock/build/bin/llama-server")
-    parser.add_argument("--model", type=Path, default=ROOT / ".work/models/Inkling-2-Mini-AD-Q4_K.gguf")
-    parser.add_argument("--draft", type=Path, default=ROOT / ".work/models/dspark-Inkling-2-Mini-Q8_0-folded-final.gguf")
+    parser.add_argument("--model", type=Path, default=ROOT / ".work/models/Inkling-2-Mini-AD-IQ2_M.gguf")
+    parser.add_argument("--draft", type=Path, default=ROOT / ".work/models/dspark-Inkling-2-Mini-IQ2_M-folded.gguf")
     parser.add_argument("--budgets", type=int, nargs="+", choices=BUDGETS, default=BUDGETS,
                         help="Atomic Engine budgets in GiB, each with an extra 100 MiB for KV (default: 8 to 20, step 2)")
     parser.add_argument("--output-dir", type=Path, default=ROOT / ".work/inkling-bench",

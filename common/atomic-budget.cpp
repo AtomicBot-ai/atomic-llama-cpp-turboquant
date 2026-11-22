@@ -166,16 +166,16 @@ static bool inkling_profile_weights(const gguf_context * meta) {
 void common_atomic_select_inkling_metal_profile(common_params & p) {
     auto & draft = p.speculative.draft;
     constexpr size_t mib = size_t(1) << 20;
-    const bool iq2_budget = p.engine_budget >= (8*1024 + 100)*mib && p.engine_budget <= (20*1024 + 100)*mib;
+    const bool profile_budget = p.engine_budget >= (8*1024 + 100)*mib && p.engine_budget <= (20*1024 + 100)*mib;
     const bool legacy_draft = draft.n_max == 3 && draft.n_ubatch == 32;
     const bool default_ubatch = !draft.n_ubatch_explicit && draft.n_ubatch == 0;
-    const bool iq2_draft = iq2_budget && (draft.n_max == 3 || draft.n_max == 7) &&
+    const bool matrix_draft = profile_budget && (draft.n_max == 3 || draft.n_max == 7) &&
             (default_ubatch || draft.n_ubatch == 32);
     if (!common_atomic_inkling_dspark_enabled(p) || p.fit_params || p.model.path.empty() ||
             p.n_ctx != 4096 || p.n_batch != 1024 || p.n_ubatch != 1024 ||
             p.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED ||
             p.cache_type_k != GGML_TYPE_Q4_0 || p.cache_type_v != GGML_TYPE_Q4_0 ||
-            (!legacy_draft && !iq2_draft) ||
+            (!legacy_draft && !matrix_draft) ||
             draft.cache_type_k != GGML_TYPE_Q4_0 || draft.cache_type_v != GGML_TYPE_Q4_0) {
         return;
     }
@@ -189,13 +189,16 @@ void common_atomic_select_inkling_metal_profile(common_params & p) {
             !inkling_profile_weights(meta.get())) {
         return;
     }
-    const bool iq2_profile = iq2_draft && metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_IQ2_XXS);
+    const bool iq2_profile = matrix_draft && metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_IQ2_XXS);
     if (iq2_profile) {
         if (!draft.n_max_explicit && draft.n_max == 3) { draft.n_max = 7; }
         if (default_ubatch) { draft.n_ubatch = 32; }
         if (setenv("LLAMA_EXPERIMENTAL_INKLING_PREFILL_ATTN", "1", 0) != 0) {
             throw std::runtime_error("could not set Inkling prefill attention default");
         }
+    } else if (matrix_draft && default_ubatch && draft.n_max == 3 &&
+            metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_IQ3_S)) {
+        draft.n_ubatch = 32;
     } else if (!legacy_draft) {
         return;
     }
