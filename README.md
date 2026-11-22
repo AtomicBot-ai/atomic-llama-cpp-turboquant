@@ -21,26 +21,33 @@ and the [implementation status](docs/atomic-engine.md).
 
 ## Run Inkling 2 Mini on Apple Silicon
 
-Run this command from the repository root with the two local GGUF files.
-If your files are elsewhere, change the paths after `-m` (target) and `-md` (folded DSpark draft).
+Start AD-IQ2_M with its target-specific folded DSpark draft. Run from the repository
+root and adjust the two GGUF paths if needed. This example gives the engine
+14 GiB plus 100 MiB for KV:
 
 ```sh
 ./build-metal/bin/llama-server \
-  -m .work/models/Inkling-2-Mini-AD-Q4_K.gguf \
-  -md .work/models/dspark-Inkling-2-Mini-Q8_0-folded-final.gguf \
-  --spec-type draft-dspark --spec-draft-n-max 3 --spec-draft-n-ubatch 32 \
-  --engine-budget-mib 20580 -fit off -c 4096 -b 1024 -ub 1024 -np 1 \
+  -m .work/models/Inkling-2-Mini-AD-IQ2_M.gguf \
+  -md .work/models/dspark-Inkling-2-Mini-IQ2_M-folded.gguf \
+  --spec-type draft-dspark --engine-budget-mib 14436 \
+  -fit off -c 4096 -b 1024 -ub 1024 -np 1 \
   -fa on -ctk q4_0 -ctv q4_0 -ctkd q4_0 -ctvd q4_0 -ngl all -ngld 99 -t 8 -tb 8 \
   --temp 0 --cache-ram 0 --ctx-checkpoints 0 --no-warmup --metrics \
   --ui --alias inkling-2-mini --host 127.0.0.1 --port 8080
 ```
 
-Open the chat at `http://127.0.0.1:8080/`. The OpenAI-compatible API at
-`http://127.0.0.1:8080/v1` serves the model as `inkling-2-mini`.
-The 20,580 MiB budget includes 20 GiB plus 100 MiB for KV. For 8 GiB plus
-the same KV allowance, change `20580` to `8292`. With the settings above,
-the Metal server selects mode 3 prefill, streams experts with `pread` and
-keeps all 24 physical layers' expert banks resident at 20 GiB when they fit.
+Open the chat at `http://127.0.0.1:8080/` or use the OpenAI-compatible API at
+`http://127.0.0.1:8080/v1` with model `inkling-2-mini`. For this Metal
+profile, set `--engine-budget-mib` to `1024 × GiB + 100`: 8292 for 8 GiB
+through 20580 for 20 GiB. The server recognizes AD-IQ2_M by its GGUF metadata
+and expert tensors, sets DSpark to seven proposals with a draft microbatch of
+32, and selects fused attention for supported prompt blocks. Expert streaming
+uses `pread` and KV uses Q4_0.
+
+To compare prefill paths, prefix the same command with
+`LLAMA_EXPERIMENTAL_INKLING_PREFILL_ATTN=0`. To use three draft proposals,
+add `--spec-draft-n-max 3`. For the AD-Q4_K command and matching draft,
+see the [Q4_K Metal profile](docs/atomic-engine-release.md#inkling-2-mini-ad-q4_k-with-dspark-3).
 
 When an embedding host requests a live budget change from 20 to 8 GiB and
 back, the engine releases idle expert-cache entries before restoring the
@@ -53,7 +60,9 @@ and [Inkling profile options](docs/atomic-engine-release.md#inkling-2-mini-ad-q4
 With both Metal servers built and the two GGUF files above in place, run from the repository root:
 
 ```sh
-python3 tools/expert-source/bench-inkling-metal.py
+python3 tools/expert-source/bench-inkling-metal.py \
+  --model .work/models/Inkling-2-Mini-AD-IQ2_M.gguf \
+  --draft .work/models/dspark-Inkling-2-Mini-IQ2_M-folded.gguf
 ```
 
 The script runs stock llama.cpp first, then Atomic Engine at **8, 10, 12, 14, 16, 18 and 20 GiB**, each with another 100 MiB for KV. Each row starts a fresh server on a private loopback port and sends the same 4,000 uncached input tokens. TTFT is the time from sending the request to receiving the first token. Decode uses the server's tokens/s for the 64-token greedy response. Each Atomic Engine row checks all 64 token IDs against stock and checks the managed memory peak against the cap. Run one benchmark at a time on the GPU.
@@ -74,13 +83,18 @@ PYTHONPATH=gguf-py python3 tools/expert-source/fold-inkling-dspark.py \
 python3 tools/expert-source/bench-inkling-metal.py --model "$model" --draft "$draft" --budgets 8
 ```
 
-For interactive use, pass these same paths to `-m` and `-md` in the
-server command above and use `--engine-budget-mib 8292`. KV stays at Q4_0.
+For interactive AD-IQ3_S, use its target and folded draft in the server
+command above and add `--spec-draft-n-max 3 --spec-draft-n-ubatch 32`.
+
 In the benchmark JSON, `expert_logical_read_bytes` counts streamed expert
 weight bytes during the request, including reads served by the OS page
 cache. `expert_cache_misses` counts misses in the engine's expert cache.
-See the [measured M4 Max matrix](docs/atomic-engine-inkling-low-bit-metal.png)
-and [per-budget timings, token IDs and memory peaks](docs/atomic-engine-inkling-low-bit-metal.json).
+The matrix compares the AD-IQ2_M default with fused prompt attention disabled
+at the same draft depth. Each measurement includes one uncached 4,000-token
+prompt and a 64-token greedy response. The AD-IQ3_S columns use DSpark 3/32.
+[Per-budget timings, token IDs and memory peaks](docs/atomic-engine-inkling-low-bit-metal.json).
+
+![Inkling 2 Mini on Apple M4 Max, TTFT and decode at 8 to 20 GiB plus KV](docs/atomic-engine-inkling-low-bit-metal.png)
 
 <details>
 <summary>Build the stock Metal server used for the comparison</summary>

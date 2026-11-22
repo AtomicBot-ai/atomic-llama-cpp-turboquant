@@ -1147,6 +1147,28 @@ static ggml_tensor * ggml_backend_metal_inkling_rel_mask_v1(ggml_context * ctx, 
     return node;
 }
 
+static ggml_tensor * ggml_backend_metal_inkling_prefill_attention_v1(ggml_context * ctx,
+        ggml_tensor * q, ggml_tensor * k, ggml_tensor * v, ggml_tensor * mask, float scale) {
+    if (mask->op != GGML_OP_CUSTOM ||
+            mask->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] != GGML_METAL_INKLING_REL_MASK ||
+            q->type != GGML_TYPE_F32 || k->type != GGML_TYPE_Q4_0 || v->type != k->type ||
+            q->ne[0] != 128 || q->ne[1] != 24 || q->ne[3] != 1 || !ggml_is_contiguous(q) ||
+            k->ne[0] != 128 || k->ne[1] != 8 || k->ne[3] != 1 || !ggml_are_same_shape(k, v) ||
+            !ggml_is_contiguous_1(k) || !ggml_is_contiguous_1(v) || k->nb[0] != ggml_type_size(GGML_TYPE_Q4_0) ||
+            v->nb[0] != ggml_type_size(GGML_TYPE_Q4_0) || k->nb[1] != 4*k->nb[0] || v->nb[1] != 4*v->nb[0] ||
+            k->ne[2] != mask->ne[0] || q->ne[2] != mask->ne[1] || mask->ne[2] != q->ne[1] ||
+            k->ne[2] > 4096 || q->ne[2] > 1024 || k->ne[2] % 64 || q->ne[2] % 16) {
+        return nullptr;
+    }
+    ggml_tensor * args[] = {q, k, v, mask->src[0], mask->src[1], mask->src[2], mask->src[3]};
+    auto * node = ggml_custom_4d(ctx, GGML_TYPE_F32, q->ne[0]*q->ne[1], q->ne[2], 1, 1, args, 7,
+            +[](ggml_tensor *, int, int, void *) { GGML_ABORT("Inkling prompt attention requires Metal"); }, 1, nullptr);
+    ggml_set_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2, scale);
+    node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_PREFILL_ATTN;
+    ggml_set_name(node, "inkling_prefill_attention");
+    return node;
+}
+
 static ggml_tensor * ggml_backend_metal_inkling_conv_residual_v1(ggml_context * ctx, ggml_tensor * cur,
         ggml_tensor * weights, ggml_tensor * window, ggml_tensor * dynamic, float scale) {
     if (cur->type != GGML_TYPE_F32 || weights->type != GGML_TYPE_F32 || window->type != GGML_TYPE_F32 ||
@@ -1226,6 +1248,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_backend_metal_host_expert_bridge_v1") == 0) {
         return (void *) ggml_backend_metal_host_expert_bridge_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_inkling_prefill_attention_v1") == 0) {
+        return (void *) ggml_backend_metal_inkling_prefill_attention_v1;
     }
     if (strcmp(name, "ggml_backend_metal_inkling_rel_mask_v1") == 0) {
         return (void *) ggml_backend_metal_inkling_rel_mask_v1;

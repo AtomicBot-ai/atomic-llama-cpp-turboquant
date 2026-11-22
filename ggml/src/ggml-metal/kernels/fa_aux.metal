@@ -593,3 +593,104 @@ kernel void kernel_inkling_rel_mask(
     const float bias = table[distances[slot] + extent * query_head] - sinks[query_head];
     output[slot + cells * queries * i.z] = half(bias + float(causal[slot]));
 }
+
+// Inkling prompt attention. A threadgroup shares a 64-key tile across 16 queries;
+// each SIMD group owns eight queries. KV rows can be nonchronological (SWA/slot reuse),
+// so visibility and relative distance are taken from the cache's actual cell maps.
+inline void inkling_stage_kv(threadgroup half * tile, device const char * cache,
+        uint first, uint kv_head, uint row_stride, ushort tid) {
+    for (uint i = tid; i < 64*16; i += 64) {
+        uint row = i / 16, block = (i % 16) / 4, part = i % 4;
+        device const block_q4_0 * w = (device const block_q4_0 *)(cache + (first + row)*row_stride)
+                + kv_head*4 + block;
+        uchar4 packed = uchar4(w->qs[4*part], w->qs[4*part + 1], w->qs[4*part + 2], w->qs[4*part + 3]);
+        threadgroup half4 * dest = (threadgroup half4 *)(tile + row*128 + block*32 + part*4);
+        dest[0] = w->d * (half4(packed & uchar4(15)) - 8.0h);
+        dest[4] = w->d * (half4(packed >> 4) - 8.0h);
+    }
+}
+
+kernel void kernel_inkling_prefill_attention(
+        constant uint4 & dims, constant float & scale,
+        device const float * query, device const char * keys, device const char * values,
+        device const float * table, device const float * sinks,
+        device const int * distances, device const half * causal, device float * out,
+        uint2 tile [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
+        ushort lane [[thread_index_in_simdgroup]], ushort sg [[simdgroup_index_in_threadgroup]]) {
+    const uint cells = dims.x, extent = dims.y, head = tile.y, q0 = 16*tile.x;
+    threadgroup half Q[16*128], KV[64*128];
+    threadgroup float scores[16*64], sum_out[16*128];
+    threadgroup float * visible = scores; // Reuse tile storage before QK.
+    for (uint i = tid; i < 16*128; i += 64) {
+        Q[i] = half(query[((q0 + i/128)*24 + head)*128 + i%128]);
+        sum_out[i] = 0.0f;
+    }
+    float maxima[8], sums[8] = {};
+    for (ushort r = 0; r < 8; ++r) { maxima[r] = -FLT_MAX/2; }
+    for (uint base = 0; base < cells; base += 64) {
+        bool any = false;
+        for (ushort r = 0; r < 8; ++r) {
+            const uint cell = (q0 + 8*sg + r)*cells + base + 2*lane;
+            any |= causal[cell] != -INFINITY || causal[cell+1] != -INFINITY;
+        }
+        const bool active = simd_any(any);
+        if (lane == 0) { visible[sg] = active; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        const bool skip = visible[0] == 0 && visible[1] == 0;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (skip) { continue; }
+
+        inkling_stage_kv(KV, keys, base, head/3, dims.z, tid);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (ushort col = 0; col < 64; col += 8) {
+            simdgroup_float8x8 dot(0.0f);
+            for (ushort d = 0; d < 128; d += 8) {
+                simdgroup_half8x8 q, k;
+                simdgroup_load(q, Q + sg*8*128 + d, 128);
+                simdgroup_load(k, KV + col*128 + d, 128, 0, true);
+                simdgroup_multiply_accumulate(dot, q, k, dot);
+            }
+            simdgroup_store(dot, scores + sg*8*64 + col, 64);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        inkling_stage_kv(KV, values, base, head/3, dims.w, tid);
+        for (ushort r = 0; r < 8; ++r) {
+            const uint row = 8*sg + r, qh = (q0 + row)*24 + head;
+            const uint cell = (q0 + row)*cells + base + 2*lane;
+            float2 bias = float2(table[qh*extent + distances[cell]], table[qh*extent + distances[cell+1]]) - sinks[qh];
+            half2 mask = half2(bias + float2(causal[cell], causal[cell+1]));
+            threadgroup float2 * pair = (threadgroup float2 *)(scores + row*64) + lane;
+            const float2 score = *pair * scale + float2(mask);
+            const float m = simd_max(max(maxima[r], max(score.x, score.y)));
+            const float corr = exp(maxima[r] - m);
+            const float2 prob = exp(score - m);
+            sums[r] = sums[r]*corr + simd_sum(prob.x + prob.y);
+            maxima[r] = m;
+            *pair = prob;
+            for (ushort d = lane; d < 128; d += 32) { sum_out[row*128 + d] *= corr; }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (ushort d = 0; d < 128; d += 8) {
+            simdgroup_float8x8 accum;
+            simdgroup_load(accum, sum_out + sg*8*128 + d, 128);
+            for (ushort j = 0; j < 64; j += 8) {
+                simdgroup_float8x8 p;
+                simdgroup_half8x8 v;
+                simdgroup_load(p, scores + sg*8*64 + j, 64);
+                simdgroup_load(v, KV + j*128 + d, 128);
+                simdgroup_multiply_accumulate(accum, p, v, accum);
+            }
+            simdgroup_store(accum, sum_out + sg*8*128 + d, 128);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (ushort r = 0; r < 8; ++r) {
+        const uint row = 8*sg + r;
+        const float m = max(maxima[r], 0.0f);
+        const float corr = exp(maxima[r] - m);
+        const float inv = 1.0f/(sums[r]*corr + exp(-m));
+        for (ushort d = lane; d < 128; d += 32) {
+            out[((q0 + row)*24 + head)*128 + d] = (sum_out[row*128 + d]*corr)*inv;
+        }
+    }
+}

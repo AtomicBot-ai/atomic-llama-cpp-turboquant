@@ -29,7 +29,7 @@ def server_command(args, budget):
                "--host", "127.0.0.1", "--port", "0"]
     if budget is None:
         return command + ["--jinja"]
-    return command + ["-md", str(args.draft), "--spec-type", "draft-dspark", "--spec-draft-n-max", "3",
+    return command + ["-md", str(args.draft), "--spec-type", "draft-dspark",
                       "--spec-draft-n-ubatch", "32", "-ctkd", "q4_0", "-ctvd", "q4_0", "-ngld", "99",
                       "--engine-budget-mib", str(1024 * budget + 100), "--temp", "0",
                       "--ui", "--alias", "inkling-2-mini"]

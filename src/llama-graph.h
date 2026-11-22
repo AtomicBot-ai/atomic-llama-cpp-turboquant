@@ -774,6 +774,12 @@ public:
     const llama_memory_hybrid_iswa_context * mctx;
 };
 
+// Optional backend operation for Inkling prompt attention after KV writes and rotations.
+struct llm_inkling_prefill_attention {
+    ggml_backend_t backend = nullptr;
+    ggml_tensor * (*create)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor *, ggml_tensor *, float) = nullptr;
+};
+
 // hybrid iswa memory with a per-head attention bias that depends on the distance from the query to the cell (Inkling)
 // the KQ masks are always dense (rows == nullptr) and are filled from the same cells as the distances, so that the bias
 // gathered by distance lines up with the mask
@@ -792,6 +798,8 @@ public:
         extent_swa(extent_swa),
         cparams(cparams),
         mctx(mctx) { }
+    llm_inkling_prefill_attention prefill_attention;
+
     virtual ~llm_graph_input_mem_hybrid_iswa_rel() = default;
 
     void set_input(const llama_ubatch * ubatch) override;

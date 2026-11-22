@@ -3880,7 +3880,8 @@ static ggml_tensor * build_attn_iswa_impl(
         ggml_tensor * sinks,
         ggml_tensor * v_mla,
             float     kq_scale,
-            int       il) {
+            int       il,
+        const llm_inkling_prefill_attention * prefill = nullptr) {
     ggml_context * ctx0 = gctx.ctx0;
     ggml_cgraph  * gf   = gctx.gf;
 
@@ -3946,7 +3947,18 @@ static ggml_tensor * build_attn_iswa_impl(
     ggml_tensor * k = use_kv_cur ? k_cur : mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = use_kv_cur ? v_cur : mctx_cur->get_v(ctx0, il);
 
-    ggml_tensor * cur = gctx.build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
+    ggml_tensor * cur = nullptr;
+    if (prefill && prefill->create) {
+        cur = prefill->create(ctx0, q, k, v, kq_mask, kq_scale);
+        if (cur && ggml_backend_supports_op(prefill->backend, cur)) {
+            ggml_backend_sched_set_tensor_backend(gctx.sched, cur, prefill->backend);
+        } else {
+            cur = nullptr;
+        }
+    }
+    if (!cur) {
+        cur = gctx.build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
+    }
     cur = build_attn_scale_kv_output(ctx0, mctx_cur, cur, il);
     gctx.cb(cur, "kqv_out", il);
 
@@ -4601,7 +4613,7 @@ ggml_tensor * llm_graph_context::build_attn(
         GGML_ASSERT(cparams.flash_attn && kq_b->type == GGML_TYPE_F16);
         cb(kq_b, "kq_mask_rel_pos", il);
         return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur,
-                nullptr, kq_b, nullptr, sinks, nullptr, kq_scale, il);
+                nullptr, kq_b, nullptr, sinks, nullptr, kq_scale, il, &inp->prefill_attention);
     }
 
     // a mask per head, in the dense layout of the input mask, which flash attention takes in F16

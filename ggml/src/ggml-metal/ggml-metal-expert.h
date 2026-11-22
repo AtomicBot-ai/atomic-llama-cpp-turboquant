@@ -13,6 +13,7 @@ enum { GGML_METAL_INKLING_CONV_RESIDUAL = 0x41544535 };
 enum { GGML_METAL_INKLING_CLIP = 0x41544536 };
 enum { GGML_METAL_INKLING_SITU = 0x41544537 };
 enum { GGML_METAL_INKLING_CONTROL = 0x41544538 };
+enum { GGML_METAL_INKLING_PREFILL_ATTN = 0x41544539 };
 static inline bool ggml_metal_is_host_expert(const struct ggml_tensor * node) {
     return node->op == GGML_OP_CUSTOM &&
         node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] == GGML_METAL_HOST_EXPERT_BRIDGE;

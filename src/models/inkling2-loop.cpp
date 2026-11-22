@@ -118,6 +118,29 @@ llama_model_inkling2_loop::graph::graph(const llm_graph_params & params) : llama
     }
 
     auto * cur = build_inputs();
+    // Keep the short verification graph and its scratch reservation on the decode path.
+    if (expert_executor && n_tokens >= 128 && n_tokens <= 1024 && n_tokens % 16 == 0 &&
+            ubatch.n_seqs == 1 && cparams.flash_attn && model.dev_output() &&
+            model.devices.size() == 1 && model.n_gpu_layers() > hparams.n_layer_all) {
+        const char * enabled = std::getenv("LLAMA_EXPERIMENTAL_INKLING_PREFILL_ATTN");
+        if (enabled && std::strcmp(enabled, "1") == 0) {
+            const auto device = model.dev_output();
+            const auto reg = ggml_backend_dev_backend_reg(device);
+            const auto create = reinterpret_cast<decltype(inp->prefill_attention.create)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_inkling_prefill_attention_v1"));
+            if (create) {
+                for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                    auto backend = ggml_backend_sched_get_backend(sched, i);
+                    if (ggml_backend_get_device(backend) != device) { continue; }
+                    inkling_dense_backend = backend;
+                    rel_mask_kernel = reinterpret_cast<decltype(rel_mask_kernel)>(
+                            ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_inkling_rel_mask_v1"));
+                    inp->prefill_attention = {backend, create};
+                    break;
+                }
+            }
+        }
+    }
     std::vector<ggml_tensor *> blocks;
     for (int il = 0; il < start; ++il) {
         if (cparams.embeddings_layer_inp[il]) {
