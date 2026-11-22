@@ -1,0 +1,162 @@
+#pragma once
+
+#include "llama-expert-source.h"
+#include "llama-memory-contract.h"
+#include "models/models.h"
+#include "ggml-cpp.h"
+
+#include <algorithm>
+#include <array>
+#include <stdexcept>
+#include <vector>
+
+// The loop visits the same physical layers several times. A complete bank can
+// use Metal's ordinary routed matmul without a per-visit host callback.
+class llama_inkling_core_banks {
+public:
+    using weights = std::array<ggml_tensor *, 2>; // gate-up, down
+
+    llama_inkling_core_banks(const llama_model_inkling2_loop & model, bool include_outer, bool prefer_full) :
+        model(model), include_outer(include_outer), prefer_full(include_outer && prefer_full && model.n_phys == 24) {}
+
+    struct limits {
+        size_t core;
+        size_t total;
+        size_t full = 0;
+    };
+
+    static limits allowance(size_t cap, size_t floor, bool balanced_prompt) {
+        constexpr size_t mib = size_t(1) << 20;
+        // Spend only capacity above the measured small-machine profile. Keep
+        // at least 2 GiB beyond the mandatory floor for remaining streamed work.
+        const size_t base = (8192 + 100) * mib;
+        if (balanced_prompt && cap == base) {
+            // Two frequently revisited physical banks. Leave at least 1 GiB
+            // above the mandatory floor for the prompt matrix and demand reads.
+            const size_t allowed = cap > floor && cap - floor > 1024*mib ? std::min(1200*mib, cap - floor - 1024*mib) : 0;
+            return {allowed, allowed};
+        }
+        const size_t total = cap > floor && cap - floor > 2048*mib ? cap - floor - 2048*mib : 0;
+        // The full 20 GiB profile needs no streamed prompt matrix once every
+        // bank is resident. Retain headroom even for this all-or-nothing case.
+        const size_t full = cap == 20580*mib && cap > floor && cap - floor > 512*mib ? cap - floor - 512*mib : 0;
+        return {cap > base ? std::min(cap - base, total) : 0, total, full};
+    }
+
+    size_t bytes() const { return charged; }
+
+    bool can_restore_full(limits budget) const {
+        return budget.full && full_set_charge > charged && full_set_charge <= bank_limit(budget, true);
+    }
+
+    const weights * get(int ip) const {
+        if (ip < 0 || ip >= model.n_phys) { return nullptr; }
+        const size_t idx = (uint32_t(ip) < model.core_start ? size_t(model.n_phys) : 0) + ip - model.core_start;
+        return idx < banks.size() ? &banks[idx].tensors : nullptr;
+    }
+
+    void shrink(limits budget) {
+        while (!banks.empty() && charged > bank_limit(budget, banks.size() == size_t(model.n_phys))) {
+            charged -= banks.back().charge;
+            banks.pop_back();
+        }
+    }
+
+    void grow(limits budget) {
+        try {
+            load(budget);
+        } catch (const std::bad_alloc &) {
+            // Each completed bank is usable; the remaining layers still stream.
+        }
+        // A partial set still needs the normal streaming reserve.
+        if (prefer_full && budget.full && banks.size() != size_t(model.n_phys)) { shrink(budget); }
+        if (prefer_full && banks.size() == size_t(model.n_phys)) { full_set_charge = charged; }
+        LLAMA_LOG_INFO("Inkling resident %s: %zu physical layers, %.1f MiB\n",
+                include_outer ? "banks" : "core", banks.size(), charged / 1048576.);
+    }
+
+private:
+    size_t bank_limit(limits budget, bool allow_full) const {
+        // Once the regular allowance covers the whole repeated core, outer banks
+        // replace streamed work. Keep the same 2 GiB reserve above the floor.
+        if (!include_outer || !full_core_charge || budget.core < full_core_charge) { return budget.core; }
+        return prefer_full && allow_full && budget.full ? budget.full : budget.total;
+    }
+
+    void load(limits capacity) {
+#ifdef __APPLE__
+        const auto dev = model.dev_output();
+        const auto buft = ggml_backend_dev_buffer_type(dev);
+        using host_base_fn = void * (*)(ggml_backend_buffer_t);
+        const auto host_base = reinterpret_cast<host_base_fn>(ggml_backend_reg_get_proc_address(
+                    ggml_backend_dev_backend_reg(dev), "ggml_backend_metal_buffer_get_host_base"));
+        if (!host_base) { return; }
+        const auto & budget = model.memory_contract->ledger;
+        // Prioritize the repeated core, then the suffix and finally the prefix.
+        // A shrink pops the least preferred banks first, retaining this order.
+        const size_t limit = include_outer ? size_t(model.n_phys) : model.core_end - model.core_start;
+        for (size_t i = banks.size(); i < limit; ++i) {
+            const size_t allowed = bank_limit(capacity, true);
+            if (charged >= allowed) { break; }
+            const size_t ip = (model.core_start + i) % model.n_phys;
+            const auto & layer = model.layers[ip];
+            const weights original = {layer.ffn_gate_up_exps, layer.ffn_down_exps};
+            if (model.dev_layer(ip) != dev || !original[0] || !original[1] ||
+                    original[0]->type != GGML_TYPE_Q4_K || original[1]->type != GGML_TYPE_Q5_0 ||
+                    !model.streamed_experts.count(original[0]) || !model.streamed_experts.count(original[1])) { break; }
+            const size_t meta = 2 * ggml_tensor_overhead();
+            if (ggml_nbytes(original[0]) + ggml_nbytes(original[1]) + meta > allowed - charged) { break; }
+            bank b;
+            b.metadata_charge = budget->reserve(llama_memory_domain::host, llama_memory_category::runtime, meta);
+            if (!b.metadata_charge) { break; }
+            b.ctx.reset(ggml_init({meta, nullptr, true}));
+            if (!b.ctx) { break; }
+            b.metadata_charge.commit();
+            for (size_t k = 0; k < original.size(); ++k) {
+                b.tensors[k] = ggml_dup_tensor(b.ctx.get(), original[k]);
+                ggml_set_name(b.tensors[k], original[k]->name);
+            }
+            const size_t size = ggml_backend_alloc_ctx_tensors_from_buft_size(b.ctx.get(), buft);
+            if (!size || size > ggml_backend_buft_get_max_size(buft) || size + meta > allowed - charged) { break; }
+            const auto before = budget->snapshot(llama_memory_domain::host).categories[size_t(llama_memory_category::experts)].total();
+            {
+                llama_allocation_scope admission(budget, llama_memory_category::experts);
+                b.buffer.reset(ggml_backend_alloc_ctx_tensors_from_buft(b.ctx.get(), buft));
+            }
+            if (!b.buffer || !host_base(b.buffer.get())) { break; }
+            const auto after = budget->snapshot(llama_memory_domain::host).categories[size_t(llama_memory_category::experts)].total();
+            if (after < before || after - before < ggml_backend_buffer_get_size(b.buffer.get())) {
+                throw std::runtime_error("Inkling core bank allocation was not fully charged");
+            }
+            b.charge = meta + after - before;
+            if (b.charge > allowed - charged) { break; }
+            ggml_backend_buffer_set_usage(b.buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            ggml_backend_buffer_clear(b.buffer.get(), 0);
+            for (auto * w : b.tensors) {
+                const auto & info = model.expert_source->tensor(w->name);
+                if (w->buffer != b.buffer.get() || !ggml_is_contiguous(w) || info.expert_bytes() != w->nb[2] ||
+                        info.bytes != ggml_nbytes(w)) { return; }
+                model.expert_source->read_expert_range(w->name, 0, w->ne[2], w->data, info.bytes);
+            }
+            banks.push_back(std::move(b));
+            charged += banks.back().charge;
+            if (ip + 1 == model.core_end) { full_core_charge = charged; }
+        }
+#endif
+    }
+
+    struct bank {
+        llama_memory_budget::ticket metadata_charge;
+        ggml_context_ptr ctx;
+        ggml_backend_buffer_ptr buffer;
+        weights tensors{};
+        size_t charge = 0;
+    };
+    const llama_model_inkling2_loop & model;
+    const bool include_outer;
+    const bool prefer_full;
+    std::vector<bank> banks;
+    size_t charged = 0;
+    size_t full_core_charge = 0;
+    size_t full_set_charge = 0;
+};

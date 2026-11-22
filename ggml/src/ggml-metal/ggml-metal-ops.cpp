@@ -293,6 +293,84 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
     }
 
     switch (node->op) {
+        case GGML_OP_CUSTOM:
+            {
+                const int32_t tag = node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1];
+                if (tag == GGML_METAL_INKLING_CONTROL) {
+                    const char * kernel = "kernel_inkling_control";
+                    auto pipeline = ggml_metal_library_get_pipeline(ctx->lib, kernel);
+                    if (!pipeline.pipeline) {
+                        pipeline = ggml_metal_library_compile_pipeline(ctx->lib, kernel, kernel, nullptr);
+                    }
+                    ggml_metal_encoder_set_pipeline(ctx->enc, pipeline);
+                    for (int i = 0; i < 4; ++i) {
+                        ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(node->src[i]), i);
+                    }
+                    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(node), 4);
+                    ggml_metal_encoder_dispatch_threadgroups(ctx->enc, ggml_nelements(node) / 128, 1, 1, 128, 1, 1);
+                    break;
+                }
+                if (tag == GGML_METAL_INKLING_SITU) {
+                    const char * kernel = "kernel_inkling_situ";
+                    auto pipeline = ggml_metal_library_get_pipeline(ctx->lib, kernel);
+                    if (!pipeline.pipeline) {
+                        pipeline = ggml_metal_library_compile_pipeline(ctx->lib, kernel, kernel, nullptr);
+                    }
+                    uint32_t width = node->ne[0] / 4;
+                    const float beta = ggml_get_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 3);
+                    const float linear = ggml_get_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2);
+                    float scales[] = {beta, 1.0f / beta, linear, linear > 0.0f ? 1.0f / linear : 0.0f};
+                    ggml_metal_encoder_set_pipeline(ctx->enc, pipeline);
+                    ggml_metal_encoder_set_bytes(ctx->enc, &width, sizeof(width), 0);
+                    ggml_metal_encoder_set_bytes(ctx->enc, scales, sizeof(scales), 1);
+                    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(node->src[0]), 2);
+                    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(node), 3);
+                    const int threads = 128;
+                    ggml_metal_encoder_dispatch_threadgroups(ctx->enc, (width + threads - 1) / threads,
+                            node->ne[1], 1, threads, 1, 1);
+                    break;
+                }
+                if (tag == GGML_METAL_INKLING_CLIP) {
+                    const auto * scale = node->src[1];
+                    const char * kernel = "kernel_inkling_clip";
+                    auto pipeline = ggml_metal_library_get_pipeline(ctx->lib, kernel);
+                    if (!pipeline.pipeline) {
+                        pipeline = ggml_metal_library_compile_pipeline(ctx->lib, kernel, kernel, nullptr);
+                    }
+                    uint32_t dims[] = {uint32_t(node->ne[0] / 4), uint32_t(node->ne[1]), uint32_t(scale != nullptr)};
+                    float threshold = ggml_get_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2);
+                    ggml_metal_encoder_set_pipeline(ctx->enc, pipeline);
+                    ggml_metal_encoder_set_bytes(ctx->enc, dims, sizeof(dims), 0);
+                    ggml_metal_encoder_set_bytes(ctx->enc, &threshold, sizeof(threshold), 1);
+                    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(node->src[0]), 2);
+                    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(scale ? scale : node->src[0]), 3);
+                    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(node), 4);
+                    ggml_metal_encoder_dispatch_threadgroups(ctx->enc, node->ne[1], node->ne[2], 1, dims[0], 1, 1);
+                    break;
+                }
+                GGML_ASSERT(tag == GGML_METAL_INKLING_REL_MASK || tag == GGML_METAL_INKLING_CONV_RESIDUAL);
+                const bool mask = tag == GGML_METAL_INKLING_REL_MASK;
+                const char * kernel = mask ? "kernel_inkling_rel_mask" : "kernel_inkling_conv_residual";
+                auto pipeline = ggml_metal_library_get_pipeline(ctx->lib, kernel);
+                if (!pipeline.pipeline) {
+                    pipeline = ggml_metal_library_compile_pipeline(ctx->lib, kernel, kernel, nullptr);
+                }
+                uint32_t dims[] = {uint32_t(node->ne[0]), uint32_t(node->ne[1]), uint32_t(node->ne[2]),
+                    uint32_t(mask ? node->src[0]->ne[0] : node->src[3] ? node->src[3]->ne[0] : 0)};
+                ggml_metal_encoder_set_pipeline(ctx->enc, pipeline);
+                ggml_metal_encoder_set_bytes(ctx->enc, dims, sizeof(dims), 0);
+                for (int k = 0; k < 4; ++k) {
+                    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(node->src[k] ? node->src[k] : node->src[0]), k + 1);
+                }
+                ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(node), 5);
+                if (!mask) {
+                    float scale = ggml_get_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2);
+                    ggml_metal_encoder_set_bytes(ctx->enc, &scale, sizeof(scale), 6);
+                }
+                const int threads = 128;
+                ggml_metal_encoder_dispatch_threadgroups(ctx->enc, (dims[0] + threads - 1) / threads,
+                        dims[1], dims[2], threads, 1, 1);
+            } break;
         case GGML_OP_CONCAT:
             {
                 n_fuse = ggml_metal_op_concat(ctx, idx);

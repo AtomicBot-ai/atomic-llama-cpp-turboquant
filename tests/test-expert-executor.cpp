@@ -524,6 +524,12 @@ int main(int argc, char ** argv) {
         t.assert_true("maximum shape retains every duplicate in order", ordered && traversed == index.max_routes && index.count == 1);
         ids.ne[1] = 257;
         t.assert_true("oversized rows fall back", !index.fits(&ids, 1024));
+        ids.ne[0] = 8; ids.ne[1] = 1024; ids.nb[1] = 8 * sizeof(int32_t);
+        t.assert_true("wide prompts require opt-in", !index.fits(&ids, 1024));
+        index.build(&ids, 1024, true);
+        t.assert_true("eight slots fill the existing route links", index.last[1023] == index.max_routes - 1);
+        ids.ne[1] += 1;
+        t.assert_true("wide prompts still respect the route capacity", !index.fits(&ids, 1024, true));
         ids.ne[1] = 256; ids.ne[0] = 33;
         t.assert_true("oversized slots fall back", !index.fits(&ids, 1024));
         ids.ne[0] = 32;

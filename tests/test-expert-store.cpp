@@ -912,33 +912,36 @@ int main(int argc, char ** argv) {
         t.assert_equal("physical staging returned", budget->snapshot(domain::host).released, fixture::expert_bytes);
     });
 #if defined(__APPLE__)
-    t.test("adjacent GGUF ranges preserve bytes and never publish partial reads", [&](testing & t) {
-        fixture f;
-        auto budget = std::make_shared<llama_memory_budget>(1024 * 1024, 0, true);
-        llama_expert_store store(f.source(), budget, backend.get(), domain::host, 65536);
-        const int64_t experts[] = {0, 1, 3};
-        std::array<llama_expert_store::lease, 3> weights;
-        store.acquire_many(fixture::name, experts, 3, weights.data(), nullptr, true);
-        for (size_t i = 0; i < weights.size(); ++i) {
-            std::array<float, fixture::expert_bytes / sizeof(float)> values;
-            ggml_backend_tensor_get(weights[i].tensor(), values.data(), 0, fixture::expert_bytes);
-            bool exact = true;
-            for (size_t j = 0; j < values.size(); ++j) {
-                exact &= values[j] == fixture::weight(int(experts[i]), int(j / 32), int(j % 32));
+    for (auto layout : {llama_expert_read_layout::adjacent, llama_expert_read_layout::parallel_slices}) {
+        t.test(layout == llama_expert_read_layout::adjacent ? "adjacent GGUF ranges preserve bytes and never publish partial reads" :
+                "parallel expert slices preserve bytes and roll back on failure", [&](testing & t) {
+            fixture f;
+            auto budget = std::make_shared<llama_memory_budget>(1024 * 1024, 0, true);
+            llama_expert_store store(f.source(), budget, backend.get(), domain::host, 65536);
+            const int64_t experts[] = {0, 1, 3};
+            std::array<llama_expert_store::lease, 3> weights;
+            store.acquire_many(fixture::name, experts, 3, weights.data(), nullptr, layout);
+            for (size_t i = 0; i < weights.size(); ++i) {
+                std::array<float, fixture::expert_bytes / sizeof(float)> values;
+                ggml_backend_tensor_get(weights[i].tensor(), values.data(), 0, fixture::expert_bytes);
+                bool exact = true;
+                for (size_t j = 0; j < values.size(); ++j) {
+                    exact &= values[j] == fixture::weight(int(experts[i]), int(j / 32), int(j % 32));
+                }
+                t.assert_true("original slice bytes", exact);
+                weights[i].reset();
             }
-            t.assert_true("original slice bytes", exact);
-            weights[i].reset();
-        }
-        t.assert_equal("no gap bytes", store.stats().logical_read_bytes, uint64_t(3 * fixture::expert_bytes));
-        t.assert_true("gap remains cold", !store.contains(fixture::name, 2));
-        store.trim();
-        fs::resize_file(f.path, 0);
-        rejects(t, "failed range publishes nothing", [&] {
-            store.acquire_many(fixture::name, experts, 3, weights.data(), nullptr, true);
+            t.assert_equal("no gap bytes", store.stats().logical_read_bytes, uint64_t(3 * fixture::expert_bytes));
+            t.assert_true("gap remains cold", !store.contains(fixture::name, 2));
+            store.trim();
+            fs::resize_file(f.path, 0);
+            rejects(t, "failed range publishes nothing", [&] {
+                store.acquire_many(fixture::name, experts, 3, weights.data(), nullptr, layout);
+            });
+            t.assert_equal("no incomplete entries", store.stats().entries, size_t(0));
+            t.assert_equal("no retained charges", budget->snapshot(domain::host).used(), size_t(0));
         });
-        t.assert_equal("no incomplete entries", store.stats().entries, size_t(0));
-        t.assert_equal("no retained charges", budget->snapshot(domain::host).used(), size_t(0));
-    });
+    }
 #endif
     t.test("batched read failure discards unpublished leases", [&](testing & t) {
         fixture f;

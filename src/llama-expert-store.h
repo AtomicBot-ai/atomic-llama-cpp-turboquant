@@ -86,7 +86,7 @@ public:
     // Results must be empty. Admit in demand order and return all leases only
     // once reads into shared Metal buffers have completed and been validated.
     void acquire_many(const std::string & name, const int64_t * experts, size_t count, lease * results,
-                      llama_expert_lookahead * lookahead = nullptr, bool adjacent_ranges = false);
+                      llama_expert_lookahead * lookahead = nullptr, llama_expert_read_layout layout = llama_expert_read_layout::separate);
     // One bounded demand wave. The owner takes completed triples, then drains
     // all workers before destroying the batch. Store lifecycle operations still
     // require an idle owner. No lease escapes before its complete triple is read.

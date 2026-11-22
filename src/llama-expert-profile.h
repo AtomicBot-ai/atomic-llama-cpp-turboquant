@@ -58,6 +58,8 @@ struct llama_expert_profile_data {
     uint64_t release_ns = 0;
     uint64_t graph_setup_ns = 0;
     uint64_t moe_batch_groups = 0, moe_address_setup_ns = 0;
+    uint64_t inkling_joined_graphs = 0;
+    uint64_t inkling_resident_splits = 0;
     uint64_t moe_plan_layers = 0, moe_plan_lanes_built = 0, moe_plan_lanes_reused = 0;
     uint64_t map_prepare_ns = 0, prepared_map_ops = 0;
     uint64_t route_index_ns = 0, route_indexed_projections = 0, route_index_fallbacks = 0, route_id_reads = 0;

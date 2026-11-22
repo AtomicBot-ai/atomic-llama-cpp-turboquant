@@ -140,6 +140,52 @@ int qwen35_grid_draft_layers(const std::string & path, int bf16_layers, int comp
 }
 } // namespace
 
+#ifdef GGML_USE_METAL
+void common_atomic_select_inkling_metal_profile(const common_params & p) {
+    const auto & draft = p.speculative.draft;
+    if (!common_atomic_inkling_dspark_enabled(p) || p.fit_params || p.model.path.empty() ||
+            p.n_ctx != 4096 || p.n_batch != 1024 || p.n_ubatch != 1024 ||
+            p.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED ||
+            p.cache_type_k != GGML_TYPE_Q4_0 || p.cache_type_v != GGML_TYPE_Q4_0 ||
+            draft.n_max != 3 || draft.n_ubatch != 32 ||
+            draft.cache_type_k != GGML_TYPE_Q4_0 || draft.cache_type_v != GGML_TYPE_Q4_0) {
+        return;
+    }
+    const auto device = p.devices.empty() ? ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) : p.devices.front();
+    if (!device || p.devices.size() > 2 || std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "MTL")) {
+        return;
+    }
+    gguf_context_ptr meta(gguf_init_from_file(p.model.path.c_str(), {true, nullptr}));
+    if (!meta || !metadata_string(meta.get(), "general.architecture", "inkling2_loop") ||
+            !metadata_string(meta.get(), "general.name", "Inkling-2-Mini") ||
+            !metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_Q4_K_M)) {
+        return;
+    }
+    // Set defaults before the first Metal context. Explicit experiment settings take precedence.
+    const std::pair<const char *, const char *> settings[] = {
+        {"GGML_METAL_CONCURRENCY_DISABLE", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_EXPERT_BATCH", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_EXPERT_FFN", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_SITU", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_METAL_BRIDGE", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_METAL_JOIN", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_EXPERT_PIPELINE", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_EXPERT_CACHE", "class-lru"},
+        {"LLAMA_EXPERIMENTAL_INKLING_RESIDENT_FIRST", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_PREFILL_MATRIX", "3"},
+        {"LLAMA_EXPERIMENTAL_INKLING_CONV_RESIDUAL", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_REL_MASK", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_CLIP", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_CORE_BANKS", p.engine_budget == (size_t(20580) << 20) ? "full" : "1"},
+    };
+    for (const auto & [key, value] : settings) {
+        if (setenv(key, value, 0) != 0) {
+            throw std::runtime_error(std::string("could not set Inkling profile option ") + key);
+        }
+    }
+}
+#endif
+
 void common_atomic_select_qwen35_profile(common_params & p) {
     constexpr size_t gib = size_t(1) << 30;
     const bool resident_26 = p.engine_budget == 26*gib;
@@ -266,4 +312,18 @@ bool common_atomic_dflash2_enabled(const common_params & params) {
     }
     const char * enabled = std::getenv("LLAMA_EXPERIMENTAL_BUDGET_DFLASH2");
     return params.engine_qwen35_layers || (enabled && std::strcmp(enabled, "1") == 0);
+}
+
+bool common_atomic_inkling_dspark_enabled(const common_params & params) {
+    const auto & types = params.speculative.types;
+    const auto & draft = params.speculative.draft;
+    return params.engine_budget && !params.engine_ram_budget && !params.engine_vram_budget &&
+           !params.engine_memory_auto && !params.engine_prefill_window &&
+           params.slot_save_path.empty() && params.n_parallel == 1 &&
+           std::count(types.begin(), types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK) == 1 &&
+           std::all_of(types.begin(), types.end(), [](common_speculative_type type) {
+               return type == COMMON_SPECULATIVE_TYPE_NONE || type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+           }) &&
+           params.speculative.has_dft() && !params.speculative.has_synth() &&
+           draft.n_max > 0 && draft.n_max < 8 && draft.n_max < params.n_ubatch && draft.p_min == 0.0f;
 }

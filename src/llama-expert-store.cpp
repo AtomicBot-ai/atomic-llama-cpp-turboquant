@@ -149,6 +149,7 @@ struct llama_expert_store::impl {
     size_t active_tensor = 0;
     uint64_t active_tokens = 0;
     bool frequency_prefill = false;
+    bool inkling_loop_age = false;
 
     size_t policy_bytes() const {
         size_t count = 0;
@@ -171,9 +172,11 @@ struct llama_expert_store::impl {
         if (!history) { return 0; }
         const auto now = policy_tensors[key.first].clock;
         auto & h = history[policy_tensors[key.first].offset + size_t(key.second)];
-        // Adapted from upstream moe_cache_lru (PR #31233): 128-token
-        // frequency half-life, eight classes, history retained after eviction.
-        h.crf = h.crf * std::exp2(-float(now - h.last) / 128.0f) + 1.0f;
+        // Adapted from upstream moe_cache_lru (PR #31233): eight classes with
+        // history retained after eviction. The Inkling experiment extends
+        // the half-life because the same physical layers run multiple times.
+        const float half_life = inkling_loop_age ? 512.0f : 128.0f;
+        h.crf = h.crf * std::exp2(-float(now - h.last) / half_life) + 1.0f;
         h.last = now;
         return std::min(int(class_count - 1), int(std::log2(h.crf)));
     }
@@ -393,7 +396,12 @@ struct llama_expert_store::impl {
                     const auto key = candidate->key;
                     const auto & tensor = policy_tensors[key.first];
                     const auto & h = history[tensor.offset + size_t(key.second)];
-                    const double score = std::ldexp(double(tensor.clock - h.last), -int(cls));
+                    double score = std::ldexp(double(tensor.clock - h.last), -int(cls));
+                    if (inkling_loop_age && active_tokens == 4 && tensor.clock > 1) {
+                        // Reused core layers advance their local age several times per
+                        // verification. Partially normalize that age across layers.
+                        score /= std::sqrt(double(tensor.clock));
+                    }
                     if (score > best_score) {
                         best_score = score;
                         chosen = candidate;
@@ -577,7 +585,7 @@ size_t llama_expert_store::compact_slice_bytes(const std::string & name) const {
 }
 
 void llama_expert_store::acquire_many(const std::string & name, const int64_t * experts, size_t count, lease * results,
-        llama_expert_lookahead * lookahead, bool adjacent_ranges) {
+        llama_expert_lookahead * lookahead, llama_expert_read_layout layout) {
     std::array<llama_expert_source::read_request, 16> pending {}, reads;
     if (!count || count > pending.size() || std::any_of(results, results + count, [](const lease & out) { return bool(out); })) {
         throw std::invalid_argument("invalid batched expert acquisition");
@@ -601,7 +609,7 @@ void llama_expert_store::acquire_many(const std::string & name, const int64_t * 
         }
         if (n_reads) {
             llama_expert_timer timer(pimpl->profile ? &pimpl->profile->read_ns : nullptr);
-            pimpl->source->read_experts(reads.data(), n_reads, false, false, adjacent_ranges);
+            pimpl->source->read_experts(reads.data(), n_reads, false, false, layout);
             if (n_reads > 1) {
                 ++pimpl->counters.parallel_batches;
                 pimpl->counters.parallel_reads += n_reads;
@@ -1266,6 +1274,7 @@ bool llama_expert_store::enable_class_lru(size_t working_bytes, bool reclaim) {
 
 void llama_expert_store::disable_class_lru() {
     pimpl->frequency_prefill = false;
+    pimpl->inkling_loop_age = false;
     if (!pimpl->history) { return; }
     // Merge the already ordered classes into global acquisition order.
     // Keep weights and leases resident and release only policy metadata.
@@ -1291,9 +1300,14 @@ void llama_expert_store::disable_class_lru() {
 
 bool llama_expert_store::set_policy(const std::string & policy, size_t working_bytes) {
     std::lock_guard<std::mutex> lock(pimpl->mutex);
-    if (pimpl->clock || pimpl->trace || (policy != "lru" && policy != "class-lru")) { return false; }
+    const bool loop_age = policy == "inkling-loop-age" && pimpl->source->architecture() == "inkling2_loop";
+    if (pimpl->clock || pimpl->trace || (policy != "lru" && policy != "class-lru" && !loop_age)) { return false; }
     pimpl->frequency_prefill = false;
-    if (policy == "class-lru") { return enable_class_lru(working_bytes, false); }
+    if (policy == "class-lru" || loop_age) {
+        if (!enable_class_lru(working_bytes, false)) { return false; }
+        pimpl->inkling_loop_age = loop_age;
+        return true;
+    }
     disable_class_lru();
     return true;
 }
@@ -1304,6 +1318,7 @@ bool llama_expert_store::set_prefill_class_lru(bool enabled, size_t working_byte
     if (enabled) {
         const bool admitted = enable_class_lru(working_bytes, true);
         pimpl->frequency_prefill = admitted;
+        pimpl->inkling_loop_age = false;
         return admitted;
     }
     disable_class_lru();

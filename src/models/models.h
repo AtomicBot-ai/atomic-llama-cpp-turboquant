@@ -1596,12 +1596,13 @@ struct llama_model_dflash : public llama_model_base {
         BACKBONE_MISTRAL_LARGE4,
     };
 
-    variant_type  variant  = VARIANT_DFLASH;
+    variant_type variant = VARIANT_DFLASH;
     backbone_type backbone = BACKBONE_BASE;
 
     void load_hparams_lilicorr(llama_model_loader & ml);
     void load_hparams_dsv4(llama_model_loader & ml);
     void load_hparams_mistral_large4(llama_model_loader & ml);
+    void load_hparams_inkling2(llama_model_loader & ml);
     void load_tensors_dflash2();
     void load_tensors_dflash2_conv();
     void load_tensors_dspark(int64_t n_vocab_draft);
@@ -1609,6 +1610,7 @@ struct llama_model_dflash : public llama_model_base {
     void load_tensors_layers_base();
     void load_tensors_layers_dsv4();
     void load_tensors_layers_mistral_large4();
+    void load_tensors_inkling2();
 
     template <bool is_enc>
     struct graph : public llm_graph_context {
@@ -1667,7 +1669,13 @@ struct llama_model_dflash : public llama_model_base {
         graph_mistral_large4(const llm_graph_params & params);
     };
 
+    // Inkling2 DSpark: decode the block, then run the recurrent head for each draft token
+    struct graph_inkling2 : public llm_graph_context {
+        graph_inkling2(const llm_graph_params & params);
+    };
+
     // graph helpers shared by the backbones
+    static ggml_tensor * build_inp_target_features(llm_graph_context & g, llm_graph_input_embd & inp, int64_t n_embd_inp);
     static ggml_tensor * build_inject_inp(llm_graph_context & g, const llama_model & model);
     static ggml_tensor * get_tok_embd(const llm_graph_context & g, const llama_model & model);
     static std::pair<ggml_tensor *, ggml_tensor *> get_lm_head(const llm_graph_context & g, const llama_model & model);
@@ -2537,6 +2545,11 @@ struct llama_model_inkling2 : public llama_model_base {
 
         ggml_tensor * inp_out_ids = nullptr;
         ggml_tensor * tau         = nullptr; // log-scaled positions
+        ggml_backend_t inkling_dense_backend = nullptr;
+        ggml_tensor * (*control_kernel)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor *, ggml_tensor *) = nullptr;
+        ggml_tensor * (*clip_kernel)(ggml_context *, ggml_tensor *, ggml_tensor *, float) = nullptr;
+        ggml_tensor * (*rel_mask_kernel)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor *, ggml_tensor *) = nullptr;
+        ggml_tensor * (*conv_residual_kernel)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor *, ggml_tensor *, float) = nullptr;
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;

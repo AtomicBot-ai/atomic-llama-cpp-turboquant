@@ -366,8 +366,8 @@ void llama_expert_source::read_expert_range(const std::string & name, int64_t fi
 #endif
 
 void llama_expert_source::read_experts(const read_request * requests, size_t count, bool speculative,
-        bool concurrent_demand, bool adjacent_ranges) {
-    if (count == 1 && !speculative && !concurrent_demand) {
+        bool concurrent_demand, llama_expert_read_layout layout) {
+    if (count == 1 && !speculative && !concurrent_demand && layout != llama_expert_read_layout::parallel_slices) {
         const auto & req = requests[0];
         read_expert(req.tensor->name, req.expert, req.destination, req.tensor->expert_bytes());
         return;
@@ -380,6 +380,16 @@ void llama_expert_source::read_experts(const read_request * requests, size_t cou
         size_t bytes;
         void * destination;
         bool complete = false;
+
+        bool read(size_t first, size_t end) const {
+            while (first < end) {
+                const auto n = ::pread(fd, static_cast<char *>(destination) + first, end - first, offset + first);
+                if (n < 0 && errno == EINTR) { continue; }
+                if (n <= 0) { return false; }
+                first += size_t(n);
+            }
+            return true;
+        }
     };
     struct batch {
         std::array<job, 16> jobs;
@@ -410,18 +420,32 @@ void llama_expert_source::read_experts(const read_request * requests, size_t cou
             auto & state = *static_cast<batch *>(opaque);
             for (; index < state.count; index += state.width) {
                 auto & job = state.jobs[index];
-                auto * dst = static_cast<char *>(job.destination);
-                size_t read_bytes = 0;
-                while (read_bytes < job.bytes) {
-                    const auto n = ::pread(job.fd, dst + read_bytes, job.bytes - read_bytes, job.offset + read_bytes);
-                    if (n < 0 && errno == EINTR) { continue; }
-                    if (n <= 0) { break; }
-                    read_bytes += n;
-                }
-                job.complete = read_bytes == job.bytes;
+                job.complete = job.read(0, job.bytes);
             }
         };
-        if (adjacent_ranges && !speculative && !concurrent_demand) {
+        if (layout == llama_expert_read_layout::parallel_slices && !speculative && !concurrent_demand) {
+            // Split even a single large miss across readers. Each worker owns a
+            // disjoint byte range of the already admitted Metal buffer.
+            constexpr size_t parts = 4;
+            struct sliced_batch {
+                batch & work;
+                std::array<std::array<bool, parts>, 16> complete{};
+            } sliced{work};
+            auto read_part = [](void * opaque, size_t index) {
+                auto & state = *static_cast<sliced_batch *>(opaque);
+                const size_t i = index / parts;
+                const size_t part = index % parts;
+                const auto & job = state.work.jobs[i];
+                const size_t width = job.bytes / parts;
+                const size_t end = part + 1 == parts ? job.bytes : (part + 1) * width;
+                state.complete[i][part] = job.read(part * width, end);
+            };
+            dispatch_apply_f(count * parts, nullptr, &sliced, read_part);
+            for (size_t i = 0; i < count; ++i) {
+                const auto & done = sliced.complete[i];
+                work.jobs[i].complete = std::all_of(done.begin(), done.end(), [](bool ok) { return ok; });
+            }
+        } else if (layout == llama_expert_read_layout::adjacent && !speculative && !concurrent_demand) {
             if (__builtin_available(macOS 11.0, *)) {
                 size_t groups = 0;
                 for (size_t i = 0; i < work.count; ++i) {
@@ -484,7 +508,7 @@ void llama_expert_source::read_experts(const read_request * requests, size_t cou
         throw;
     }
 #else
-    (void) adjacent_ranges;
+    (void) layout;
     if (speculative || concurrent_demand) { throw std::invalid_argument("speculative batched expert reads require Metal"); }
     for (size_t i = 0; i < count; ++i) {
         const auto & req = requests[i];

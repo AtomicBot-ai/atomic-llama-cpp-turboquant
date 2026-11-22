@@ -22,14 +22,15 @@ struct llama_expert_route_index {
     std::array<uint16_t, max_routes> next;
     uint16_t count = 0;
 
-    static bool fits(const ggml_tensor * ids, int64_t experts) {
+    static bool fits(const ggml_tensor * ids, int64_t experts, bool wide_prompt = false) {
         return ids->type == GGML_TYPE_I32 && experts > 0 && experts <= int64_t(max_experts) &&
             ids->ne[0] > 0 && ids->ne[0] <= int64_t(max_slots) &&
-            ids->ne[1] >= 0 && ids->ne[1] <= int64_t(max_tokens);
+            ids->ne[1] >= 0 && (ids->ne[1] <= int64_t(max_tokens) ||
+                (wide_prompt && ids->ne[1] <= int64_t(max_routes) / ids->ne[0]));
     }
 
-    void build(const ggml_tensor * ids, int64_t experts) {
-        if (!fits(ids, experts)) { throw std::invalid_argument("route index shape exceeds its fixed capacity"); }
+    void build(const ggml_tensor * ids, int64_t experts, bool wide_prompt = false) {
+        if (!fits(ids, experts, wide_prompt)) { throw std::invalid_argument("route index shape exceeds its fixed capacity"); }
         std::fill_n(first.begin(), size_t(experts), end);
         count = 0;
         uint16_t at = 0;

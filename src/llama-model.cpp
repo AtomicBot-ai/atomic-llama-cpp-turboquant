@@ -1723,10 +1723,15 @@ void llama_model_base::load_vocab(llama_model_loader & ml) {
 bool llama_model_base::load_tensors(llama_model_loader & ml) {
     const bool discrete_streaming = memory_contract && memory_contract->stream_experts;
     if (params.expert_streaming_size > 0 || params.memory_budget_size > 0 || discrete_streaming) {
-        if ((arch != LLM_ARCH_QWEN3MOE && arch != LLM_ARCH_QWEN35MOE && arch != LLM_ARCH_LFM2MOE && arch != LLM_ARCH_QWEN4EXP) || params.no_alloc || params.load_mtp ||
+        if ((arch != LLM_ARCH_QWEN3MOE && arch != LLM_ARCH_QWEN35MOE && arch != LLM_ARCH_LFM2MOE &&
+                arch != LLM_ARCH_QWEN4EXP && arch != LLM_ARCH_INKLING2_LOOP) || params.no_alloc || params.load_mtp ||
             params.split_mode == LLAMA_SPLIT_MODE_TENSOR || devices.size() > 1 || ml.file_paths.empty() ||
             !hdmd.weight_blocks.empty() || !hdmd.inverse_blocks.empty()) {
-            throw std::runtime_error("expert streaming requires a file-backed Qwen3/3.5 MoE, Qwen4Exp or LFM2 MoE model, one device, no MTP or folded weights");
+            throw std::runtime_error("expert streaming requires a file-backed Qwen3/3.5 MoE, Qwen4Exp, LFM2 MoE or looped Inkling2 model, one device, no MTP or folded weights");
+        }
+        if (arch == LLM_ARCH_INKLING2_LOOP && (!params.memory_budget_size || devices.size() != 1 ||
+                std::strcmp(ggml_backend_dev_name(devices.front().dev), "MTL0") != 0 || n_gpu_layers() <= hparams.n_layer_all)) {
+            throw std::runtime_error("looped Inkling2 expert streaming requires an engine budget and full offload to one Metal device");
         }
         if (params.load_mode != LLAMA_LOAD_MODE_AUTO && params.load_mode != LLAMA_LOAD_MODE_NONE) {
             throw std::runtime_error("expert streaming requires auto or none load mode; whole-file mapping/locking is disabled");

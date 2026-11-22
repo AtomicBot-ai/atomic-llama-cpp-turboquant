@@ -33,6 +33,8 @@ struct llama_expert_profile_data;
 // destination only until return, including after any cancellation request.
 using llama_expert_read_probe = bool (*)(void * user, int fd, size_t offset, void * dst, size_t size);
 
+enum class llama_expert_read_layout { separate, adjacent, parallel_slices };
+
 class llama_expert_source {
 public:
     struct packed_group {
@@ -65,7 +67,7 @@ public:
         void * destination = nullptr;
     };
     void read_experts(const read_request * requests, size_t count, bool speculative = false,
-                    bool concurrent_demand = false, bool adjacent_ranges = false);
+                    bool concurrent_demand = false, llama_expert_read_layout layout = llama_expert_read_layout::separate);
 #if defined(__APPLE__)
     // Exact contiguous expert slices into one already admitted Metal or staging range.
     void read_expert_range(const std::string & name, int64_t first, int64_t end, void * dst, size_t bytes);

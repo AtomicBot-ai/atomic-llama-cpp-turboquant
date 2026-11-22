@@ -27,12 +27,14 @@ LLAMA_API bool llama_atomic_qwen35_profile_set(struct llama_model * target, uint
 LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target);
 LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target, bool flash_long_profile);
 LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target, uint32_t flash_context);
+LLAMA_API bool llama_atomic_is_inkling_dspark(const struct llama_model * draft);
+LLAMA_API bool llama_atomic_inkling_dspark_enable(struct llama_model * target);
 LLAMA_API void llama_atomic_park_flash_draft(struct llama_context * draft);
 constexpr size_t llama_atomic_dflash2_slot_staging_bytes(uint32_t context) {
     if (context == 40960) { return size_t(1280) << 20; }
     return size_t(context == 4096 ? 128 : 32) << 20;
 }
-LLAMA_API struct llama_model * llama_atomic_dflash2_load(
+LLAMA_API struct llama_model * llama_atomic_budget_draft_load(
         struct llama_model * target, const char * path, struct llama_model_params params);
 // Idle-only diagnostic control for bounded known-route reads during GPU work.
 // Defaults on for LFM/Qwen3.5 MoE Metal matrix waves; falls back when headroom is low.
@@ -49,7 +51,8 @@ LLAMA_API bool llama_expert_early_read_set(struct llama_context * ctx, bool enab
 
 // Install/remove only while idle. Trace users must outlive the context or detach
 // before destruction. Captures UMA demand access, not asynchronous leases/resize.
-// Explicit override before the first evaluation: "lru" or "class-lru".
+// Explicit override before the first evaluation: "lru", "class-lru", or
+// the experimental "inkling-loop-age" for Inkling loop models.
 // Failure leaves the existing policy intact, including insufficient floor space.
 LLAMA_API bool llama_expert_cache_policy_set(struct llama_context * ctx, const char * policy);
 // Decode one prompt slice with the uncached token count for the whole prefill.

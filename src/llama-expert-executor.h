@@ -53,15 +53,25 @@ public:
     // Qualified short-row FP32 Metal profile. Null preserves the ordinary graph.
     // Admit optional acceleration after mandatory context/graph allocation.
     void configure_acceleration(bool dflash_verify = false, bool profile_overlap = false, bool flash_next = false);
-    void configure_resident_layers(const llama_model & model);
+    void configure_resident_layers(const llama_model & model, uint32_t ubatch = 0);
+    bool balanced_inkling_prompt() const;
+    bool compact_inkling_scheduler() const;
+    void set_compact_inkling_scheduler(bool compact);
+    void mark_inkling_prompt_tail();
+    bool has_inkling_core_policy() const;
+    const std::array<ggml_tensor *, 2> * inkling_core_layer(int ip) const;
     const std::array<ggml_tensor *, 3> * resident_layer(int il) const;
     bool can_retain_prefill_tail(size_t routed_layers) const;
     size_t retain_prefill_tail(llama_prefill_wide_weights & weights, int first_layer);
     bool has_prefill_tail() const;
     void release_prefill_tail();
+    void release_prompt_matrix(); // after the scheduler has synchronized the prompt graph
     bool automatic_acceleration() const;
     bool combined_moe_enabled() const;
     bool fused_window_moe_enabled() const;
+    ggml_tensor * build_inkling_ffn(ggml_context *, const ggml_tensor * gate_up, const ggml_tensor * down,
+            ggml_tensor * input, ggml_tensor * ids, float beta, float linear_beta);
+    ggml_backend_t inkling_ffn_backend(ggml_backend_sched_t, ggml_tensor *, ggml_backend_t fallback) const;
     ggml_tensor * build_moe(ggml_context * ctx, const ggml_tensor * up, const ggml_tensor * gate,
                             const ggml_tensor * down, ggml_tensor * input, ggml_tensor * ids,
                             const ggml_tensor * router = nullptr,

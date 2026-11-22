@@ -5,6 +5,7 @@
 
 #import "ggml-metal-impl.h"
 #import "ggml-metal-common.h"
+#import "ggml-metal-expert.h"
 #import "ggml-metal-ops.h"
 #import "ggml-metal-fusion.h"
 
@@ -59,6 +60,10 @@ struct ggml_metal {
 
     struct ggml_cgraph * gf;
     id<MTLCommandBuffer> window_commands;
+    bool (*host_expert_bridge)(struct ggml_tensor * node);
+    bool host_expert_window;
+    void (*host_expert_release)(void *);
+    void * host_expert_user;
 
     // the callback given to the thread pool
     void (^encode_async)(size_t ith);
@@ -698,8 +703,130 @@ enum ggml_status ggml_metal_graph_compute_prefix(ggml_metal_t ctx, struct ggml_c
     return GGML_STATUS_SUCCESS;
 }
 
+void ggml_metal_set_host_expert_bridge(ggml_metal_t ctx, bool (*callback)(struct ggml_tensor * node)) {
+    ctx->host_expert_bridge = callback;
+}
+
+bool ggml_metal_host_expert_window_active(ggml_metal_t ctx) {
+    return ctx->host_expert_window;
+}
+
+enum ggml_status ggml_metal_host_expert_window_append(ggml_metal_t ctx, struct ggml_cgraph * gf,
+        void (*release)(void *), void * user) {
+    GGML_ASSERT(ctx->host_expert_window && !ctx->window_commands && !ctx->host_expert_release && release);
+    const enum ggml_status status = ggml_metal_window_append(ctx, gf);
+    if (status != GGML_STATUS_SUCCESS) {
+        [ctx->window_commands release];
+        ctx->window_commands = nil;
+        return status;
+    }
+    ctx->host_expert_release = release;
+    ctx->host_expert_user = user;
+    return GGML_STATUS_SUCCESS;
+}
+
+static enum ggml_status ggml_metal_host_expert_window_submit_chunks(
+        ggml_metal_t ctx, struct ggml_cgraph * view, int chunk_nodes) {
+    @autoreleasepool {
+        // The first buffer already contains the streamed expert work. Submit it
+        // with the first slice so the GPU can run while the CPU encodes the rest.
+        NSMutableArray<id<MTLCommandBuffer>> * submitted = [NSMutableArray array];
+        enum ggml_status status = GGML_STATUS_SUCCESS;
+        for (int first = 0; first < view->n_nodes;) {
+            const int target = MIN(first + chunk_nodes, view->n_nodes);
+            // Use the same fusion-safe boundaries as ordinary Metal graph submission.
+            int end = first;
+            while (end < target) {
+                end += ggml_metal_fusion_max(view, end);
+            }
+            struct ggml_cgraph slice = ggml_graph_view(view, first, end);
+            status = ggml_metal_window_append(ctx, &slice);
+            id<MTLCommandBuffer> cmd = ctx->window_commands;
+            ctx->window_commands = nil;
+            if (status == GGML_STATUS_SUCCESS) {
+                [submitted addObject:cmd];
+                [cmd commit];
+            }
+            [cmd release];
+            if (status != GGML_STATUS_SUCCESS) { break; }
+            first = end;
+        }
+        // All buffers use the same queue. Drain even after an encoding failure:
+        // the caller releases the expert leases and scratch after this returns.
+        [submitted.lastObject waitUntilCompleted];
+        for (id<MTLCommandBuffer> cmd in submitted) {
+            if (cmd.status != MTLCommandBufferStatusCompleted) {
+                ctx->has_error = true;
+                GGML_LOG_ERROR("%s: %s\n", __func__, cmd.error.localizedDescription.UTF8String);
+                status = GGML_STATUS_FAILED;
+            }
+        }
+        return status;
+    }
+}
+
+static enum ggml_status ggml_metal_host_expert_window_close(ggml_metal_t ctx, struct ggml_cgraph * view) {
+    const int chunk_nodes = 512;
+    enum ggml_status status;
+    if (view && !ctx->use_concurrency && view->n_nodes >= 2*chunk_nodes) {
+        status = ggml_metal_host_expert_window_submit_chunks(ctx, view, chunk_nodes);
+    } else {
+        status = view ? ggml_metal_window_append(ctx, view) : GGML_STATUS_SUCCESS;
+        if (status == GGML_STATUS_SUCCESS) {
+            uint64_t submissions = 0;
+            status = ggml_metal_window_flush(ctx, &submissions);
+        } else {
+            [ctx->window_commands release];
+            ctx->window_commands = nil;
+        }
+    }
+    ctx->host_expert_release(ctx->host_expert_user);
+    ctx->host_expert_release = NULL;
+    ctx->host_expert_user = NULL;
+    return status;
+}
+
+static enum ggml_status ggml_metal_graph_compute_bridged(ggml_metal_t ctx, struct ggml_cgraph * gf) {
+    int first = 0;
+    for (int i = 0; i < gf->n_nodes; ++i) {
+        struct ggml_tensor * node = gf->nodes[i];
+        if (!ggml_metal_is_host_expert(node)) { continue; }
+        if (ctx->host_expert_release) {
+            struct ggml_cgraph view = ggml_graph_view(gf, first, i);
+            const enum ggml_status status = ggml_metal_host_expert_window_close(ctx, i > first ? &view : NULL);
+            if (status != GGML_STATUS_SUCCESS) { return status; }
+        } else if (i > first) {
+            struct ggml_cgraph view = ggml_graph_view(gf, first, i);
+            const enum ggml_status status = ggml_metal_graph_compute_prefix(ctx, &view, 0);
+            if (status != GGML_STATUS_SUCCESS) { return status; }
+        }
+        // The callback can access the shared input and output only after all
+        // previous uses of the graph arena and input copies have completed.
+        ggml_metal_synchronize(ctx);
+        if (ctx->has_error) { return GGML_STATUS_FAILED; }
+        if (ctx->abort_callback && ctx->abort_callback(ctx->abort_callback_data)) { return GGML_STATUS_ABORTED; }
+        ctx->host_expert_window = !ctx->capture_started && ctx->capture_compute <= 0 && !ctx->window_commands;
+        const bool ok = ctx->host_expert_bridge(node);
+        ctx->host_expert_window = false;
+        if (!ok) {
+            if (ctx->host_expert_release) { ggml_metal_host_expert_window_close(ctx, NULL); }
+            return GGML_STATUS_FAILED;
+        }
+        first = i + 1;
+    }
+    if (ctx->host_expert_release) {
+        struct ggml_cgraph view = ggml_graph_view(gf, first, gf->n_nodes);
+        return ggml_metal_host_expert_window_close(ctx, first < gf->n_nodes ? &view : NULL);
+    }
+    if (first >= gf->n_nodes) { return GGML_STATUS_SUCCESS; }
+    if (!first) { return ggml_metal_graph_compute_prefix(ctx, gf, 0); }
+    struct ggml_cgraph view = ggml_graph_view(gf, first, gf->n_nodes);
+    return ggml_metal_graph_compute_prefix(ctx, &view, 0);
+}
+
 enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph * gf) {
-    return ggml_metal_graph_compute_prefix(ctx, gf, 0);
+    return ctx->host_expert_bridge ? ggml_metal_graph_compute_bridged(ctx, gf) :
+        ggml_metal_graph_compute_prefix(ctx, gf, 0);
 }
 
 enum ggml_status ggml_metal_window_append(ggml_metal_t ctx, struct ggml_cgraph * gf) {

@@ -1903,7 +1903,9 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
     if (expert_executor && model.streamed_experts.count(w)) {
         if (slots || !loras->empty()) { throw std::runtime_error("expert streaming does not support MoE cache or LoRA"); }
         res = expert_executor->build(ctx0, w, cur_mm, ids);
-        ggml_backend_sched_set_tensor_backend(sched, res, backend_cpu);
+        const bool shared_prompt = ids->ne[1] >= 512 && expert_executor->balanced_inkling_prompt();
+        ggml_backend_sched_set_tensor_backend(sched, res, shared_prompt ?
+                expert_executor->inkling_ffn_backend(sched, res, backend_cpu) : backend_cpu);
     } else {
         res = slots == nullptr ?
         ggml_mul_mat_id(ctx0, w, cur_mm, ids) :
@@ -2622,6 +2624,18 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // the experts selected by mm_ids, up to the down projection, from the MoE cache if cached
     // ids are the selected experts, for the biases and scales
     auto build_experts = [&](ggml_tensor * cur, ggml_tensor * ids, ggml_tensor * mm_ids, bool cached) {
+        if (expert_executor && arch == LLM_ARCH_INKLING2_LOOP && type_op == LLM_FFN_SITU && !mm_ids &&
+                gate_up_exps && !gate_up_exps_b && !up_exps_s && !gate_exps_s && !down_exps_s &&
+                n_outputs == ubatch.n_tokens && loras->empty() &&
+                (!hdmd || (!hdmd->rot.count(gate_up_exps) && !hdmd->rot.count(down_exps))) &&
+                prec_policy.prec_acc.empty() && prec_policy.prec_src1.empty()) {
+            if (auto * combined = expert_executor->build_inkling_ffn(ctx0, gate_up_exps, down_exps, cur, ids,
+                        hparams.situ_beta, hparams.situ_linear_beta)) {
+                ggml_backend_sched_set_tensor_backend(sched, combined, expert_executor->inkling_ffn_backend(sched, combined, backend_cpu));
+                cb(combined, "ffn_moe_down", il);
+                return combined;
+            }
+        }
         // A private streaming capability owns the complete routed FP32 FFN.
         // Keep router, shared FFN, weighting and reduction in the original graph.
         if (expert_executor && ((expert_executor->combined_moe_enabled() && n_outputs == ubatch.n_tokens) ||
@@ -4571,7 +4585,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * kq_b,
         ggml_tensor * sinks,
             float     kq_scale,
-            int       il) const {
+            int       il,
+            bool      prebuilt_mask) const {
     const bool is_swa = hparams.is_swa(il);
 
     auto * inp_attn = inp->get_attn();
@@ -4581,6 +4596,13 @@ ggml_tensor * llm_graph_context::build_attn(
     // TODO: support kv_rows - fill the distances over the kv_rows cell lists and pass the rows to build_attn_mha,
     //       needs a kv_rows flash attention with a per-head mask (CUDA has none)
     GGML_ASSERT(attn_mask.rows == nullptr);
+
+    if (prebuilt_mask) {
+        GGML_ASSERT(cparams.flash_attn && kq_b->type == GGML_TYPE_F16);
+        cb(kq_b, "kq_mask_rel_pos", il);
+        return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur,
+                nullptr, kq_b, nullptr, sinks, nullptr, kq_scale, il);
+    }
 
     // a mask per head, in the dense layout of the input mask, which flash attention takes in F16
     ggml_tensor * kq_mask = attn_mask.raw;

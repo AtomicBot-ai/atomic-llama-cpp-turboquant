@@ -1,5 +1,33 @@
 #include "common.h"
 
+kernel void kernel_inkling_conv_residual(
+        constant uint4 & dims [[buffer(0)]],
+        device const float * cur [[buffer(1)]],
+        device const float4 * weights [[buffer(2)]],
+        device const float * window [[buffer(3)]],
+        device const float * dynamic [[buffer(4)]],
+        device float * output [[buffer(5)]],
+        constant float & scale [[buffer(6)]],
+        uint2 i [[thread_position_in_grid]]) {
+    const uint channels = dims.x, tokens = dims.y, taps_by_head = dims.w;
+    if (i.x >= channels) { return; }
+    const uint idx = i.x + i.y * channels;
+    const uint start = i.x * (tokens + 3) + i.y;
+    // Same float4 dot as the existing Metal four-tap SSM convolution.
+    const float4 sample = float4(window[start], window[start + 1], window[start + 2], window[start + 3]);
+    float result = dot(sample, weights[i.x]);
+    if (taps_by_head) {
+        #pragma clang fp contract(off)
+        #pragma clang fp reassociate(off)
+        const uint head = i.x / (channels / (taps_by_head / 4));
+        for (uint lag = 0; lag < 4; ++lag) {
+            const float tap = dynamic[i.y * taps_by_head + head * 4 + lag];
+            result = result + sample[3 - lag] * tap;
+        }
+    }
+    output[idx] = (cur[idx] + result) * scale;
+}
+
 typedef void (im2col_t)(
         constant ggml_metal_kargs_im2col & args,
         device const float * x,

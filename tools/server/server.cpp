@@ -7,6 +7,7 @@
 #include "server-tools.h"
 
 #include "arg.h"
+#include "atomic-budget.h"
 #include "build-info.h"
 #include "common.h"
 #include "fit.h"
@@ -819,6 +820,16 @@ int llama_server(int argc, char ** argv) {
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
         return 1;
     }
+#ifdef GGML_USE_METAL
+    if (params.engine_budget) {
+        try {
+            common_atomic_select_inkling_metal_profile(params);
+        } catch (const std::exception & e) {
+            SRV_ERR("%s\n", e.what());
+            return 1;
+        }
+    }
+#endif
 
     SRV_INF("%s", "initializing ...\n");
 

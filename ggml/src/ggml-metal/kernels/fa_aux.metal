@@ -1,6 +1,26 @@
 #include "common.h"
 #include "dequantize.h"
 
+// Match the float4 SUM_ROWS layout for the two Inkling attention widths.
+kernel void kernel_inkling_clip(
+        constant uint * dims,
+        constant float & threshold,
+        device const float4 * input,
+        device const float4 * scale,
+        device float4 * output,
+        uint2 row [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_simdgroup]]) {
+    #pragma clang fp contract(off)
+    #pragma clang fp reassociate(off)
+    const uint offset = (row.y * dims[1] + row.x) * dims[0] + lane;
+    float4 value = input[offset];
+    if (dims[2]) {
+        value *= scale[row.x * dims[0] + lane];
+    }
+    const float norm = sqrt(sum(simd_sum(value * value))) + 1.0e-6f;
+    output[offset] = value * clamp(threshold / norm, 0.0f, 1.0f);
+}
+
 // dequantize a quantized KV cache tensor to contiguous F16 before running the F16 flash attention kernels
 // - one thread per block; dispatched separately for K and V
 // - ref: https://github.com/ggml-org/llama.cpp/pull/27390
@@ -557,3 +577,19 @@ template [[host_name("kernel_lightning_indexer_q4_1")]] kernel kernel_lightning_
 template [[host_name("kernel_lightning_indexer_q5_0")]] kernel kernel_lightning_indexer_t kernel_lightning_indexer<block_q5_0, 2, dequantize_q5_0>;
 template [[host_name("kernel_lightning_indexer_q5_1")]] kernel kernel_lightning_indexer_t kernel_lightning_indexer<block_q5_1, 2, dequantize_q5_1>;
 template [[host_name("kernel_lightning_indexer_q8_0")]] kernel kernel_lightning_indexer_t kernel_lightning_indexer<block_q8_0, 2, dequantize_q8_0>;
+
+kernel void kernel_inkling_rel_mask(
+        constant uint4 & dims [[buffer(0)]],
+        device const float * table [[buffer(1)]],
+        device const float * sinks [[buffer(2)]],
+        device const int * distances [[buffer(3)]],
+        device const half * causal [[buffer(4)]],
+        device half * output [[buffer(5)]],
+        uint3 i [[thread_position_in_grid]]) {
+    const uint cells = dims.x, queries = dims.y, heads = dims.z, extent = dims.w;
+    if (i.x >= cells) { return; }
+    const uint slot = i.x + cells * i.y;
+    const uint query_head = i.z + heads * i.y;
+    const float bias = table[distances[slot] + extent * query_head] - sinks[query_head];
+    output[slot + cells * queries * i.z] = half(bias + float(causal[slot]));
+}

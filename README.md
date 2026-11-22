@@ -19,6 +19,35 @@ not an OS-wide RSS limiter or a throughput-optimized implementation.
 See the [server build, launch commands and qualified profiles](docs/atomic-engine-release.md)
 and the [implementation status](docs/atomic-engine.md).
 
+## Run Inkling 2 Mini on Apple Silicon
+
+Run this command from the repository root with the two local GGUF files.
+If your files are elsewhere, change the paths after `-m` (target) and `-md` (folded DSpark draft).
+
+```sh
+./build-metal/bin/llama-server \
+  -m .work/models/Inkling-2-Mini-AD-Q4_K.gguf \
+  -md .work/models/dspark-Inkling-2-Mini-Q8_0-folded-final.gguf \
+  --spec-type draft-dspark --spec-draft-n-max 3 --spec-draft-n-ubatch 32 \
+  --engine-budget-mib 20580 -fit off -c 4096 -b 1024 -ub 1024 -np 1 \
+  -fa on -ctk q4_0 -ctv q4_0 -ctkd q4_0 -ctvd q4_0 -ngl all -ngld 99 -t 8 -tb 8 \
+  --temp 0 --cache-ram 0 --ctx-checkpoints 0 --no-warmup --metrics \
+  --ui --alias inkling-2-mini --host 127.0.0.1 --port 8080
+```
+
+Open the chat at `http://127.0.0.1:8080/`. The OpenAI-compatible API at
+`http://127.0.0.1:8080/v1` serves the model as `inkling-2-mini`.
+The 20,580 MiB budget includes 20 GiB plus 100 MiB for KV. For 8 GiB plus
+the same KV allowance, change `20580` to `8292`. With the settings above,
+the Metal server selects mode 3 prefill, streams experts with `pread` and
+keeps all 24 physical layers' expert banks resident at 20 GiB when they fit.
+
+When an embedding host requests a live budget change from 20 to 8 GiB and
+back, the engine releases idle expert-cache entries before restoring the
+full banks. Generation continues in the same process.
+See the [Metal build instructions](docs/atomic-engine-release.md#build-the-server)
+and [Inkling profile options](docs/atomic-engine-release.md#inkling-2-mini-ad-q4_k-with-dspark-3).
+
 The upstream llama.cpp documentation follows.
 
 ## llama.cpp

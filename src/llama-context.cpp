@@ -194,13 +194,17 @@ llama_context::llama_context(
             (model.arch == LLM_ARCH_QWEN35MOE && params.n_ctx == 4096 && params.n_batch == 4096);
         const bool rollback_allowed = model.memory_contract->dflash2_target && dflash_profile &&
             params.n_ubatch == 8 && params.n_rs_seq < params.n_ubatch - 1;
+        const bool inkling_rollback = model.memory_contract->inkling_dspark_target &&
+            params.n_rs_seq < 8 && params.n_rs_seq < params.n_ubatch;
         const bool extended_flash = params.n_ctx > 4096 && (params.n_ctx == model.memory_contract->flash_next_extended_ctx ||
                 (model.arch == LLM_ARCH_DFLASH && params.ctx_other && params.ctx_other->model.memory_contract &&
                  params.n_ctx == params.ctx_other->model.memory_contract->flash_next_extended_ctx));
-        if (params.n_ctx == 0 || (params.n_ctx > 4096 && !extended_flash) || params.n_batch > 4096 || params.n_ubatch > 256 ||
-            params.n_seq_max != 1 || (params.n_rs_seq && !rollback_allowed) || params.n_threads > 16 || params.n_threads_batch > 16 ||
+        const uint32_t max_ubatch = inkling_rollback ? 1024 : 256;
+        if (params.n_ctx == 0 || (params.n_ctx > 4096 && !extended_flash) || params.n_batch > 4096 || params.n_ubatch > max_ubatch ||
+            params.n_seq_max != 1 || (params.n_rs_seq && !rollback_allowed && !inkling_rollback) || params.n_threads > 16 || params.n_threads_batch > 16 ||
             params.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT || params.embeddings) {
-            throw std::runtime_error("engine budget profile requires explicit ctx <= 4096, batch <= 4096, ubatch <= 256, one sequence, <=16 threads, no embeddings/rollback");
+            throw std::runtime_error("engine budget profile requires explicit ctx <= 4096, batch <= 4096, ubatch <= " +
+                    std::to_string(max_ubatch) + ", one sequence, <=16 threads, no embeddings/unsupported rollback");
         }
         budget_control = std::make_unique<llama_context_budget>();
         budget_control->budget_session = model.memory_contract->claim_context();
@@ -236,7 +240,7 @@ llama_context::llama_context(
     cparams.yarn_beta_fast          = params.yarn_beta_fast   >= 0.0f ? params.yarn_beta_fast   : hparams.yarn_beta_fast;
     cparams.yarn_beta_slow          = params.yarn_beta_slow   >= 0.0f ? params.yarn_beta_slow   : hparams.yarn_beta_slow;
     cparams.embeddings              = params.embeddings;
-    cparams.embeddings_nextn        = false;
+    cparams.embeddings_nextn        = model.memory_contract && hparams.inkling2_dspark;
     cparams.embeddings_nextn_masked = false;
     cparams.offload_kqv             = params.offload_kqv;
     cparams.no_perf                 = params.no_perf;
@@ -572,7 +576,9 @@ llama_context::llama_context(
 
         // graph outputs buffer
         {
-            if (output_reserve(params.n_seq_max) < params.n_seq_max) {
+            // Admit draft logits and the injected context features before the target cache can fill.
+            const uint32_t rows = model.memory_contract && hparams.inkling2_dspark ? hparams.dflash_block_size : params.n_seq_max;
+            if (output_reserve(rows) < rows) {
                 throw std::runtime_error("failed to reserve initial output buffer");
             }
 
@@ -725,9 +731,9 @@ llama_context::llama_context(
                 model.memory_contract && model.memory_contract->qwen35_profile_layers > 0,
                 model.memory_contract && model.memory_contract->flash_next_dflash3);
     }
-    if (budget_control && model.memory_contract && model.memory_contract->qwen35_profile_layers && expert_executor &&
-            prefill_wide_qualified()) {
-        expert_executor->configure_resident_layers(model);
+    if (budget_control && expert_executor && (model.arch == LLM_ARCH_INKLING2_LOOP ||
+            (model.memory_contract && model.memory_contract->qwen35_profile_layers && prefill_wide_qualified()))) {
+        expert_executor->configure_resident_layers(model, cparams.n_ubatch);
     }
     if (budget_control && model.arch == LLM_ARCH_LFM2MOE && expert_executor) {
         const char * grouped = std::getenv("LLAMA_LFM_GQA4");
@@ -923,6 +929,8 @@ void llama_context::sched_new(const sched_params & params) {
     sched_params_cur = params;
 }
 
+static constexpr uint32_t inkling_decode_reserve_rows = 64;
+
 void llama_context::sched_reserve() {
     if (!sched_need_reserve) {
         return;
@@ -950,7 +958,9 @@ void llama_context::sched_reserve() {
     const int64_t t_start_us = ggml_time_us();
 
     const uint32_t n_seqs = cparams.n_seq_max;
-    const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+    const uint32_t reserve_rows = expert_executor && expert_executor->compact_inkling_scheduler() ?
+            inkling_decode_reserve_rows : cparams.n_ubatch;
+    const uint32_t n_tokens = std::min(cparams.n_ctx, reserve_rows);
 
     const size_t max_nodes = this->graph_max_nodes();
 
@@ -1064,6 +1074,18 @@ void llama_context::sched_reserve() {
 
         if (!gf) {
             throw std::runtime_error("failed to allocate compute pp buffers");
+        }
+    }
+
+    if (model.memory_contract && model.hparams.inkling2_dspark) {
+        // A longer reservation batch only builds the backbone. The real
+        // block also needs its recurrent head and full-vocabulary logits.
+        const uint32_t rows = model.hparams.dflash_block_size * n_seqs;
+        if (!graph_reserve(rows, n_seqs, rows, mctx.get(), model.no_alloc())) {
+            throw std::runtime_error("failed to reserve the Inkling2 DSpark block");
+        }
+        if (!graph_reserve(n_tokens, n_seqs, n_seqs, mctx.get(), model.no_alloc(), nullptr, /*reserve_embeddings=*/ true)) {
+            throw std::runtime_error("failed to reserve Inkling2 DSpark context injection");
         }
     }
 
@@ -2049,6 +2071,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     const bool expert_ahead = expert_decode && expert_executor && expert_executor->moe_lookahead_enabled();
+    if (!expert_decode && ubatch.n_tokens >= 512 && gparams.n_outputs == 1 &&
+            expert_executor && expert_executor->balanced_inkling_prompt()) {
+        expert_executor->mark_inkling_prompt_tail();
+    }
     if (expert_ahead) { expert_executor->moe_lookahead_begin(true); }
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (expert_ahead) { expert_executor->moe_lookahead_end(); }
@@ -2470,6 +2496,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
     output_swaps.clear();
     embd_batch_idxs.clear();
 
+    if (n_tokens_all > inkling_decode_reserve_rows && expert_executor && expert_executor->compact_inkling_scheduler()) {
+        synchronize();
+        reset_expert_graphs();
+        sched.reset();
+        expert_executor->set_compact_inkling_scheduler(false);
+        sched_need_reserve = true;
+    }
     sched_reserve();
 
     bool did_optimize = false;
@@ -2647,7 +2680,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
     }
 
     int window_result = 0;
-    if (!stream_wide && (partial_wide || legacy_window || window_rows == prefill_wide_rows)) {
+    if (can_window && !stream_wide && (partial_wide || legacy_window || window_rows == prefill_wide_rows)) {
         const size_t prompt_tokens = std::max(uncached_prompt_tokens, size_t(n_tokens_all));
         bool retry_smaller_wide = false;
         bool try_shared_wide = false;
@@ -2892,6 +2925,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
 
         n_outputs_prev += n_outputs;
         n_tokens_prev  += ubatch.n_tokens;
+        if (expert_executor && expert_executor->has_inkling_core_policy()) {
+            // A resize may discard this graph and its resident weights. Queue
+            // its output copies first; apply_memory_budget synchronizes them.
+            apply_memory_budget();
+        }
     } while (mctx->next());
 
     if (layer_inp_dev && ev_layer_inp_written) {
@@ -2968,11 +3006,14 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
         }
     }
 
-    if (stream_wide) {
+    const bool compact_inkling = uncached_prompt_tokens && n_tokens_all >= 512 && n_outputs_all == 1 &&
+            !layer_inp_dev && expert_executor && expert_executor->balanced_inkling_prompt();
+    if (stream_wide || compact_inkling) {
         // Output copies and target feature writes must finish before replacing
         // the prompt graph. KV, recurrent state and the feature buffer belong
         // to the context, independently of this scheduler.
         synchronize();
+        if (compact_inkling) { expert_executor->set_compact_inkling_scheduler(true); }
         reset_expert_graphs();
         sched.reset();
         sched_need_reserve = true;
@@ -3364,7 +3405,8 @@ static void ubatch_prepare_reserve(
 }
 
 ggml_cgraph * llama_context::graph_reserve(
-        uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
+        uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx,
+        bool split_only, size_t * sizes, bool reserve_embeddings) {
     LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
     GGML_ASSERT(n_outputs >= 1);
 
@@ -3389,6 +3431,12 @@ ggml_cgraph * llama_context::graph_reserve(
 
     llama_batch_allocr balloc(model.hparams.n_pos_per_embd());
     llama_ubatch ubatch = balloc.ubatch_reserve(n_tokens/n_seqs, n_seqs);
+    if (reserve_embeddings) {
+        // The graph builder selects its input path by presence. Reservation does not read its data.
+        static float placeholder = 0.0f;
+        ubatch.token = nullptr;
+        ubatch.embd = &placeholder;
+    }
 
     ubatch_prepare_reserve(ubatch, n_outputs, sampling.samplers, cparams.n_outputs_max_per_seq);
 
@@ -3502,12 +3550,13 @@ ggml_status llama_context::graph_compute(
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (expert_executor) {
         ggml_backend_sched_synchronize(sched.get());
+        if (batched && model.arch == LLM_ARCH_INKLING2_LOOP) { expert_executor->release_prompt_matrix(); }
         if (expert_executor->error()) {
             LLAMA_LOG_ERROR("expert streaming failed; discard this context: %s\n", expert_executor->error());
             status = GGML_STATUS_FAILED;
         }
         if (status == GGML_STATUS_SUCCESS && model.memory_contract) {
-            apply_memory_budget();
+            if (!expert_executor->has_inkling_core_policy()) { apply_memory_budget(); }
             if (budget_control->discrete_boundary_probe &&
                     !budget_control->discrete_boundary_probe(this, budget_control->discrete_probe_user)) {
                 status = GGML_STATUS_FAILED;

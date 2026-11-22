@@ -33,6 +33,35 @@ cmake --build build-metal-release --target llama-server -j 6
 Set `MODEL` to the local GGUF or first shard for the profile and `SLOTS` to a
 writable directory. The commands below serve HTTP on loopback.
 
+### Inkling 2 Mini AD-Q4_K with DSpark-3
+
+Set `MODEL` to `Inkling-2-Mini-AD-Q4_K.gguf` and `DRAFT_GGUF` to the path
+of its folded `dspark-Inkling-2-Mini-Q8_0-folded-final.gguf` draft. Launch
+the Metal server built above with a 20 GiB budget plus 100 MiB for KV.
+
+```sh
+./build-metal-release/bin/llama-server \
+  -m "$MODEL" -md "$DRAFT_GGUF" \
+  --spec-type draft-dspark --spec-draft-n-max 3 --spec-draft-n-ubatch 32 \
+  --engine-budget-mib 20580 -fit off -c 4096 -b 1024 -ub 1024 -np 1 \
+  -fa on -ctk q4_0 -ctv q4_0 -ctkd q4_0 -ctvd q4_0 -ngl all -ngld 99 -t 8 -tb 8 \
+  --temp 0 --cache-ram 0 --ctx-checkpoints 0 --no-warmup --metrics \
+  --ui --alias inkling-2-mini --host 127.0.0.1 --port 8080
+```
+
+For 8 GiB plus the same KV allowance, change `--engine-budget-mib 20580`
+to `--engine-budget-mib 8292`.
+
+The profile uses a 4096-token context, 1024-token prefill blocks, mode 3,
+greedy sampling, a draft microbatch of 32 and loopback port 8080. Expert banks load through `pread`.
+As the budget grows, the engine keeps the repeated core resident first,
+then admits outer layers while reserving workspace for streamed reads.
+At 20 GiB plus the 100 MiB KV allowance, the profile attempts to keep
+all 24 physical layers' expert banks resident. If the full set cannot
+be admitted, partial residency uses the regular streaming reserve.
+The budget measures engine allocations. Physical memory must also cover
+the OS and other processes.
+
 ### Qwen3.8 fixed-budget server
 
 **Qwen3.8 Flash Next GSQ-RCO IQ3_XXS (`qwen4exp`)** on Apple M4 Max.

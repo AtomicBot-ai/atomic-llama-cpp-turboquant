@@ -12,6 +12,8 @@
 #include "ggml-metal-ops.h"
 #include "ggml-metal-tuning.h"
 
+#include <cmath>
+#include <cstring>
 #include <mutex>
 #include <string>
 
@@ -1049,6 +1051,125 @@ static bool ggml_backend_metal_wait_graph_prefix(ggml_backend_t backend) {
     return ggml_metal_wait_graph_prefix((ggml_metal_t) backend->context);
 }
 
+static bool ggml_backend_metal_host_expert_call(ggml_tensor * op) {
+    const auto shared = [](const ggml_tensor * t) {
+        return t && t->data && ggml_backend_metal_buffer_get_host_base(t->buffer);
+    };
+    if (!shared(op) || !shared(op->src[0]) || !shared(op->src[1])) {
+        GGML_LOG_ERROR("%s: expected shared Metal expert tensors\n", __func__);
+        return false;
+    }
+    ggml_custom_op_params params;
+    std::memcpy(&params, op->op_params, sizeof(params));
+    params.fun(op, 0, 1, params.userdata);
+    return true;
+}
+
+static bool ggml_backend_metal_host_expert_bridge_v1(ggml_backend_t backend, ggml_tensor * op) {
+    if (!ggml_backend_is_metal(backend) || !op || op->op != GGML_OP_CUSTOM) { return false; }
+    const auto dev = (ggml_metal_device_t) ggml_backend_get_device(backend)->context;
+    if (!ggml_metal_device_get_props(dev)->use_shared_buffers) { return false; }
+    ggml_custom_op_params params;
+    std::memcpy(&params, op->op_params, sizeof(params));
+    if (params.n_tasks != 1 || !params.fun || !op->src[0] || !op->src[1] || op->src[2]) { return false; }
+    op->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_HOST_EXPERT_BRIDGE;
+    ggml_metal_set_host_expert_bridge((ggml_metal_t) backend->context, ggml_backend_metal_host_expert_call);
+    return true;
+}
+
+static ggml_tensor * ggml_backend_metal_inkling_control_v1(ggml_context * ctx, ggml_tensor * cur,
+        ggml_tensor * message, ggml_tensor * gain, ggml_tensor * forget) {
+    ggml_tensor * args[] = {cur, message, gain, forget};
+    if (cur->ne[0] != 2304 || cur->ne[1] != 4 || !ggml_is_matrix(cur)) { return nullptr; }
+    for (auto * arg : args) {
+        if (arg->type != GGML_TYPE_F32 || !ggml_are_same_shape(arg, cur) || !ggml_is_contiguous(arg)) {
+            return nullptr;
+        }
+    }
+    auto * node = ggml_custom_4d(ctx, GGML_TYPE_F32, cur->ne[0], cur->ne[1], 1, 1, args, 4,
+            +[](ggml_tensor *, int, int, void *) { GGML_ABORT("Inkling controller requires Metal"); }, 1, nullptr);
+    node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_CONTROL;
+    return node;
+}
+
+static ggml_tensor * ggml_backend_metal_inkling_situ_v1(ggml_context * ctx, ggml_tensor * gate_up,
+        float beta, float linear_beta) {
+    if (gate_up->type != GGML_TYPE_F32 || !ggml_is_contiguous(gate_up) ||
+            gate_up->ne[0] <= 0 || gate_up->ne[0] > 16384 || gate_up->ne[0] % 8 != 0 ||
+            gate_up->ne[1] <= 0 || gate_up->ne[1] > 64 || ggml_nrows(gate_up) != gate_up->ne[1] ||
+            beta <= 0.0f || linear_beta < 0.0f || !std::isfinite(beta) || !std::isfinite(linear_beta)) {
+        return nullptr;
+    }
+    ggml_tensor * args[] = {gate_up};
+    auto * node = ggml_custom_4d(ctx, GGML_TYPE_F32, gate_up->ne[0] / 2, gate_up->ne[1], 1, 1,
+            args, 1, +[](ggml_tensor *, int, int, void *) { GGML_ABORT("Inkling SiTU requires Metal"); }, 1, nullptr);
+    ggml_set_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 3, beta);
+    ggml_set_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2, linear_beta);
+    node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_SITU;
+    return node;
+}
+
+static ggml_tensor * ggml_backend_metal_inkling_clip_v1(ggml_context * ctx, ggml_tensor * cur,
+        ggml_tensor * scale, float threshold) {
+    if (cur->type != GGML_TYPE_F32 || !ggml_is_contiguous(cur) ||
+            (cur->ne[0] != 16 && cur->ne[0] != 128) || cur->ne[3] != 1) {
+        return nullptr;
+    }
+    if (scale && (scale->type != GGML_TYPE_F32 ||
+            !ggml_is_contiguous(scale) || scale->ne[0] != cur->ne[0] || scale->ne[1] != cur->ne[1] ||
+            scale->ne[2] != 1 || scale->ne[3] != 1)) {
+        return nullptr;
+    }
+    ggml_tensor * args[] = {cur, scale};
+    auto * node = ggml_custom_4d(ctx, GGML_TYPE_F32, cur->ne[0], cur->ne[1], cur->ne[2], 1,
+            args, scale ? 2 : 1,
+            +[](ggml_tensor *, int, int, void *) { GGML_ABORT("Inkling attention clipping requires Metal"); }, 1, nullptr);
+    ggml_set_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2, threshold);
+    node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_CLIP;
+    return node;
+}
+
+static ggml_tensor * ggml_backend_metal_inkling_rel_mask_v1(ggml_context * ctx, ggml_tensor * table,
+        ggml_tensor * sinks, ggml_tensor * distances, ggml_tensor * causal) {
+    if (table->type != GGML_TYPE_F32 || sinks->type != GGML_TYPE_F32 || distances->type != GGML_TYPE_I32 ||
+            causal->type != GGML_TYPE_F16 || !ggml_are_same_shape(distances, causal) ||
+            !ggml_is_contiguous(table) || !ggml_is_contiguous(sinks) ||
+            !ggml_is_contiguous(distances) || !ggml_is_contiguous(causal) ||
+            causal->ne[2] != 1 || causal->ne[3] != 1 || table->ne[3] != 1 ||
+            table->ne[2] != causal->ne[1] || sinks->ne[0] != table->ne[1] ||
+            sinks->ne[1] != table->ne[2] || ggml_nrows(sinks) != sinks->ne[1]) {
+        return nullptr;
+    }
+    ggml_tensor * args[] = {table, sinks, distances, causal};
+    auto * node = ggml_custom_4d(ctx, GGML_TYPE_F16, causal->ne[0], causal->ne[1], table->ne[1], 1,
+            args, 4, +[](ggml_tensor *, int, int, void *) { GGML_ABORT("Inkling relative mask requires Metal"); }, 1, nullptr);
+    node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_REL_MASK;
+    return node;
+}
+
+static ggml_tensor * ggml_backend_metal_inkling_conv_residual_v1(ggml_context * ctx, ggml_tensor * cur,
+        ggml_tensor * weights, ggml_tensor * window, ggml_tensor * dynamic, float scale) {
+    if (cur->type != GGML_TYPE_F32 || weights->type != GGML_TYPE_F32 || window->type != GGML_TYPE_F32 ||
+            !ggml_is_contiguous(cur) || !ggml_is_contiguous(weights) || !ggml_is_contiguous(window) ||
+            window->ne[2] != 1 || window->ne[3] != 1 || ggml_nrows(cur) != cur->ne[1] ||
+            weights->ne[0] != 4 || ggml_nrows(weights) != cur->ne[0] ||
+            window->ne[1] != cur->ne[0] || window->ne[0] != cur->ne[1] + 3) {
+        return nullptr;
+    }
+    if (dynamic && (dynamic->type != GGML_TYPE_F32 || !ggml_is_contiguous(dynamic) ||
+            ggml_nrows(dynamic) != dynamic->ne[1] || dynamic->ne[1] != cur->ne[1] ||
+            dynamic->ne[0] <= 0 || dynamic->ne[0] % 4 != 0 || cur->ne[0] % (dynamic->ne[0] / 4) != 0)) {
+        return nullptr;
+    }
+    ggml_tensor * args[] = {cur, weights, window, dynamic};
+    auto * node = ggml_custom_4d(ctx, GGML_TYPE_F32, cur->ne[0], cur->ne[1], 1, 1,
+            args, dynamic ? 4 : 3,
+            +[](ggml_tensor *, int, int, void *) { GGML_ABORT("Inkling convolution residual requires Metal"); }, 1, nullptr);
+    ggml_set_op_params_f32(node, GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2, scale);
+    node->op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1] = GGML_METAL_INKLING_CONV_RESIDUAL;
+    return node;
+}
+
 // Private v1 contract: a host-visible I64 table holds pointers to leased,
 // separately allocated expert tensors. The table and every lease must outlive
 // graph completion. Only the backend interprets the address-routing marker.
@@ -1102,6 +1223,34 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_backend_metal_expert_addresses_v1") == 0) {
         return (void *) ggml_backend_metal_expert_addresses_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_host_expert_bridge_v1") == 0) {
+        return (void *) ggml_backend_metal_host_expert_bridge_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_inkling_rel_mask_v1") == 0) {
+        return (void *) ggml_backend_metal_inkling_rel_mask_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_inkling_clip_v1") == 0) {
+        return (void *) ggml_backend_metal_inkling_clip_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_inkling_control_v1") == 0) {
+        return (void *) ggml_backend_metal_inkling_control_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_inkling_situ_v1") == 0) {
+        return (void *) ggml_backend_metal_inkling_situ_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_inkling_conv_residual_v1") == 0) {
+        return (void *) ggml_backend_metal_inkling_conv_residual_v1;
+    }
+    if (strcmp(name, "ggml_backend_metal_host_expert_window_active_v1") == 0) {
+        return (void *) +[](ggml_backend_t backend) {
+            return ggml_metal_host_expert_window_active((ggml_metal_t) backend->context);
+        };
+    }
+    if (strcmp(name, "ggml_backend_metal_host_expert_window_append_v1") == 0) {
+        return (void *) +[](ggml_backend_t backend, ggml_cgraph * graph, void (*release)(void *), void * user) {
+            return ggml_metal_host_expert_window_append((ggml_metal_t) backend->context, graph, release, user);
+        };
     }
     if (strcmp(name, "ggml_backend_metal_compute_graph_prefix") == 0) {
         return (void *) ggml_backend_metal_compute_graph_prefix;

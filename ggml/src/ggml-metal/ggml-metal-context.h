@@ -26,6 +26,10 @@ void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * te
 bool ggml_metal_cpy_tensor_async(ggml_metal_t ctx_src, ggml_metal_t ctx_dst, const struct ggml_tensor * src, struct ggml_tensor * dst);
 
 enum ggml_status ggml_metal_graph_compute (ggml_metal_t ctx, struct ggml_cgraph * gf);
+void ggml_metal_set_host_expert_bridge(ggml_metal_t ctx, bool (*callback)(struct ggml_tensor * node));
+bool ggml_metal_host_expert_window_active(ggml_metal_t ctx);
+enum ggml_status ggml_metal_host_expert_window_append(ggml_metal_t ctx, struct ggml_cgraph * gf,
+        void (*release)(void *), void * user);
 enum ggml_status ggml_metal_window_append(ggml_metal_t ctx, struct ggml_cgraph * gf);
 enum ggml_status ggml_metal_window_flush(ggml_metal_t ctx, uint64_t * submissions);
 // Optional prefix fence. Both graph segments retain normal queue ordering.

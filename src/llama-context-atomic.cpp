@@ -88,16 +88,47 @@ bool llama_atomic_dflash2_enable(llama_model * target, uint32_t flash_context) {
     return true;
 }
 
-llama_model * llama_atomic_dflash2_load(llama_model * target, const char * path, llama_model_params params) {
-    if (!target || !target->memory_contract || !target->memory_contract->dflash2_target) { return nullptr; }
+bool llama_atomic_is_inkling_dspark(const llama_model * draft) {
+    return draft && draft->hparams.inkling2_dspark;
+}
+
+bool llama_atomic_inkling_dspark_enable(llama_model * target) {
+    if (!target || target->arch != LLM_ARCH_INKLING2_LOOP || !target->memory_contract ||
+            !target->expert_source || target->hparams.n_layer() != 48 || target->hparams.n_embd != 2304) {
+        return false;
+    }
+    const auto device = target->dev_output();
+    if (!device || std::strcmp(ggml_backend_dev_name(device), "MTL0") != 0) { return false; }
+    target->memory_contract->inkling_dspark_target = true;
+    return true;
+}
+
+llama_model * llama_atomic_budget_draft_load(llama_model * target, const char * path, llama_model_params params) {
+    if (!target || !target->memory_contract ||
+            (!target->memory_contract->dflash2_target && !target->memory_contract->inkling_dspark_target)) { return nullptr; }
     auto ledger = target->memory_contract->ledger;
     llama_allocation_scope admission(ledger, llama_memory_category::drafter);
     params.memory_budget_size = 0;
     params.load_mode = LLAMA_LOAD_MODE_NONE;
     params.use_extra_bufts = false;
     std::unique_ptr<llama_model> draft(llama_model_load_from_file(path, params));
-    if (!draft || draft->arch != LLM_ARCH_DFLASH || !draft->hparams.dflash_selector_top_k ||
-            draft->vocab.n_tokens() != target->vocab.n_tokens() || draft->hparams.n_embd != target->hparams.n_embd ||
+    if (!draft || draft->arch != LLM_ARCH_DFLASH || draft->vocab.n_tokens() != target->vocab.n_tokens() ||
+            draft->hparams.n_embd != target->hparams.n_embd) { return nullptr; }
+    if (target->memory_contract->inkling_dspark_target) {
+        constexpr int32_t visits[] = {5, 23, 41, 48};
+        if (!llama_atomic_is_inkling_dspark(draft.get()) || draft->dev_output() != target->dev_output() ||
+                draft->n_gpu_layers() <= draft->hparams.n_layer_all ||
+                draft->hparams.n_vocab_padded != target->hparams.n_vocab_padded ||
+                !std::equal(draft->target_layer_ids.begin(), draft->target_layer_ids.end(), std::begin(visits), std::end(visits))) {
+            return nullptr;
+        }
+        // The draft indexes its Markov weights with the target's token ids.
+        for (llama_token id = 0; id < int32_t(target->vocab.n_tokens()); ++id) {
+            if (draft->vocab.get_token_data(id).text != target->vocab.get_token_data(id).text) {
+                return nullptr;
+            }
+        }
+    } else if (!draft->hparams.dflash_selector_top_k ||
             draft->target_layer_ids.empty() || std::any_of(draft->target_layer_ids.begin(), draft->target_layer_ids.end(),
                 [&](int32_t i) { return i < 0 || uint32_t(i) >= target->hparams.n_layer(); })) {
         return nullptr;
@@ -366,7 +397,7 @@ bool llama_context::apply_memory_budget() {
     }
     if (budget_control->budget_status != LLAMA_BUDGET_PENDING) { return budget_control->budget_status != LLAMA_BUDGET_REJECTED; }
     ggml_backend_sched_synchronize(sched.get());
-    if (expert_executor->automatic_acceleration()) {
+    if (expert_executor->automatic_acceleration() || expert_executor->has_inkling_core_policy()) {
         reset_expert_graphs();
     }
     const bool applied = expert_executor->resize(budget_control->budget_requested);

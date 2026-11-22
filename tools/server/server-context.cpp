@@ -1581,11 +1581,11 @@ private:
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
         }
 
-        if (common_atomic_dflash2_enabled(params_base) &&
+        if ((common_atomic_dflash2_enabled(params_base) || common_atomic_inkling_dspark_enabled(params_base)) &&
                 (!spec || ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_RS ||
                  llama_n_rs_seq(ctx_tgt) < uint32_t(params_base.speculative.draft.n_max) ||
                  ctx_dft_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART)) {
-            SRV_ERR("%s", "budgeted DFlash2 requires bounded target rollback and removable draft KV\n");
+            SRV_ERR("%s", "budgeted speculation requires bounded target rollback and removable draft KV\n");
             return false;
         }
 

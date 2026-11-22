@@ -1,5 +1,6 @@
 #include "llama-expert-acceleration.h"
 #include "llama-lfm-resident.h"
+#include "llama-inkling-core-banks.h"
 #include "llama-expert-executor.h"
 #include "llama-expert-preview-dot.h"
 #include "llama-expert-route-index.h"
@@ -48,6 +49,7 @@ struct llama_expert_executor::impl {
         std::string name;
         int64_t input, output, experts;
         bool on_cpu;
+        const projection * prompt_down = nullptr;
     };
     std::shared_ptr<llama_memory_budget> budget;
     ggml_backend_ptr backend;
@@ -60,6 +62,15 @@ struct llama_expert_executor::impl {
     std::unique_ptr<llama_expert_store> cpu_store;
     std::map<const ggml_tensor *, projection> projections;
     std::shared_ptr<llama_expert_source> row_source;
+    std::shared_ptr<llama_expert_source> prompt_matrix_source;
+    void * (*prompt_host_base)(ggml_backend_buffer_t) = nullptr;
+    ggml_backend_buffer_ptr prompt_matrix_workspace;
+    ggml_backend_buffer_ptr prompt_down_workspace;
+    const projection * prompt_down_ready = nullptr;
+    uint64_t prompt_matrix_read_bytes = 0;
+    bool balanced_prompt = false;
+    bool cache_prompt_tail = false;
+    size_t wide_scheduler_floor = 0;
     const ggml_tensor * row_table = nullptr;
     llama_memory_budget::ticket row_charge;
     std::unique_ptr<uint8_t[]> row_buffer;
@@ -100,6 +111,7 @@ struct llama_expert_executor::impl {
     bool qwen_cuda = false;
     bool read_overlap = false;
     bool vector_read_overlap = false;
+    bool inkling_acceleration = false;
     bool parallel_window_reads = false;
     bool single_expert_map = false;
     using prepare_map_t = bool (*)(ggml_tensor *);
@@ -140,6 +152,7 @@ struct llama_expert_executor::impl {
     bool flash_next_dflash3 = false;
     bool profile_overlap = false;
     std::unique_ptr<llama_lfm_resident> lfm_resident;
+    std::unique_ptr<llama_inkling_core_banks> inkling_core;
     std::shared_ptr<llama_expert_source> acceleration_source;
     size_t acceleration_width = 0;
     uint64_t retired_moe_calls = 0, retired_pipeline_groups = 0, retired_resident_groups = 0;
@@ -147,6 +160,15 @@ struct llama_expert_executor::impl {
     bool fused_window_moe = false;
     using window_addresses_t = bool (*)(ggml_tensor *, ggml_tensor *);
     window_addresses_t window_addresses = nullptr;
+    window_addresses_t inkling_addresses = nullptr;
+    bool inkling_fused_ffn = false;
+    bool inkling_pipeline = false;
+    bool inkling_resident_first = false;
+    ggml_tensor * (*inkling_situ)(ggml_context *, ggml_tensor *, float, float) = nullptr;
+    bool (*inkling_host_bridge)(ggml_backend_t, ggml_tensor *) = nullptr;
+    bool (*inkling_window_active)(ggml_backend_t) = nullptr;
+    ggml_status (*inkling_window_append)(ggml_backend_t, ggml_cgraph *, void (*)(void *), void *) = nullptr;
+    ggml_backend_t inkling_window_backend = nullptr;
     llama_memory_budget::ticket cross_window_charge;
     std::unique_ptr<float[]> cross_window_input, cross_window_output;
     std::unique_ptr<int32_t[]> cross_window_ids;
@@ -180,6 +202,8 @@ struct llama_expert_executor::impl {
         // matrix waves. Both retain the same budget and lease checks.
         vector_read_overlap = metal && source->architecture() == "qwen4exp";
         const bool requested_acceleration = metal && !discrete.device && llama_expert_acceleration_requested();
+        const bool inkling_metal = metal && source->architecture() == "inkling2_loop";
+        inkling_acceleration = inkling_metal && requested_acceleration;
         // Explicit auto/off takes precedence; an absent unified setting preserves legacy opt-ins.
         automatic_acceleration = requested_acceleration && (std::getenv("LLAMA_MOE_STREAMING") ||
             !std::getenv("LLAMA_EXPERIMENTAL_METAL_MOE")) &&
@@ -187,16 +211,52 @@ struct llama_expert_executor::impl {
                 source->architecture() == "qwen35moe" || source->architecture() == "lfm2moe");
         if (automatic_acceleration) { acceleration_source = source; }
         const char * reclaim_mode = std::getenv("LLAMA_EXPERIMENTAL_EXPERT_RECLAIM");
-        selective_reclaim = automatic_acceleration || (!llama_expert_acceleration_off() && vector_read_overlap && reclaim_mode && std::strcmp(reclaim_mode, "1") == 0);
+        selective_reclaim = automatic_acceleration || inkling_acceleration ||
+            (!llama_expert_acceleration_off() && vector_read_overlap && reclaim_mode && std::strcmp(reclaim_mode, "1") == 0);
         if (vector_read_overlap && !source->packed_stride()) {
             const char * parallel = std::getenv("LLAMA_EXPERT_PARALLEL_READS");
             parallel_window_reads = parallel && std::strcmp(parallel, "1") == 0;
         }
-        read_overlap = vector_read_overlap ||
+        read_overlap = vector_read_overlap || inkling_acceleration ||
             (metal && (source->architecture() == "lfm2moe" || source->architecture() == "qwen35moe"));
         backend.reset(ggml_backend_dev_init(device, nullptr));
         if (!backend) { throw std::runtime_error("cannot initialize expert compute backend"); }
         const auto reg = ggml_backend_dev_backend_reg(device);
+        const char * inkling_batch = std::getenv("LLAMA_EXPERIMENTAL_INKLING_EXPERT_BATCH");
+        if (inkling_acceleration && inkling_batch && std::strcmp(inkling_batch, "1") == 0) {
+            inkling_addresses = reinterpret_cast<window_addresses_t>(
+                ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_expert_addresses_v1"));
+            const char * prompt = std::getenv("LLAMA_EXPERIMENTAL_INKLING_PREFILL_MATRIX");
+            if (inkling_addresses && !source->packed_stride() && prompt &&
+                    (!std::strcmp(prompt, "1") || !std::strcmp(prompt, "2") || !std::strcmp(prompt, "3"))) {
+                prompt_host_base = reinterpret_cast<decltype(prompt_host_base)>(
+                        ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_buffer_get_host_base"));
+                if (prompt_host_base) { prompt_matrix_source = source; }
+            }
+            const char * fused = std::getenv("LLAMA_EXPERIMENTAL_INKLING_EXPERT_FFN");
+            inkling_fused_ffn = inkling_addresses && fused && std::strcmp(fused, "1") == 0;
+            const char * situ = std::getenv("LLAMA_EXPERIMENTAL_INKLING_SITU");
+            if (inkling_fused_ffn && situ && std::strcmp(situ, "1") == 0) {
+                inkling_situ = reinterpret_cast<decltype(inkling_situ)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_inkling_situ_v1"));
+            }
+            const char * pipeline = std::getenv("LLAMA_EXPERIMENTAL_INKLING_EXPERT_PIPELINE");
+            inkling_pipeline = inkling_fused_ffn && pipeline && std::strcmp(pipeline, "1") == 0;
+            const char * resident = std::getenv("LLAMA_EXPERIMENTAL_INKLING_RESIDENT_FIRST");
+            inkling_resident_first = inkling_pipeline && resident && std::strcmp(resident, "1") == 0;
+            const char * bridge = std::getenv("LLAMA_EXPERIMENTAL_INKLING_METAL_BRIDGE");
+            if (inkling_fused_ffn && bridge && std::strcmp(bridge, "1") == 0) {
+                inkling_host_bridge = reinterpret_cast<decltype(inkling_host_bridge)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_host_expert_bridge_v1"));
+                const char * window = std::getenv("LLAMA_EXPERIMENTAL_INKLING_METAL_JOIN");
+                if (inkling_host_bridge && window && std::strcmp(window, "1") == 0) {
+                    inkling_window_active = reinterpret_cast<decltype(inkling_window_active)>(
+                        ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_host_expert_window_active_v1"));
+                    inkling_window_append = reinterpret_cast<decltype(inkling_window_append)>(
+                        ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_host_expert_window_append_v1"));
+                }
+            }
+        }
         if (discrete.device) {
             using enable_pool_t = bool (*)(ggml_backend_t);
             const auto enable = reinterpret_cast<enable_pool_t>(
@@ -227,6 +287,10 @@ struct llama_expert_executor::impl {
                 case GGML_TYPE_IQ2_S: case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL:
                     if (source->architecture() == "qwen4exp" && (metal || discrete.device)) { break; }
                     throw std::runtime_error("this expert format requires experimental Qwen4Exp Metal or CUDA streaming");
+                case GGML_TYPE_Q5_0:
+                    // Inkling's 1152-wide down projection uses 32-element quantization blocks.
+                    if (inkling_metal) { break; }
+                    [[fallthrough]];
                 default: throw std::runtime_error("expert quantization is not qualified for streaming: " + std::string(w->name));
             }
             const auto & info = source->tensor(w->name);
@@ -248,9 +312,10 @@ struct llama_expert_executor::impl {
         }
         max_expert_payload = max_expert;
         const char * compact_mode = std::getenv("LLAMA_EXPERIMENTAL_EXPERT_COMPACT");
-        const bool compact_buffers = automatic_acceleration || (!llama_expert_acceleration_off() && vector_read_overlap && compact_mode && std::strcmp(compact_mode, "1") == 0);
+        const bool compact_buffers = automatic_acceleration || inkling_acceleration ||
+            (!llama_expert_acceleration_off() && vector_read_overlap && compact_mode && std::strcmp(compact_mode, "1") == 0);
         const char * recycle_mode = std::getenv("LLAMA_EXPERIMENTAL_EXPERT_RECYCLE");
-        const bool recycle_buffers = compact_buffers && (automatic_acceleration || (max_expert <= 1024 * 1024 &&
+        const bool recycle_buffers = compact_buffers && (automatic_acceleration || inkling_acceleration || (max_expert <= 1024 * 1024 &&
             recycle_mode && std::strcmp(recycle_mode, "1") == 0));
         size_t expert_granularity = allocation_granularity;
         // Equal-sized Metal slots avoid reallocating mixed-quantization LRU
@@ -278,10 +343,10 @@ struct llama_expert_executor::impl {
         const auto initial = budget->snapshot(llama_memory_domain::host);
         const auto buffer_domain = discrete.device ? llama_memory_domain::device : llama_memory_domain::host;
         size_t meta_size = 0, buffer_size = 0, host_elements = 0, host_bytes = 0;
-        // Qwen4Exp's qualified vector profile amortizes submission/wait across
+        // Qwen4Exp and Inkling2 amortize vector submissions across up to
         // sixteen experts. Other Metal families retain four; admission below
         // halves the workspace if the requested budget cannot hold it.
-        workspace_groups = metal ? (vector_read_overlap ? max_wave_groups : 4) : 1;
+        workspace_groups = metal ? (vector_read_overlap || inkling_acceleration ? max_wave_groups : 4) : 1;
         for (;;) {
             const size_t total_rows = max_wave_rows * workspace_groups;
             meta_size = (metal ? 2 * total_rows + 1 : 4) * ggml_tensor_overhead() +
@@ -535,6 +600,8 @@ struct llama_expert_executor::impl {
     }
 
 #include "llama-flash-next-prompt-tiles.inc"
+#include "llama-inkling-prompt-matrix.inc"
+#include "llama-inkling-expert-ffn.inc"
 
     void compute(const projection & p, ggml_tensor * dst, bool keep_vector = false) {
         llama_expert_timer projection_timer(profile ? &profile->projection_ns : nullptr);
@@ -567,11 +634,12 @@ struct llama_expert_executor::impl {
         first_ids.fill(p.experts);
         int64_t final_expert = -1;
         const uint64_t route_count = uint64_t(ids->ne[0]) * uint64_t(ids->ne[1]);
-        auto * routes = route_index && llama_expert_route_index::fits(ids, p.experts) ? route_index.get() : nullptr;
+        const bool wide_routes = inkling_addresses && !keep_vector && !p.on_cpu;
+        auto * routes = route_index && llama_expert_route_index::fits(ids, p.experts, wide_routes) ? route_index.get() : nullptr;
         if (profile) { profile->route_id_reads += route_count; }
         if (routes) {
             llama_expert_timer index_timer(profile ? &profile->route_index_ns : nullptr);
-            routes->build(ids, p.experts);
+            routes->build(ids, p.experts, wide_routes);
             if (routes->count) { final_expert = routes->active[routes->count - 1]; }
             if (early_target) {
                 for (size_t i = 0; i < std::min(size_t(routes->count), first_ids.size()); ++i) { first_ids[i] = routes->active[i]; }
@@ -600,6 +668,15 @@ struct llama_expert_executor::impl {
             compute_cpu(p, dst, input, ids);
             return;
         }
+        if (prompt_matrix_source && !keep_vector && ids->ne[1] >= 512 && !tracing && !route_observer && !early && !preview) {
+            if (routes && compute_inkling_prompt_matrix(p, dst, *routes)) {
+                ++n_projections;
+                return;
+            }
+            prompt_matrix_workspace.reset();
+            prompt_down_ready = nullptr;
+            prompt_down_workspace.reset();
+        }
         // Match Metal's MUL_MAT_ID matrix/vector selection. The matrix kernel
         // rounds dequantized weights and activations to half; replacing it with
         // one-row vector kernels changes prefill numerics. Pad bounded waves to
@@ -607,7 +684,8 @@ struct llama_expert_executor::impl {
         // when an expert owns only one row. Original GGUF bytes remain intact.
         const bool matrix_wave = !keep_vector && metal && p.input >= 64 && p.experts <= 1024 && ids->ne[1] >= 32;
         const bool vector_batch = metal && !matrix_wave && ids->ne[1] > 1;
-        const bool address_batch = vector_batch && window_addresses;
+        const auto set_addresses = window_addresses ? window_addresses : inkling_addresses;
+        const bool address_batch = (vector_batch && window_addresses) || (inkling_addresses && !matrix_wave);
         // CUDA selects indexed kernels by the original token count. Preserve
         // that dimension even when only a few rows route to this expert.
         if (discrete.device && ids->ne[1] > int64_t(max_wave_rows)) {
@@ -634,7 +712,11 @@ struct llama_expert_executor::impl {
                     (prefill_advice || (decode_advice && at_window_budget));
 #endif
         }
-        const size_t group_limit = vector_read_overlap && !matrix_wave ? workspace_groups :
+        const bool inkling_reads = inkling_addresses && routes && !tracing && !early && !preview;
+        const bool inkling_prompt = inkling_reads && matrix_wave && ids->ne[1] >= 64;
+        // Long Inkling prompts can fill the admitted wave while workers read the
+        // next routed experts. Keep staging space and both lease sets within the budget.
+        const size_t group_limit = (inkling_prompt || ((vector_read_overlap || inkling_acceleration) && !matrix_wave)) ? workspace_groups :
             std::min(workspace_groups, size_t(4));
         const size_t groups = std::max(size_t(1), std::min(group_limit,
             available > max_expert_payload ? (available - max_expert_payload) / max_expert_allocation : 0));
@@ -642,11 +724,12 @@ struct llama_expert_executor::impl {
             (available - max_expert_payload) / max_expert_allocation : 0;
         // Independent vector nodes share the same submitted graph and lease
         // lifetime as matrix waves. Qualify this overlap separately by family.
-        const bool overlap_wave = vector_read_overlap ? vector_batch : matrix_wave;
-        const size_t read_groups = vector_read_overlap ? max_wave_groups : 4;
+        const bool overlap_wave = vector_read_overlap ? vector_batch : matrix_wave || (inkling_acceleration && vector_batch);
+        const size_t read_groups = (inkling_prompt || vector_read_overlap || (inkling_acceleration && vector_batch)) ? max_wave_groups : 4;
         const size_t ahead_limit = read_overlap && overlap_wave && expert_capacity > groups ?
             std::min(read_groups, expert_capacity - groups) : 0;
-        const bool parallel_ahead = parallel_window_reads && layer_window && vector_batch && !tracing && ahead_limit > 1;
+        const bool inkling_batch_reads = inkling_prompt || (inkling_reads && !matrix_wave);
+        const bool parallel_ahead = (inkling_batch_reads || (parallel_window_reads && layer_window && vector_batch && !tracing)) && ahead_limit > 1;
         const size_t early_limit = expert_capacity > groups ? std::min(size_t(4), expert_capacity - groups) : 0;
         if (early_target && (!matrix_wave || !early_limit)) {
             if (profile) { ++(matrix_wave ? profile->early_skip_budget : profile->early_skip_short); }
@@ -690,6 +773,14 @@ struct llama_expert_executor::impl {
         std::array<llama_expert_store::lease, max_wave_groups> ahead;
         std::array<int64_t, max_wave_groups> ahead_ids;
         ahead_ids.fill(-1);
+        if (inkling_batch_reads && routes->count > 0) {
+            // Lease the first wave in expert order, before packing its activations.
+            const size_t count = std::min(groups, size_t(routes->count));
+            for (size_t i = 0; i < count; ++i) { ahead_ids[i] = routes->active[i]; }
+            llama_expert_timer acquire_timer(profile ? &profile->acquire_ns : nullptr);
+            const auto layout = inkling_prompt ? llama_expert_read_layout::parallel_slices : llama_expert_read_layout::adjacent;
+            store->acquire_many(p.name, ahead_ids.data(), count, ahead.data(), nullptr, layout);
+        }
         std::array<ggml_tensor *, max_wave_nodes> inputs {}, outputs {};
         std::array<size_t, max_wave_nodes> host_rows {};
         std::array<char *, max_wave_nodes> destinations {};
@@ -755,8 +846,8 @@ struct llama_expert_executor::impl {
                 ggml_backend_tensor_set(table, weight_addresses.data(), 0, waves * sizeof(uint64_t));
                 auto * anchor = reinterpret_cast<ggml_tensor *>(uintptr_t(weight_addresses[0]));
                 batched_output = ggml_mul_mat_id(ctx.get(), anchor, x, indices);
-                if (!window_addresses(batched_output, table) || !ggml_backend_supports_op(backend.get(), batched_output)) {
-                    throw std::runtime_error("Metal rejected the prefill address batch");
+                if (!set_addresses(batched_output, table) || !ggml_backend_supports_op(backend.get(), batched_output)) {
+                    throw std::runtime_error("Metal rejected the expert address batch");
                 }
                 bind(batched_output, output_cursor, ggml_backend_buffer_get_size(buffer.get()));
                 for (size_t n = 0; n < nodes; ++n) {
@@ -868,7 +959,8 @@ struct llama_expert_executor::impl {
                         llama_expert_timer acquire_timer(profile ? &profile->acquire_ns : nullptr);
                         llama_expert_timer overlap_timer(profile ? &profile->overlap_acquire_ns : nullptr);
                         const auto before = profile ? profile->direct_read_bytes : 0;
-                        store->acquire_many(p.name, queued_ids.data(), queued, ready.data());
+                        const auto layout = inkling_prompt ? llama_expert_read_layout::parallel_slices : llama_expert_read_layout::separate;
+                        store->acquire_many(p.name, queued_ids.data(), queued, ready.data(), nullptr, layout);
                         for (size_t i = 0; i < queued; ++i) { ahead[queued_slots[i]] = std::move(ready[i]); }
                         if (profile) {
                             profile->overlap_acquisitions += queued;
@@ -1180,14 +1272,103 @@ ggml_tensor * llama_expert_executor::build(ggml_context * ctx, const ggml_tensor
 }
 
 const char * llama_expert_executor::error() const { return pimpl->failed.load() ? pimpl->failure : nullptr; }
+
+ggml_tensor * llama_expert_executor::build_inkling_ffn(ggml_context * ctx, const ggml_tensor * gate_up,
+        const ggml_tensor * down, ggml_tensor * input, ggml_tensor * ids, float beta, float linear_beta) {
+    if (!pimpl->inkling_fused_ffn || !pimpl->route_index || pimpl->tracing || pimpl->route_observer ||
+            pimpl->early || pimpl->preview || pimpl->workspace_groups != max_wave_groups ||
+            !down || gate_up->type != GGML_TYPE_Q4_K || down->type != GGML_TYPE_Q5_0 ||
+            gate_up->ne[0] != 2304 || gate_up->ne[1] != 2304 || down->ne[0] != 1152 || down->ne[1] != 2304 ||
+            gate_up->ne[2] != down->ne[2] || !llama_expert_route_index::fits(ids, gate_up->ne[2]) ||
+            ids->ne[1] < 1 || ids->ne[1] >= int64_t(max_wave_rows) ||
+            ids->ne[0] * ids->ne[1] > int64_t(impl::inkling_ffn_max_routes) ||
+            input->type != GGML_TYPE_F32 || input->nb[0] != sizeof(float) ||
+            input->ne[0] != gate_up->ne[0] || input->ne[1] != 1 || input->ne[2] != ids->ne[1]) {
+        return nullptr;
+    }
+    const auto gate = pimpl->projections.find(gate_up);
+    const auto out = pimpl->projections.find(down);
+    if (gate == pimpl->projections.end() || out == pimpl->projections.end() || gate->second.on_cpu || out->second.on_cpu) {
+        return nullptr;
+    }
+    const auto state = stats();
+    const size_t required = ids->ne[0] * ids->ne[1] * 2 * pimpl->max_expert_allocation;
+    if (state.memory.applied < state.minimum_bytes || required > state.memory.applied - state.minimum_bytes) { return nullptr; }
+    ggml_tensor * args[] = {input, ids};
+    auto * result = ggml_custom_4d(ctx, GGML_TYPE_F32, down->ne[1], ids->ne[0], ids->ne[1], 1,
+            args, 2, impl::inkling_ffn_callback, 1, &gate->second);
+    const impl::inkling_ffn_params params{&out->second, beta, linear_beta};
+    std::memcpy(reinterpret_cast<char *>(result->op_params) + sizeof(ggml_custom_op_params), &params, sizeof(params));
+    return result;
+}
+
+ggml_backend_t llama_expert_executor::inkling_ffn_backend(ggml_backend_sched_t sched,
+        ggml_tensor * op, ggml_backend_t fallback) const {
+    if (!pimpl->inkling_host_bridge) { return fallback; }
+    const auto device = ggml_backend_get_device(pimpl->backend.get());
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        const auto target = ggml_backend_sched_get_backend(sched, i);
+        if (ggml_backend_get_device(target) == device && pimpl->inkling_host_bridge(target, op)) {
+            pimpl->inkling_window_backend = target;
+            return target;
+        }
+    }
+    return fallback;
+}
+
 void llama_expert_executor::configure_acceleration(bool dflash_verify, bool profile_overlap, bool flash_next) {
+    if (pimpl->inkling_addresses) {
+        set_route_index(true);
+        pimpl->prepare_inkling_window();
+        const char * cache = std::getenv("LLAMA_EXPERIMENTAL_INKLING_EXPERT_CACHE");
+        if (cache && (std::strcmp(cache, "class-lru") == 0 || std::strcmp(cache, "inkling-loop-age") == 0)) {
+            try {
+                set_policy(cache);
+            } catch (const std::bad_alloc &) {
+                // The optional frequency table can be left unallocated.
+            }
+        }
+    }
     pimpl->flash_next_dflash3 = flash_next;
     if (flash_next) { pimpl->store->enable_size_lru(); }
     pimpl->profile_overlap = profile_overlap;
     pimpl->dflash_verify = dflash_verify;
     pimpl->configure_acceleration();
 }
-void llama_expert_executor::configure_resident_layers(const llama_model & model) {
+void llama_expert_executor::configure_resident_layers(const llama_model & model, uint32_t ubatch) {
+    if (model.arch == LLM_ARCH_INKLING2_LOOP && model.memory_contract && pimpl->inkling_acceleration) {
+        // Native core banks do not need the address-table kernel used by streamed experts.
+        const char * flag = std::getenv("LLAMA_EXPERIMENTAL_INKLING_CORE_BANKS");
+        const bool prefer_full = flag && std::strcmp(flag, "full") == 0;
+        const auto & inkling = static_cast<const llama_model_inkling2_loop &>(model);
+        const auto & layer = inkling.layers[inkling.core_start];
+        if ((!flag || prefer_full || std::strcmp(flag, "1") == 0) && inkling.n_passes > 1 &&
+                layer.ffn_gate_up_exps && layer.ffn_gate_up_exps->type == GGML_TYPE_Q4_K &&
+                layer.ffn_down_exps && layer.ffn_down_exps->type == GGML_TYPE_Q5_0) {
+            const auto state = stats();
+            const char * prompt = std::getenv("LLAMA_EXPERIMENTAL_INKLING_PREFILL_MATRIX");
+            const bool overlap_prompt = prompt && std::strcmp(prompt, "3") == 0;
+            const bool balanced_8g = prompt && std::strcmp(prompt, "2") == 0 && state.memory.applied == (size_t(8292) << 20);
+            // Overlap admits its staging buffer against the live budget per projection.
+            pimpl->balanced_prompt = pimpl->prompt_matrix_source && pimpl->inkling_host_bridge &&
+                    model.memory_contract->inkling_dspark_target && ubatch == 1024 && (overlap_prompt || balanced_8g);
+            pimpl->inkling_core.reset(new (std::nothrow) llama_inkling_core_banks(
+                    inkling, pimpl->balanced_prompt && overlap_prompt, prefer_full));
+            if (!pimpl->inkling_core) { return; }
+            pimpl->inkling_core->grow(llama_inkling_core_banks::allowance(state.memory.applied, state.minimum_bytes, pimpl->balanced_prompt));
+            if (pimpl->balanced_prompt && overlap_prompt) {
+                for (const auto & l : inkling.layers) {
+                    auto gate = pimpl->projections.find(l.ffn_gate_up_exps);
+                    auto down = pimpl->projections.find(l.ffn_down_exps);
+                    if (gate != pimpl->projections.end() && down != pimpl->projections.end() &&
+                            !gate->second.on_cpu && !down->second.on_cpu && gate->second.experts == down->second.experts) {
+                        gate->second.prompt_down = &down->second;
+                    }
+                }
+            }
+        }
+        return;
+    }
     if (!pimpl->moe || !pimpl->automatic_acceleration || !model.memory_contract) { return; }
     auto resident = std::make_unique<llama_lfm_resident>(model.hparams.n_layer_dense_lead);
     const auto state = stats();
@@ -1205,6 +1386,11 @@ void llama_expert_executor::configure_resident_layers(const llama_model & model)
 
 const std::array<ggml_tensor *, 3> * llama_expert_executor::resident_layer(int il) const {
     return pimpl->lfm_resident && !pimpl->layer_window ? pimpl->lfm_resident->get(il) : nullptr;
+}
+bool llama_expert_executor::has_inkling_core_policy() const { return bool(pimpl->inkling_core); }
+
+const std::array<ggml_tensor *, 2> * llama_expert_executor::inkling_core_layer(int ip) const {
+    return pimpl->inkling_core && !pimpl->tracing && !pimpl->route_observer ? pimpl->inkling_core->get(ip) : nullptr;
 }
 
 bool llama_expert_executor::can_retain_prefill_tail(size_t routed_layers) const {
@@ -1250,6 +1436,7 @@ void llama_expert_executor::moe_lookahead_end() { pimpl->moe->end_graph(); }
 
 llama_expert_execution_stats llama_expert_executor::stats() const {
     auto store = pimpl->store->stats();
+    store.logical_read_bytes += pimpl->prompt_matrix_read_bytes;
     if (pimpl->cpu_store) {
         const auto host = pimpl->cpu_store->stats();
         store.hits += host.hits;
@@ -1260,21 +1447,43 @@ llama_expert_execution_stats llama_expert_executor::stats() const {
         store.buffer_reuses += host.buffer_reuses;
     }
     const auto memory = pimpl->budget->snapshot(llama_memory_domain::host);
-    return {store, memory, pimpl->n_projections, pimpl->n_matmuls,
-            memory.used() - (pimpl->discrete.device ? store.entries * ggml_tensor_overhead() : store.resident_bytes + store.pooled_bytes) +
+    const size_t minimum = memory.used() - (pimpl->discrete.device ? store.entries * ggml_tensor_overhead() : store.resident_bytes + store.pooled_bytes) +
                 pimpl->minimum - pimpl->fixed_workspace - pimpl->optional_bytes() -
-                (pimpl->lfm_resident ? pimpl->lfm_resident->bytes() : 0), pimpl->n_submissions,
+                (pimpl->lfm_resident ? pimpl->lfm_resident->bytes() : 0) -
+                (pimpl->inkling_core ? pimpl->inkling_core->bytes() : 0);
+    return {store, memory, pimpl->n_projections, pimpl->n_matmuls,
+                std::max(minimum, pimpl->wide_scheduler_floor), pimpl->n_submissions,
                 pimpl->retired_moe_calls + (pimpl->moe ? pimpl->moe->completed() : 0),
             pimpl->retired_pipeline_groups + (pimpl->moe ? pimpl->moe->overlapped_groups() : 0),
             pimpl->retired_resident_groups + (pimpl->moe ? pimpl->moe->resident_starts() : 0),
             pimpl->optional_bytes(), pimpl->moe ? pimpl->moe->prefetch_candidates() : 0};
 }
+void llama_expert_executor::release_prompt_matrix() {
+    pimpl->prompt_down_ready = nullptr;
+    pimpl->prompt_down_workspace.reset();
+    pimpl->prompt_matrix_workspace.reset();
+    pimpl->cache_prompt_tail = false;
+}
+
+bool llama_expert_executor::balanced_inkling_prompt() const { return pimpl->balanced_prompt; }
+bool llama_expert_executor::compact_inkling_scheduler() const { return pimpl->wide_scheduler_floor != 0; }
+void llama_expert_executor::mark_inkling_prompt_tail() { pimpl->cache_prompt_tail = true; }
+void llama_expert_executor::set_compact_inkling_scheduler(bool compact) {
+    // Expert leases can use the freed scratch during decode. A resize must
+    // still leave enough total capacity to admit the next full prompt.
+    pimpl->wide_scheduler_floor = compact ? stats().minimum_bytes : 0;
+}
+
 bool llama_expert_executor::resize(size_t target) {
     if (pimpl->discrete.device || error()) { return false; }
     const bool drop_history = target != class_lru_budget && pimpl->class_policy && !pimpl->policy_override;
     const size_t optional_bytes = drop_history ? pimpl->store->class_lru_history_bytes() : 0;
     const auto state = stats();
     if (target < state.minimum_bytes - optional_bytes) { return false; }
+    const auto core_allowance = llama_inkling_core_banks::allowance(target, state.minimum_bytes, pimpl->balanced_prompt);
+    if (pimpl->inkling_core) {
+        pimpl->inkling_core->shrink(core_allowance);
+    }
     // The context has synchronized and invalidated graphs before resizing.
     // Only permanent banks participate in the new budget's prefix allowance.
     if (target != state.memory.applied && has_prefill_tail()) { release_prefill_tail(); }
@@ -1291,6 +1500,15 @@ bool llama_expert_executor::resize(size_t target) {
     pimpl->store->request_budget(llama_memory_domain::host, target);
     const bool applied = !pimpl->budget->snapshot(llama_memory_domain::host).pending();
     if (applied) {
+        if (pimpl->inkling_core && target > state.memory.applied) {
+            if (pimpl->inkling_core->can_restore_full(core_allowance)) {
+                // Demand-cached experts from the smaller budget duplicate the
+                // returning banks. Evict only idle entries, before measuring
+                // each bank's charge against the shared expert category.
+                pimpl->store->evict_idle();
+            }
+            pimpl->inkling_core->grow(core_allowance);
+        }
         if (combined_room && target >= state.minimum_bytes && combined_room <= target - state.minimum_bytes) {
             pimpl->store->reclaim_to_fit(llama_memory_domain::host, combined_room);
         }
@@ -1579,7 +1797,8 @@ void llama_expert_executor::pin_window_experts(const std::array<const ggml_tenso
             const size_t size = std::min(size_t(16), count - first);
             const size_t output = leases.size();
             leases.resize(output + size);
-            pimpl->store->acquire_many(name, ids + first, size, leases.data() + output, nullptr, adjacent_ranges);
+            pimpl->store->acquire_many(name, ids + first, size, leases.data() + output, nullptr,
+                    adjacent_ranges ? llama_expert_read_layout::adjacent : llama_expert_read_layout::separate);
             if (bindings) {
                 const size_t binding = projection < 2 ? 1 - projection : projection;
                 for (size_t i = 0; i < size; ++i) {

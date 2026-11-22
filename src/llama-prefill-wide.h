@@ -247,7 +247,7 @@ private:
                 const int64_t expert = first + i;
                 reads[i] = {&info, expert, destination + (expert - origin) * stride};
             }
-            source.read_experts(reads.data(), count, false, false, true);
+            source.read_experts(reads.data(), count, false, false, llama_expert_read_layout::adjacent);
         }
     }
 

@@ -1,5 +1,39 @@
 #include "common.h"
 
+kernel void kernel_inkling_control(
+        device const float * cur, device const float * message,
+        device const float * gain, device const float * forget,
+        device float * output, uint i [[thread_position_in_grid]]) {
+    #pragma clang fp contract(off)
+    #pragma clang fp reassociate(off)
+    const float x = cur[i];
+    const float forgotten = precise::tanh(forget[i]) * x;
+    const float gained = precise::tanh(gain[i]) * message[i];
+    output[i] = (x - forgotten) + gained;
+}
+
+kernel void kernel_inkling_situ(
+        constant uint & width,
+        constant float4 & scales,
+        device const float4 * gate_up,
+        device float4 * dst,
+        uint2 p [[thread_position_in_grid]]) {
+    #pragma clang fp contract(off)
+    #pragma clang fp reassociate(off)
+    if (p.x >= width) {
+        return;
+    }
+    const uint src = p.y * 2 * width + p.x;
+    const float4 gate = gate_up[src];
+    float4 up = gate_up[src + width];
+    const float4 curved = fma(scales.x, precise::tanh(fma(scales.y, gate, 0.0f)), 0.0f);
+    const float4 sigmoid = 1.0f / (1.0f + exp(-gate));
+    if (scales.z > 0.0f) {
+        up = fma(scales.z, precise::tanh(fma(scales.w, up, 0.0f)), 0.0f);
+    }
+    dst[p.y * width + p.x] = (curved * sigmoid) * up;
+}
+
 constant short FC_unary_op [[function_constant(FC_UNARY + 0)]];
 constant bool  FC_unary_cnt[[function_constant(FC_UNARY + 1)]];
 

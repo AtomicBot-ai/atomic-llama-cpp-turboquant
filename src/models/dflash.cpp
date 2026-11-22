@@ -39,6 +39,7 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
     const bool has_markov   = ml.get_tensor_meta("markov_w1.weight")       != nullptr;
     const bool has_selector = ml.get_tensor_meta("selector_hidden.weight") != nullptr;
     const bool has_lilicorr = ml.get_key(LLM_KV_LILICORR_HIDDEN_SIZE, hparams.lilicorr_hidden_size, false);
+    hparams.inkling2_dspark = has_markov && ml.get_tensor_meta("dspark_hidden_out.weight");
     if (has_markov) {
         variant = VARIANT_DSPARK;
     } else if (has_selector) {
@@ -52,8 +53,6 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
         throw std::runtime_error("DFlash model requires 'target_layers' in GGUF metadata");
     }
 
-    hparams.n_embd_inp_enc_impl = (uint32_t) target_layer_ids.size() * hparams.n_embd;
-
     std::string layers;
     const char * sep = "";
     for (const auto id : target_layer_ids) {
@@ -64,7 +63,9 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
     LLAMA_LOG_INFO("%s: DFlash extract_layers = [%s]\n", __func__, layers.c_str());
 
     ml.get_key(LLM_KV_HYPER_CONNECTION_COUNT, hparams.dsv4_hc_mult, false);
-    if (hparams.dsv4_hc_mult > 0) {
+    if (hparams.inkling2_dspark) {
+        load_hparams_inkling2(ml);
+    } else if (hparams.dsv4_hc_mult > 0) {
         load_hparams_dsv4(ml);
         backbone = hparams.dsv4_hc_single_pass ? BACKBONE_DSV41 : BACKBONE_DSV4;
     } else if (ml.get_key(LLM_KV_ATTENTION_KV_LORA_RANK, hparams.n_lora_kv, false)) {
@@ -79,6 +80,8 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
         hparams.rope_freq_scale_train_swa = hparams.rope_freq_scale_train;
     }
 
+    hparams.n_embd_inp_enc_impl = (uint32_t) target_layer_ids.size() * hparams.n_embd;
+
     ml.get_key_or_arr(LLM_KV_ATTENTION_ROPE_PATTERN, hparams.rope_pattern, hparams.n_layer(), false);
 
     type = LLM_TYPE_UNKNOWN;
@@ -86,6 +89,11 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
 
 void llama_model_dflash::load_arch_tensors(llama_model_loader &) {
     LLAMA_LOAD_LOCALS;
+
+    if (hparams.inkling2_dspark) {
+        load_tensors_inkling2();
+        return;
+    }
 
     const int64_t n_embd_inp = hparams.n_embd_inp_enc();
 
@@ -204,7 +212,7 @@ llama_model_dflash::graph<true>::graph(const llm_graph_params & params) : llm_gr
 }
 
 // target features of an injection batch: host embd rows, or rows of the target's layer input device buffer
-static ggml_tensor * build_inp_target_features(llm_graph_context & g, llm_graph_input_embd & inp, int64_t n_embd_inp) {
+ggml_tensor * llama_model_dflash::build_inp_target_features(llm_graph_context & g, llm_graph_input_embd & inp, int64_t n_embd_inp) {
     if (g.ubatch.embd_row) {
         GGML_ASSERT(g.layer_inp_src != nullptr && g.layer_inp_src->ne[0] == n_embd_inp);
 
@@ -535,6 +543,9 @@ std::unique_ptr<llm_graph_context> llama_model_dflash::build_arch_graph(const ll
             return std::make_unique<graph<true>>(params);
         case LLM_GRAPH_TYPE_DEFAULT:
         case LLM_GRAPH_TYPE_DECODER:
+            if (hparams.inkling2_dspark) {
+                return std::make_unique<graph_inkling2>(params);
+            }
             switch (backbone) {
                 case BACKBONE_BASE:           break;
                 case BACKBONE_DSV4:           return std::make_unique<graph_dsv4>(params);
@@ -542,10 +553,10 @@ std::unique_ptr<llm_graph_context> llama_model_dflash::build_arch_graph(const ll
                 case BACKBONE_MISTRAL_LARGE4: return std::make_unique<graph_mistral_large4>(params);
             }
             switch (variant) {
-                case VARIANT_DFLASH:   return std::make_unique<graph_dflash>(params);
-                case VARIANT_DFLASH2:  return std::make_unique<graph_dflash2>(params);
-                case VARIANT_DSPARK:   return std::make_unique<graph_dspark>(params);
-                case VARIANT_LILICORR: return std::make_unique<graph_lilicorr>(params);
+                case VARIANT_DFLASH:          return std::make_unique<graph_dflash>(params);
+                case VARIANT_DFLASH2:         return std::make_unique<graph_dflash2>(params);
+                case VARIANT_DSPARK:          return std::make_unique<graph_dspark>(params);
+                case VARIANT_LILICORR:        return std::make_unique<graph_lilicorr>(params);
             }
             GGML_ABORT("invalid DFlash variant");
         default:

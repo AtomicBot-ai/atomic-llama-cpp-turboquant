@@ -1,4 +1,8 @@
 #include "models.h"
+#include "llama-expert-acceleration.h"
+
+#include <cstdlib>
+#include <cstring>
 
 int llama_model_inkling2_loop::layer_phys(int il) const {
     return il < n_phys ? il : core_start + (il - n_phys) % (core_end - core_start);
@@ -75,10 +79,50 @@ llama_model_inkling2_loop::graph::graph(const llm_graph_params & params) : llama
     const auto & m = static_cast<const llama_model_inkling2_loop &>(model);
     const int start = m.core_start;
     const int end   = m.core_end;
+    if (expert_executor && n_tokens <= 8 && n_outputs == n_tokens) {
+        const char * rel_mask = std::getenv("LLAMA_EXPERIMENTAL_INKLING_REL_MASK");
+        const char * convolution = std::getenv("LLAMA_EXPERIMENTAL_INKLING_CONV_RESIDUAL");
+        const char * clip = std::getenv("LLAMA_EXPERIMENTAL_INKLING_CLIP");
+        const bool use_rel = cparams.flash_attn && rel_mask && std::strcmp(rel_mask, "1") == 0;
+        const bool use_conv = convolution && std::strcmp(convolution, "1") == 0;
+        const bool use_clip = clip && std::strcmp(clip, "1") == 0;
+        const auto device = model.dev_output();
+        const char * control = std::getenv("LLAMA_EXPERIMENTAL_INKLING_CONTROL");
+        const bool use_control = n_tokens == 4 && model.devices.size() == 1 &&
+                model.n_gpu_layers() > hparams.n_layer_all && !llama_expert_acceleration_off() &&
+                (!control || std::strcmp(control, "1") == 0);
+        if ((use_rel || use_conv || use_clip || use_control) &&
+                device && std::strcmp(ggml_backend_dev_name(device), "MTL0") == 0) {
+            const auto reg = ggml_backend_dev_backend_reg(device);
+            if (use_control) {
+                control_kernel = reinterpret_cast<decltype(control_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_inkling_control_v1"));
+            }
+            if (use_rel) {
+                rel_mask_kernel = reinterpret_cast<decltype(rel_mask_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_inkling_rel_mask_v1"));
+            }
+            if (use_conv) {
+                conv_residual_kernel = reinterpret_cast<decltype(conv_residual_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_inkling_conv_residual_v1"));
+            }
+            if (use_clip) {
+                clip_kernel = reinterpret_cast<decltype(clip_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_inkling_clip_v1"));
+            }
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                auto backend = ggml_backend_sched_get_backend(sched, i);
+                if (ggml_backend_get_device(backend) == device) { inkling_dense_backend = backend; break; }
+            }
+        }
+    }
 
     auto * cur = build_inputs();
     std::vector<ggml_tensor *> blocks;
     for (int il = 0; il < start; ++il) {
+        if (cparams.embeddings_layer_inp[il]) {
+            res->t_layer_inp[il] = cur;
+        }
         cur = build_layer(il, il, cur, blocks);
     }
 
@@ -97,6 +141,11 @@ llama_model_inkling2_loop::graph::graph(const llm_graph_params & params) : llama
         }
         for (int ip = start; ip < end; ++ip) {
             const int il = pass == 0 ? ip : m.n_phys + (pass - 1)*(end - start) + (ip - start);
+            // Draft features are indexed in execution order, independently of KV slots.
+            const int visit = ip + int(pass)*(end - start);
+            if (cparams.embeddings_layer_inp[visit]) {
+                res->t_layer_inp[visit] = cur;
+            }
             if (pass == 0) {
                 cur = build_layer(il, ip, cur, blocks);
                 continue;
@@ -107,6 +156,10 @@ llama_model_inkling2_loop::graph::graph(const llm_graph_params & params) : llama
     }
 
     for (int il = end; il < m.n_phys; ++il) {
+        const int visit = il + int(m.n_passes - 1)*(end - start);
+        if (cparams.embeddings_layer_inp[visit]) {
+            res->t_layer_inp[visit] = cur;
+        }
         cur = build_layer(il, il, cur, blocks);
     }
     build_output(cur, blocks);
