@@ -71,6 +71,22 @@ uint32_t llama_hparams::n_ff(uint32_t il) const {
     GGML_ABORT("fatal error");
 }
 
+uint32_t llama_hparams::n_ff_exp_layer(uint32_t il) const {
+    if (il < n_layer_all && n_ff_exp_arr[il] != 0) {
+        return n_ff_exp_arr[il];
+    }
+
+    return n_ff_exp;
+}
+
+uint32_t llama_hparams::n_expert_used_layer(uint32_t il) const {
+    if (il < n_layer_all && n_expert_used_arr[il] != 0) {
+        return n_expert_used_arr[il];
+    }
+
+    return n_expert_used;
+}
+
 uint32_t llama_hparams::n_gqa(uint32_t il) const {
     const uint32_t n_head    = this->n_head(il);
     const uint32_t n_head_kv = this->n_head_kv(il);
@@ -189,6 +205,11 @@ uint32_t llama_hparams::n_embd_r() const {
     if (wkv_head_size != 0) {
         // for RWKV models
         return token_shift_count * n_embd;
+    }
+
+    if (n_sconv_channels != 0) {
+        // for Inkling2 models, checked before LFM2 as they set n_shortconv_l_cache too
+        return n_sconv_channels * (n_shortconv_l_cache - 1);
     }
 
     if (n_shortconv_l_cache != 0) {

@@ -2485,11 +2485,9 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
     memcpy(&max_bias, (const float *) KQV->op_params + 1, sizeof(float));
 
     // Edge cases like no mask, ALiBi, unpadded K/V, or misaligned addresses for large data transfers
-    //     are put into the template specialization without GQA optimizations. Quantized tensors
-    //     (incl. turbo2/3/4) are skipped here: their loaders dequantize into SMEM via the
-    //     swizzled/padded tile helpers rather than reading nb[] directly, so the 16-byte-stride
-    //     alignment this loop checks for doesn't apply to them.
-    bool use_gqa_opt = mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
+    //     are put into the template specialization without GQA optimizations.
+    // a mask with a head dimension is not shared by the Q heads of a K/V head
+    bool use_gqa_opt = mask && mask->ne[2] == 1 && max_bias == 0.0f && n_kv % FATTN_KQ_STRIDE == 0;
     for (const ggml_tensor * t : {Q, K, V, mask}) {
         if (t == nullptr || ggml_is_quantized(t->type)) {
             continue;
@@ -2988,8 +2986,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     memcpy(&max_bias, (const float *) KQV->op_params + 1, sizeof(float));
 
     // The effective batch size for the kernel can be increased by gqa_ratio.
-    // The kernel versions without this optimization are also used for ALiBi, if there is no mask, or if the KV cache is not padded,
-    bool gqa_opt_applies = gqa_ratio >= 2 && mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
+    // The kernel versions without this optimization are also used for ALiBi, if there is no mask, if the mask has a head dimension,
+    //     or if the KV cache is not padded,
+    bool gqa_opt_applies = gqa_ratio >= 2 && mask && mask->ne[2] == 1 && max_bias == 0.0f && n_kv % FATTN_KQ_STRIDE == 0;
     for (const ggml_tensor * t : {Q, K, V, mask}) {
         if (t == nullptr || ggml_is_quantized(t->type)) {
             continue;
@@ -3097,7 +3096,16 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     if (mask && mask->ne[2] != 1) {
-        return BEST_FATTN_KERNEL_NONE;
+        // the kv_rows mask is compacted per sequence, it has no head dimension
+        if (kv_rows) {
+            return BEST_FATTN_KERNEL_NONE;
+        }
+        // the logit softcap kernels are compiled for these head sizes only
+        float logit_softcap;
+        memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
+        if (logit_softcap != 0.0f && Q->ne[0] != 128 && Q->ne[0] != 256) {
+            return BEST_FATTN_KERNEL_NONE;
+        }
     }
 
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
@@ -3152,7 +3160,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     const int ncols2_max = Q->ne[0] == 320 ? 32 : ((Q->ne[0] == 576 || Q->ne[0] == 640 || Q->ne[0] == 192) ? 16 : 8);
     int gqa_ratio_eff = 1;
-    while (gqa_ratio % (2*gqa_ratio_eff) == 0 && gqa_ratio_eff < ncols2_max) {
+    while (max_bias == 0.0f && (!mask || mask->ne[2] == 1) && gqa_ratio % (2*gqa_ratio_eff) == 0 && gqa_ratio_eff < ncols2_max) {
         gqa_ratio_eff *= 2;
     }
 

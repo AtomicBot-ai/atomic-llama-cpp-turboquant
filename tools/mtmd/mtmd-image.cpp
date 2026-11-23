@@ -1828,3 +1828,159 @@ mtmd_image_preproc_out mtmd_image_preprocessor_muse_glimmer::preprocess(const cl
     output.append(hparams, resized_image, true);
     return output;
 }
+
+//
+// mtmd_image_preprocessor_inkling2v
+//
+
+mtmd_image_preproc_out mtmd_image_preprocessor_inkling2v::preprocess(const clip_image_u8 & input) {
+    const int align = hparams.patch_size * hparams.n_merge;
+    auto size = input.get_size();
+    clip_image_u8 resized;
+    const bool too_large = hparams.image_max_pixels > 0 &&
+        int64_t(MTMD_ALIGN(size.width, align)) * MTMD_ALIGN(size.height, align) > hparams.image_max_pixels;
+    if (too_large) {
+        // the reference does not resize; this only bounds the number of image tokens
+        // this fork's img_tool has no calc_size_opt overload; use the
+        // min_pixels/max_pixels form directly (min disabled with 0)
+        size = img_tool::calc_size_preserved_ratio(size, align, 0, hparams.image_max_pixels);
+        img_tool::resize(input, resized, size, hparams.image_resize_algo, PAD_NONE);
+    }
+    const clip_image_u8 & img = too_large ? resized : input;
+    const int width  = MTMD_ALIGN(size.width,  align);
+    const int height = MTMD_ALIGN(size.height, align);
+    clip_image_f32 padded;
+    padded.set_size({width, height}, img.is_placeholder(), false);
+    if (!img.is_placeholder()) {
+        std::vector<float> pixels(size_t(width) * height * 3, -1.0f);
+        const auto & src = img.get_ro_buf();
+        for (int y = 0; y < size.height; ++y) {
+            std::copy_n(src.begin() + size_t(y) * size.width * 3, size_t(size.width) * 3, pixels.begin() + size_t(y) * width * 3);
+        }
+        padded.cpy_buf(pixels);
+        // Match the reference's fused rescale and normalization, including negative padding.
+        float mean[3], std[3];
+        for (int c = 0; c < 3; ++c) {
+            mean[c] = hparams.image_mean[c] * 255.0f;
+            std[c] = hparams.image_std[c] * 255.0f;
+        }
+        padded.normalize(mean, std);
+    }
+    mtmd_image_preproc_out result;
+    result.append(hparams, padded, false);
+    return result;
+}
+
+//#define MTMD_DEBUG_FUNCTIONS
+
+#ifdef MTMD_DEBUG_FUNCTIONS
+static void mtmd_image_write_image_to_ppm(const clip_image_u8& img, const std::string& filename) {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file.is_open()) {
+        LOG_ERR("Failed to open file for writing: %s\n", filename.c_str());
+        return;
+    }
+
+    // PPM header: P6 format, width, height, and max color value
+    const auto ppm_size = img.get_size();
+    file << "P6\n" << ppm_size.width << " " << ppm_size.height << "\n255\n";
+
+    // Write pixel data
+    const auto & ppm_buf = img.get_ro_buf();
+    for (size_t i = 0; i < ppm_buf.size(); i += 3) {
+        // PPM expects binary data in RGB format, which matches our image buffer
+        file.write(reinterpret_cast<const char*>(&ppm_buf[i]), 3);
+    }
+
+    file.close();
+}
+
+static void mtmd_image_save_to_bmp(const clip_image_u8& img, const std::string& filename) {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file.is_open()) {
+        LOG_ERR("Failed to open file for writing: %s\n", filename.c_str());
+        return;
+    }
+
+    const auto bmp_size = img.get_size();
+    int fileSize = 54 + 3 * bmp_size.width * bmp_size.height; // File header + info header + pixel data
+    int bytesPerPixel = 3;
+    int widthInBytes = bmp_size.width * bytesPerPixel;
+    int paddingAmount = (4 - (widthInBytes % 4)) % 4;
+    int stride = widthInBytes + paddingAmount;
+
+    // Bitmap file header
+    unsigned char fileHeader[14] = {
+        'B','M',     // Signature
+        0,0,0,0,    // Image file size in bytes
+        0,0,0,0,    // Reserved
+        54,0,0,0    // Start of pixel array
+    };
+
+    // Total file size
+    fileSize = 54 + (stride * bmp_size.height);
+    fileHeader[2] = (unsigned char)(fileSize);
+    fileHeader[3] = (unsigned char)(fileSize >> 8);
+    fileHeader[4] = (unsigned char)(fileSize >> 16);
+    fileHeader[5] = (unsigned char)(fileSize >> 24);
+
+    // Bitmap information header (BITMAPINFOHEADER)
+    unsigned char infoHeader[40] = {
+        40,0,0,0,   // Size of this header (40 bytes)
+        0,0,0,0,    // Image width
+        0,0,0,0,    // Image height
+        1,0,        // Number of color planes
+        24,0,       // Bits per pixel
+        0,0,0,0,    // No compression
+        0,0,0,0,    // Image size (can be 0 for no compression)
+        0,0,0,0,    // X pixels per meter (not specified)
+        0,0,0,0,    // Y pixels per meter (not specified)
+        0,0,0,0,    // Total colors (color table not used)
+        0,0,0,0     // Important colors (all are important)
+    };
+
+    // Width and height in the information header
+    infoHeader[4] = (unsigned char)(bmp_size.width);
+    infoHeader[5] = (unsigned char)(bmp_size.width >> 8);
+    infoHeader[6] = (unsigned char)(bmp_size.width >> 16);
+    infoHeader[7] = (unsigned char)(bmp_size.width >> 24);
+    infoHeader[8] = (unsigned char)(bmp_size.height);
+    infoHeader[9] = (unsigned char)(bmp_size.height >> 8);
+    infoHeader[10] = (unsigned char)(bmp_size.height >> 16);
+    infoHeader[11] = (unsigned char)(bmp_size.height >> 24);
+
+    // Write file headers
+    file.write(reinterpret_cast<char*>(fileHeader), sizeof(fileHeader));
+    file.write(reinterpret_cast<char*>(infoHeader), sizeof(infoHeader));
+
+    // Pixel data
+    std::vector<unsigned char> padding(3, 0); // Max padding size to be added to each row
+    for (int y = bmp_size.height - 1; y >= 0; --y) { // BMP files are stored bottom-to-top
+        for (int x = 0; x < bmp_size.width; ++x) {
+            // Each pixel
+            const auto px = img.get_pixel(x, y);
+            unsigned char pixel[3] = {
+                px[2], // BMP stores pixels in BGR format
+                px[1],
+                px[0]
+            };
+            file.write(reinterpret_cast<char*>(pixel), 3);
+        }
+        // Write padding for the row
+        file.write(reinterpret_cast<char*>(padding.data()), paddingAmount);
+    }
+
+    file.close();
+}
+
+// debug function to convert f32 to u8
+static void mtmd_image_convert_f32_to_u8(const clip_image_f32& src, clip_image_u8& dst) {
+    dst.set_size(src.get_size(), false);
+    const auto & src_buf = src.get_ro_buf();
+    std::vector<uint8_t> dst_buf(src.n_elements());
+    for (size_t i = 0; i < src.n_elements(); ++i) {
+        dst_buf[i] = static_cast<uint8_t>(std::min(std::max(int(src_buf[i] * 255.0f), 0), 255));
+    }
+    dst.cpy_buf(dst_buf);
+}
+#endif

@@ -8,6 +8,9 @@
 
 #define MTMD_INTERNAL_HEADER
 
+// upstream Inkling 2 code uses this helper; define it here for this fork
+#define MTMD_ALIGN(x, n) (((x) + (n) - 1) / (n) * (n))
+
 struct mtmd_image_preproc_out {
     std::vector<clip_image_f32> entries;
     // grid size is required for llava-uhd style models
@@ -254,5 +257,11 @@ struct mtmd_image_preprocessor_granite : mtmd_image_preprocessor_llava_uhd {
 // pick the patch grid closest to the input aspect ratio under the per-image token cap, stretch-resize.
 struct mtmd_image_preprocessor_muse_glimmer : mtmd_image_preprocessor {
     mtmd_image_preprocessor_muse_glimmer(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}
+    mtmd_image_preproc_out preprocess(const clip_image_u8 & img) override;
+};
+
+// pad bottom-right to a multiple of patch_size*n_merge; resize only if the image is above image_max_pixels
+struct mtmd_image_preprocessor_inkling2v : mtmd_image_preprocessor {
+    using mtmd_image_preprocessor::mtmd_image_preprocessor;
     mtmd_image_preproc_out preprocess(const clip_image_u8 & img) override;
 };
