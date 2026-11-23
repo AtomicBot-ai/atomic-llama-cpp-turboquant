@@ -152,7 +152,7 @@ On the separate 4,000-token handover fixture, the same 7/32 profile accepted
 The AD-IQ3_S columns use DSpark 3/32.
 [Per-budget timings, token IDs and memory peaks](docs/atomic-engine-inkling-low-bit-metal.json).
 
-![Inkling 2 Mini on Apple M4 Max, TTFT and decode at 8 to 20 GiB plus KV](docs/atomic-engine-inkling-low-bit-metal.png)
+![Inkling 2 Mini on Apple M4 Max, TTFT and decode at 8 to 20 GiB plus KV](https://github.com/AtomicBot-ai/atomic-engine/raw/codex/expert-weight-source/docs/atomic-engine-inkling-low-bit-metal.png)
 
 <details>
 <summary>Build the stock Metal server used for the comparison</summary>
