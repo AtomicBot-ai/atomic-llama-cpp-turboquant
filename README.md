@@ -2,22 +2,13 @@
 
 **Developer Preview**
 
-Atomic Engine is an inference engine under development on top of llama.cpp,
-targeting MoE expert streaming from SSD and adjustable managed memory budgets.
-The experimental engine admits model, state, compute and expert buffers under a
-shared budget with an explicit runtime reserve. On Apple M4 Max, original Qwen3.5
-MoE prefill/decode matches resident logits and state under a 5 GiB engine budget.
-Manual live shrink/grow releases backend memory while preserving the active
-session. Opt-in automatic pressure control adds bounded recovery and manual
-priority; see [the policy and qualification limits](docs/atomic-engine-pressure.md).
-LFM2 MoE now has a [second-architecture qualification](docs/atomic-engine-second-architecture.md)
-on the same Metal backend, including useful prefill and live resize.
-The [fixed-budget CUDA server profile](docs/atomic-engine-cuda-server.md)
-qualifies single-slot LFM2.5-24B with separate 4 GiB RAM / 2 GiB VRAM caps.
-Qualification is limited to the measured model/configurations; this is
-not an OS-wide RSS limiter or a throughput-optimized implementation.
-See the [server build, launch commands and qualified profiles](docs/atomic-engine-release.md)
-and the [implementation status](docs/atomic-engine.md).
+Local AI should leave room for the rest of your work. Atomic Engine builds on
+llama.cpp to run a model within a memory budget you set. Model weights, session
+state, and compute buffers share that budget. The engine streams expert weights
+from the original GGUF as needed. On supported configurations, lowering the budget
+frees cached weights while keeping the session alive. On Apple Silicon, Inkling 2
+Mini runs through the same core layers several times, so Atomic Engine prioritizes
+keeping their expert weights in memory.
 
 ## Run Inkling 2 Mini on Apple Silicon
 
