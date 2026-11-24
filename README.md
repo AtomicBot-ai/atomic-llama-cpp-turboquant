@@ -1,5 +1,7 @@
 # Atomic Engine
 
+**Developer Preview**
+
 Atomic Engine is an inference engine under development on top of llama.cpp,
 targeting MoE expert streaming from SSD and adjustable managed memory budgets.
 The experimental engine admits model, state, compute and expert buffers under a
@@ -19,7 +21,7 @@ and the [implementation status](docs/atomic-engine.md).
 
 ## Run Inkling 2 Mini on Apple Silicon
 
-**Developer preview.** Run Inkling locally on a Mac with Metal. The standard
+Run Inkling locally on a Mac with Metal. The standard
 profile uses the IQ2_M model and a small DSpark draft model. DSpark proposes
 tokens and Inkling checks them. With a 14 GiB budget plus 100 MiB for the
 attention cache, this pair generated **105.71 tokens/s** on a 48 GB M4 Max
