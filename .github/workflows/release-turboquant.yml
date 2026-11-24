@@ -1142,6 +1142,71 @@ jobs:
           (cd rocm-win && zip -qr ../archives/llama-turboquant-windows-x64-rocm.zip build)
           ls -lh archives/llama-turboquant-windows-x64-rocm.zip
 
+      # index.json is the catalog Atomic Chat reads first, through
+      # releases/latest/download/index.json: which variants this release carries,
+      # with sizes and sha256. Without it the app falls back to the
+      # /releases/latest redirect and guesses assets from their names. Variant ids
+      # follow the archive names; Windows ships .zip and every other platform
+      # .tar.gz, the app's default asset names. An optional
+      # TURBOQUANT_MIN_APP_VERSION file becomes min_app_version: set it whenever
+      # llama-server drops or renames a flag the app passes.
+      - name: Write release index
+        run: |
+          VERSION=$(tr -d ' \n' < TURBOQUANT_VERSION)
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            TAG="${VERSION}"
+          fi
+          MIN_APP_VERSION=""
+          if [ -f TURBOQUANT_MIN_APP_VERSION ]; then
+            MIN_APP_VERSION=$(tr -d ' \n' < TURBOQUANT_MIN_APP_VERSION)
+          fi
+
+          mkdir -p release-index
+          : > release-index/variants.jsonl
+          for archive in archives/llama-turboquant-*; do
+            name=$(basename "$archive")
+            case "$name" in
+              llama-turboquant-windows-*.zip) id=${name#llama-turboquant-}; id=${id%.zip} ;;
+              llama-turboquant-windows-*) continue ;;
+              *.tar.gz) id=${name#llama-turboquant-}; id=${id%.tar.gz} ;;
+              *) continue ;;
+            esac
+            jq -nc --arg id "$id" --arg asset "$name" \
+              --argjson size "$(wc -c < "$archive" | tr -d ' ')" \
+              --arg sha256 "$(sha256sum "$archive" | cut -d' ' -f1)" \
+              '{id: $id, asset: $asset, size: $size, sha256: $sha256}' >> release-index/variants.jsonl
+          done
+
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -s \
+            --arg tag "$TAG" \
+            --arg commit "${GITHUB_SHA::9}" \
+            --arg now "$NOW" \
+            --arg title "TurboQuant ${VERSION}" \
+            --arg min "$MIN_APP_VERSION" \
+            '{
+              schema_version: 1,
+              generated_at: $now,
+              latest: $tag,
+              releases: [
+                {
+                  tag: $tag,
+                  published_at: $now,
+                  commit: $commit,
+                  prerelease: false,
+                  title: $title
+                }
+                + (if $min == "" then {} else {min_app_version: $min} end)
+                + {variants: sort_by(.id)}
+              ]
+            }' release-index/variants.jsonl > release-index/index.json
+          jq . release-index/index.json
+          if [ "$(jq '.releases[0].variants | length' release-index/index.json)" -eq 0 ]; then
+            echo "::error::No archives to list in index.json"
+            exit 1
+          fi
+
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1231,4 +1296,5 @@ jobs:
             --title "TurboQuant ${VERSION}" \
             --latest \
             --notes "$NOTES" \
-            archives/*
+            archives/* \
+            release-index/index.json
