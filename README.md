@@ -10,6 +10,9 @@ frees cached weights while keeping the session alive. On Apple Silicon, Inkling 
 Mini runs through the same core layers several times, so Atomic Engine prioritizes
 keeping their expert weights in memory.
 
+For the Inkling 2 Mini iPhone prototypes and embedding instructions, see
+[Inkling Chat for iPhone](examples/inkling-ios-chat/README.md).
+
 ## Run Inkling 2 Mini on Apple Silicon
 
 Run Inkling locally on a Mac with Metal. The standard
