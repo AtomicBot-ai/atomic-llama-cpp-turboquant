@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from utils import *
 
@@ -122,6 +124,24 @@ def test_truncation():
     assert_error(systemone({"state": long_state, "questions": QUESTIONS, "truncation": "error"}), 422, "STATE_TRUNCATED")
     many = {f"q{i}": {"type": "noul", "instructions": "y" * 200} for i in range(8)}
     assert_error(systemone({"state": "s", "questions": many}), 422, "PROMPT_TOO_LONG")
+
+
+def test_checkpoint_dir_hint(tmp_path):
+    # -m <Clef HF repo>: refused with a pointer to the GGUF, nothing is converted
+    ckpt = os.path.join(tmp_path, "clef-flash")
+    os.makedirs(ckpt)
+    for name in ("config.json", "joint_head_config.json"):
+        with open(os.path.join(ckpt, name), "w") as f:
+            f.write("{}")
+    server.model_file = ckpt
+    server.model_alias = None
+    server.log_path = os.path.join(tmp_path, "log.txt")
+    with pytest.raises(RuntimeError):
+        server.start(timeout_seconds=20)
+    with open(server.log_path, encoding="utf-8", errors="replace") as f:
+        log = f.read()
+    assert "is a Clef checkpoint" in log and "ggml-org/Clef-Flash-GGUF" in log, log[-2000:]
+    assert sorted(os.listdir(ckpt)) == ["config.json", "joint_head_config.json"]
 
 
 def test_router_uncalibrated():

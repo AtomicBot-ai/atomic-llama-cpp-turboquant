@@ -690,6 +690,13 @@ bool decision_model_source_resolve(const std::string & path, const decision_chec
     out.kind    = "checkpoint-dir";
     out.outtype = laya_convert_outtype_name(params.outtype);
 
+    // a Clef repo (Cloudflare/clef, clef-flash: the same files conversion/clef.py looks for) is not converted here
+    if (ck_stat_path(ck_join(path, "joint_head_config.json")).is_file && ck_stat_path(ck_join(path, "config.json")).is_file) {
+        err = "'" + path + "' is a Clef checkpoint, -m DIR converts laya checkpoints only: use a Clef GGUF "
+              "(ggml-org/Clef-Flash-GGUF, ggml-org/Clef-GGUF) or convert the directory once with "
+              "convert_hf_to_gguf.py --outtype bf16 (then llama-quantize ... Q8_0), see \"Clef\" in DECISION.md";
+        return false;
+    }
     if (!decision_is_laya_checkpoint_dir(path)) {
         err = "'" + path + "' is a directory but not a laya checkpoint (no rl_agent_config.json; a checkpoint has "
               "rl_agent_config.json, encoder/config.json, tokenizer/ and model*.safetensors)";

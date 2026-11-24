@@ -1105,6 +1105,10 @@ python convert_hf_to_gguf.py <snapshot of Cloudflare/clef-flash> --outtype bf16 
   `--decision-device cpu|gpu|auto` and `--decision-gpu` pick the device (the model goes on it as a
   whole); kernels and precision take only `auto`/`default`. Use a GPU: on the CPU a 9B prompt of
   a few hundred tokens takes over a second (see the speed numbers below).
+- `-m <Clef repo directory>` is refused with a pointer to the GGUF (a directory with
+  `joint_head_config.json` and `config.json`): `-m DIR` converts laya checkpoints only. A Clef backbone
+  is 9B / 27B, so convert it once with `convert_hf_to_gguf.py` and quantize the BF16 file, or take the
+  GGUF of `ggml-org`.
 - Spec: an unstamped GGUF of arch `clef` gets the default spec: layout `clef`, format and input
   contract `clef-v1`, `special_tokens: "parse"`, `confidence: "max_p"`, plan `joint`, no
   calibration (T = 1; the checkpoints ship none).
