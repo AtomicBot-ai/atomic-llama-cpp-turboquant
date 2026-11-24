@@ -19,6 +19,11 @@ Releases before `b10269-1.5.0` predate this file; see the git history.
   RX5950XT; GGUFs with a matching chat template at `AtomicChat/Unlimited-OCR-2-GGUF`. One request at a
   time (`--parallel 1`, the Atomic Chat default); context shift is off for this model. The same change
   fixes a CUDA graph crash on graphs with source-less ops such as `arange`.
+- **MiniCPM-OCR 1.0** (projector `minicpm_ocr_1_0`): OpenBMB's 1.3B OCR model (text, tables as HTML,
+  formulas as LaTeX). The MiniCPM-V 4.6 stack with upstream's image preprocessing for this model (Pillow
+  bicubic, no padding, `<image_id>` tags, a 2D image grid for M-RoPE), so pages read the same as on
+  upstream llama.cpp. Works with the vendor's and our GGUFs (`AtomicChat/MiniCPM-OCR-1.0-GGUF`). Ask for
+  `Text Recognition:`, `Table Recognition:` or `Formula Recognition:`.
 - **New TurboQuant+ base: `tqp-v0.4.0`** (TheTom's fork as of 2026-09-28; our
   work was rebased onto it). What it brings:
   - MoE expert cache (`--moe-cache`, see `docs/backend/MOE-CACHE.md`): faster

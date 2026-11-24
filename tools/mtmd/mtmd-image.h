@@ -99,6 +99,11 @@ struct mtmd_image_preprocessor_llava_uhd : mtmd_image_preprocessor {
 protected:
     clip_image_size get_best_resize(const clip_image_size & original_size, int scale_resolution, int patch_size, bool allow_upscale = false);
 
+    // length / patch_size rounded to an integer when snapping a length to a multiple of the patch size
+    virtual int align_round_div(int length, int patch_size) {
+        return static_cast<int>(std::round(static_cast<float>(length) / patch_size));
+    }
+
 private:
     clip_image_size resize_maintain_aspect_ratio(const clip_image_size & orig, const clip_image_size & target_max);
 
@@ -153,6 +158,27 @@ struct mtmd_image_preprocessor_longest_edge : mtmd_image_preprocessor {
 struct mtmd_image_preprocessor_minicpmv : mtmd_image_preprocessor_llava_uhd {
     using mtmd_image_preprocessor_llava_uhd::mtmd_image_preprocessor_llava_uhd;
     slice_instructions get_slice_instructions(const clip_image_size & original_size) override;
+};
+
+// MiniCPM-OCR 1.0 (4x mode): slices align to patch_size * n_merge (28), as in the base class, and the snapping
+// rounds like the reference (Python's round(), ties to even, in double precision)
+struct mtmd_image_preprocessor_minicpm_ocr_1_0 : mtmd_image_preprocessor_minicpmv {
+    using mtmd_image_preprocessor_minicpmv::mtmd_image_preprocessor_minicpmv;
+
+protected:
+    int align_round_div(int length, int patch_size) override {
+        const double v    = static_cast<double>(length) / patch_size;
+        const double fl   = std::floor(v);
+        const double diff = v - fl;
+        if (diff > 0.5) {
+            return static_cast<int>(fl) + 1;
+        }
+        if (diff < 0.5) {
+            return static_cast<int>(fl);
+        }
+        const int lo = static_cast<int>(fl);
+        return (lo % 2 == 0) ? lo : lo + 1;
+    }
 };
 
 // custom llava-uhd slicing logic for LFM2
