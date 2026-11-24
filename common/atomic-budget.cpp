@@ -12,6 +12,25 @@
 #include <cstring>
 #include <stdexcept>
 
+// Keep only prefixes seen after the same key in two disjoint earlier passages.
+// This avoids spending a verification batch on a one-off continuation.
+void common_atomic_confirm_lookup(const llama_tokens & history, llama_token sampled, size_t key_size, llama_tokens & proposal) {
+    if (proposal.empty()) { return; }
+    GGML_ASSERT(key_size && history.size() >= key_size);
+    const auto end = history.end() - (key_size - 1);
+    llama_tokens pattern(end, history.end());
+    pattern.push_back(sampled);
+    pattern.insert(pattern.end(), proposal.begin(), proposal.end());
+    while (!proposal.empty()) {
+        const auto first = std::search(history.begin(), end, pattern.begin(), pattern.end());
+        if (first != end && std::search(first + pattern.size(), end, pattern.begin(), pattern.end()) != end) {
+            return;
+        }
+        proposal.pop_back();
+        pattern.pop_back();
+    }
+}
+
 void common_atomic_discrete_validate(const common_params & p) {
     if (!p.engine_ram_budget && !p.engine_vram_budget) { return; }
     if (!p.engine_ram_budget || !p.engine_vram_budget || p.engine_budget || p.engine_memory_auto) {
@@ -141,26 +160,28 @@ int qwen35_grid_draft_layers(const std::string & path, int bf16_layers, int comp
 } // namespace
 
 #ifdef GGML_USE_METAL
-static bool inkling_profile_weights(const gguf_context * meta) {
+static bool inkling_profile_weights(const gguf_context * meta, bool compact_target) {
     if (metadata_u32(meta, "general.file_type", LLAMA_FTYPE_MOSTLY_Q4_K_M)) { return true; }
     const bool iq3 = metadata_u32(meta, "general.file_type", LLAMA_FTYPE_MOSTLY_IQ3_S);
+    const bool iq1 = compact_target && metadata_u32(meta, "general.file_type", LLAMA_FTYPE_MOSTLY_IQ1_S);
     // AD-IQ2_M is tagged MOSTLY_IQ2_XXS. Inspect the expert tensors to
     // distinguish its mixed down projections from other releases with that tag.
-    if ((!iq3 && !metadata_u32(meta, "general.file_type", LLAMA_FTYPE_MOSTLY_IQ2_XXS)) ||
+    if ((!iq1 && !iq3 && !metadata_u32(meta, "general.file_type", LLAMA_FTYPE_MOSTLY_IQ2_XXS)) ||
             !metadata_u32(meta, "inkling2_loop.block_count", 24)) { return false; }
     int q2_down = 0;
+    const auto gate_type = iq1 ? GGML_TYPE_IQ1_S : iq3 ? GGML_TYPE_IQ3_S : GGML_TYPE_IQ2_XXS;
     for (int i = 0; i < 24; ++i) {
         const auto prefix = "blk." + std::to_string(i) + ".ffn_";
         const auto gate = gguf_find_tensor(meta, (prefix + "gate_up_exps.weight").c_str());
         const auto down = gguf_find_tensor(meta, (prefix + "down_exps.weight").c_str());
-        if (gate < 0 || down < 0 || gguf_get_tensor_type(meta, gate) != (iq3 ? GGML_TYPE_IQ3_S : GGML_TYPE_IQ2_XXS)) {
+        if (gate < 0 || down < 0 || gguf_get_tensor_type(meta, gate) != gate_type) {
             return false;
         }
         const auto type = gguf_get_tensor_type(meta, down);
         if (!iq3 && type == GGML_TYPE_Q2_0) { ++q2_down; }
         else if (type != GGML_TYPE_IQ4_NL) { return false; }
     }
-    return iq3 || q2_down == 16;
+    return iq3 || q2_down == (iq1 ? 24 : 16);
 }
 
 void common_atomic_select_inkling_metal_profile(common_params & p) {
@@ -171,12 +192,34 @@ void common_atomic_select_inkling_metal_profile(common_params & p) {
     const bool default_ubatch = !draft.n_ubatch_explicit && draft.n_ubatch == 0;
     const bool matrix_draft = profile_budget && (draft.n_max == 3 || draft.n_max == 4 || draft.n_max == 7) &&
             (default_ubatch || draft.n_ubatch == 32);
-    if (!common_atomic_inkling_dspark_enabled(p) || p.fit_params || p.model.path.empty() ||
+    const auto & types = p.speculative.types;
+    p.speculative.inkling_lookup_min_matches = 0;
+    const bool lookup = std::count(types.begin(), types.end(), COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE) == 1 &&
+            std::all_of(types.begin(), types.end(), [](common_speculative_type type) {
+                return type == COMMON_SPECULATIVE_TYPE_NONE || type == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE;
+            }) &&
+            p.speculative.ngram_simple.size_m == 7 && !p.speculative.has_synth() && p.slot_save_path.empty();
+    const common_params_speculative_ngram_map ngram_defaults;
+    const auto & ngram = p.speculative.ngram_simple;
+    // The parser appends explicit spec types (including "none") to the initial NONE.
+    const bool default_lookup = p.n_ubatch == 512 && types.size() == 1 && types.front() == COMMON_SPECULATIVE_TYPE_NONE &&
+            !p.speculative.has_synth() && p.slot_save_path.empty() &&
+            ngram.size_n == ngram_defaults.size_n && ngram.size_m == ngram_defaults.size_m && ngram.min_hits == ngram_defaults.min_hits;
+    const bool wide_lookup = p.n_ubatch == 512 && ((lookup && ngram.size_n == 3) || default_lookup);
+    const bool compact_target = p.engine_budget == 4096*mib && !p.engine_memory_auto &&
+            !p.engine_ram_budget && !p.engine_vram_budget && !p.engine_prefill_window &&
+            p.n_ctx == 1024 && p.n_batch == 1024 && (p.n_ubatch == 256 || wide_lookup) && p.n_parallel == 1 &&
+            p.n_gpu_layers <= -2 && !p.no_op_offload && !p.speculative.has_dft() &&
+            (lookup || std::all_of(p.speculative.types.begin(), p.speculative.types.end(),
+                    [](common_speculative_type type) { return type == COMMON_SPECULATIVE_TYPE_NONE; }));
+    if (!compact_target && (!common_atomic_inkling_dspark_enabled(p) ||
             p.n_ctx != 4096 || p.n_batch != 1024 || p.n_ubatch != 1024 ||
-            p.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED ||
-            p.cache_type_k != GGML_TYPE_Q4_0 || p.cache_type_v != GGML_TYPE_Q4_0 ||
             (!legacy_draft && !matrix_draft) ||
-            draft.cache_type_k != GGML_TYPE_Q4_0 || draft.cache_type_v != GGML_TYPE_Q4_0) {
+            draft.cache_type_k != GGML_TYPE_Q4_0 || draft.cache_type_v != GGML_TYPE_Q4_0)) {
+        return;
+    }
+    if (p.fit_params || p.model.path.empty() || p.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED ||
+            p.cache_type_k != GGML_TYPE_Q4_0 || p.cache_type_v != GGML_TYPE_Q4_0) {
         return;
     }
     const auto device = p.devices.empty() ? ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) : p.devices.front();
@@ -186,20 +229,32 @@ void common_atomic_select_inkling_metal_profile(common_params & p) {
     gguf_context_ptr meta(gguf_init_from_file(p.model.path.c_str(), {true, nullptr}));
     if (!meta || !metadata_string(meta.get(), "general.architecture", "inkling2_loop") ||
             !metadata_string(meta.get(), "general.name", "Inkling-2-Mini") ||
-            !inkling_profile_weights(meta.get())) {
+            !inkling_profile_weights(meta.get(), compact_target)) {
         return;
     }
-    const bool iq2_profile = matrix_draft && metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_IQ2_XXS);
+    const bool iq2_profile = (compact_target || matrix_draft) && metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_IQ2_XXS);
+    const bool compact_iq1 = compact_target && metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_IQ1_S);
+    if (compact_target && !iq2_profile && !compact_iq1) { return; }
+    if (wide_lookup && !compact_iq1) { return; }
+    if (compact_iq1 && default_lookup) {
+        p.speculative.types = { COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE };
+        p.speculative.ngram_simple.size_n = 3;
+        p.speculative.ngram_simple.size_m = 7;
+    }
+    const bool iq1_trigram = compact_iq1 && (default_lookup || (lookup && ngram.size_n == 3));
+    if (compact_target && (lookup || default_lookup)) {
+        p.speculative.inkling_lookup_min_matches = iq1_trigram ? 1 : 2;
+    }
     if (iq2_profile) {
-        if (!draft.n_max_explicit && draft.n_max == 3) { draft.n_max = 7; }
-        if (default_ubatch) { draft.n_ubatch = 32; }
+        if (!compact_target && !draft.n_max_explicit && draft.n_max == 3) { draft.n_max = 7; }
+        if (!compact_target && default_ubatch) { draft.n_ubatch = 32; }
         if (setenv("LLAMA_EXPERIMENTAL_INKLING_PREFILL_ATTN", "1", 0) != 0) {
             throw std::runtime_error("could not set Inkling prefill attention default");
         }
     } else if (matrix_draft && default_ubatch && draft.n_max == 3 &&
             metadata_u32(meta.get(), "general.file_type", LLAMA_FTYPE_MOSTLY_IQ3_S)) {
         draft.n_ubatch = 32;
-    } else if (!legacy_draft) {
+    } else if (!compact_iq1 && !legacy_draft) {
         return;
     }
     // Set defaults before the first Metal context. Explicit experiment settings take precedence.
@@ -210,10 +265,10 @@ void common_atomic_select_inkling_metal_profile(common_params & p) {
         {"LLAMA_EXPERIMENTAL_INKLING_SITU", "1"},
         {"LLAMA_EXPERIMENTAL_INKLING_METAL_BRIDGE", "1"},
         {"LLAMA_EXPERIMENTAL_INKLING_METAL_JOIN", "1"},
-        {"LLAMA_EXPERIMENTAL_INKLING_EXPERT_PIPELINE", "1"},
+        {"LLAMA_EXPERIMENTAL_INKLING_EXPERT_PIPELINE", iq1_trigram ? "0" : "1"},
         {"LLAMA_EXPERIMENTAL_INKLING_EXPERT_CACHE", "class-lru"},
         {"LLAMA_EXPERIMENTAL_INKLING_RESIDENT_FIRST", "1"},
-        {"LLAMA_EXPERIMENTAL_INKLING_PREFILL_MATRIX", "3"},
+        {"LLAMA_EXPERIMENTAL_INKLING_PREFILL_MATRIX", compact_target ? "compact" : "3"},
         {"LLAMA_EXPERIMENTAL_INKLING_CONV_RESIDUAL", "1"},
         {"LLAMA_EXPERIMENTAL_INKLING_REL_MASK", "1"},
         {"LLAMA_EXPERIMENTAL_INKLING_CLIP", "1"},

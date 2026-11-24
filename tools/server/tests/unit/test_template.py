@@ -43,6 +43,24 @@ def test_reasoning_effort_rejected_by_template():
     assert res.status_code == 200, res.body
 
 
+def test_inkling_reasoning_effort():
+    server.jinja = True
+    server.chat_template_file = '../../../models/templates/thinkingmachines-Inkling-2-Small.jinja'
+    server.start()
+
+    messages = [{"role": "user", "content": "Hello"}]
+    for options, effort in [
+        ({}, "0.9"),
+        ({"reasoning_effort": "none"}, "0"),
+        ({"chat_template_kwargs": {"enable_thinking": False}}, "0"),
+        ({"reasoning_effort": "low"}, "0.2"),
+        ({"chat_template_kwargs": {"enable_thinking": False, "reasoning_effort": "low"}}, "0.2"),
+    ]:
+        res = server.make_request("POST", "/apply-template", data={"messages": messages, **options})
+        assert res.status_code == 200, res.body
+        assert f"Thinking effort level: {effort}<|end_message|>" in res.body["prompt"]
+
+
 @pytest.mark.parametrize("tools", [None, [], [TEST_TOOL]])
 @pytest.mark.parametrize("template_name,reasoning,expected_end", [
     ("deepseek-ai-DeepSeek-R1-Distill-Qwen-32B",  "on", "<think>\n"),

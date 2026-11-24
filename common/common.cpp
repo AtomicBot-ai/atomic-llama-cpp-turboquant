@@ -1291,7 +1291,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     const bool has_speculative = params.speculative.has_dft() ||
         std::any_of(params.speculative.types.begin(), params.speculative.types.end(),
             [](common_speculative_type type) { return type != COMMON_SPECULATIVE_TYPE_NONE; });
-    if (params.engine_budget && (params.fit_params || (has_speculative && !budget_dflash2 && !budget_inkling_dspark) || !params.mmproj.path.empty())) {
+    if (params.engine_budget && (params.fit_params || (has_speculative && !budget_dflash2 && !budget_inkling_dspark && !params.speculative.inkling_lookup_min_matches) || !params.mmproj.path.empty())) {
         throw std::invalid_argument("engine budget requires -fit off, a supported speculative profile if selected, and no multimodal projector");
     }
     if (params.engine_ram_budget || params.engine_vram_budget) { common_atomic_discrete_validate(params); }
@@ -1309,6 +1309,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
     if (budget_dflash2 && !llama_atomic_dflash2_enable(model, common_atomic_flash_next_dflash3_profile(params) ? uint32_t(params.n_ctx) : 0u)) {
         throw std::invalid_argument("budgeted DFlash2 requires a qualified streamed Metal target and memory profile");
+    }
+    if (params.speculative.inkling_lookup_min_matches) {
+        cparams.n_rs_seq = params.speculative.ngram_simple.size_m;
+        if (!llama_atomic_inkling_lookup_enable(model, cparams.n_rs_seq)) {
+            throw std::invalid_argument("budgeted prompt lookup requires streamed Inkling IQ2_M or IQ1_S on Metal");
+        }
     }
     if (budget_inkling_dspark && !llama_atomic_inkling_dspark_enable(model)) {
         throw std::invalid_argument("budgeted Inkling2 DSpark requires streamed Inkling 2 Mini on Metal");

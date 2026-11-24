@@ -199,9 +199,13 @@ llama_context::llama_context(
         const bool extended_flash = params.n_ctx > 4096 && (params.n_ctx == model.memory_contract->flash_next_extended_ctx ||
                 (model.arch == LLM_ARCH_DFLASH && params.ctx_other && params.ctx_other->model.memory_contract &&
                  params.n_ctx == params.ctx_other->model.memory_contract->flash_next_extended_ctx));
-        const uint32_t max_ubatch = inkling_rollback ? 1024 : 256;
+        const bool lookup_rollback = params.n_rs_seq == model.memory_contract->inkling_lookup_depth &&
+            params.n_rs_seq < params.n_ubatch;
+        const bool wide_lookup = lookup_rollback && params.n_rs_seq == 7 && model.ftype() == LLAMA_FTYPE_MOSTLY_IQ1_S &&
+            params.n_ubatch == 512 && params.n_batch == 1024 && params.n_ctx == 1024;
+        const uint32_t max_ubatch = inkling_rollback ? 1024 : wide_lookup ? 512 : 256;
         if (params.n_ctx == 0 || (params.n_ctx > 4096 && !extended_flash) || params.n_batch > 4096 || params.n_ubatch > max_ubatch ||
-            params.n_seq_max != 1 || (params.n_rs_seq && !rollback_allowed && !inkling_rollback) || params.n_threads > 16 || params.n_threads_batch > 16 ||
+            params.n_seq_max != 1 || (params.n_rs_seq && !rollback_allowed && !inkling_rollback && !lookup_rollback) || params.n_threads > 16 || params.n_threads_batch > 16 ||
             params.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT || params.embeddings) {
             throw std::runtime_error("engine budget profile requires explicit ctx <= 4096, batch <= 4096, ubatch <= " +
                     std::to_string(max_ubatch) + ", one sequence, <=16 threads, no embeddings/unsupported rollback");

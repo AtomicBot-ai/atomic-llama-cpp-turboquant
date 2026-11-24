@@ -68,7 +68,7 @@
         // Advance cache history once per logical projection, even if its
         // leases are acquired in two groups. Hold both sets through completion.
         inkling_leases gates, downs;
-        const auto read_layout = join && ids->ne[1] == 4 ?
+        const auto read_layout = join && (ids->ne[1] == 4 || inkling_lookup_reads) ?
             llama_expert_read_layout::parallel_slices : llama_expert_read_layout::adjacent;
         const auto acquire = [&](const projection & p, llama_expert_store::lease * leases, size_t begin, size_t end) {
             llama_expert_timer timer(profile ? &profile->acquire_ns : nullptr);

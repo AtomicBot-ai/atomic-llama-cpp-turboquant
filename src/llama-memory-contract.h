@@ -80,6 +80,7 @@ struct llama_memory_contract : std::enable_shared_from_this<llama_memory_contrac
     bool stream_cpu_layers_on_cpu = false;
     bool stream_cuda_boundary_reduction = false;
     bool dflash2_target = false;
+    uint32_t inkling_lookup_depth = 0;
     bool inkling_dspark_target = false;
     bool flash_next_dflash3 = false;
     uint32_t flash_next_extended_ctx = 0;

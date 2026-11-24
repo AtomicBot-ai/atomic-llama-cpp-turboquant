@@ -53,8 +53,15 @@ common_chat_params common_chat_params_init_inkling(const common_chat_template & 
                                                    const autoparser::generation_params & inputs) {
     common_chat_params data;
 
-    data.prompt            = common_chat_template_direct_apply_impl(tmpl, inputs);
-    data.generation_prompt = common_chat_template_generation_prompt_impl(tmpl, inputs);
+    // Inkling templates use a native effort level instead of enable_thinking.
+    std::optional<json> context;
+    if (!inputs.enable_thinking && tmpl.caps.supports_reasoning_effort &&
+            !inputs.extra_context.contains("reasoning_effort")) {
+        context = json{{"reasoning_effort", "none"}};
+    }
+
+    data.prompt            = common_chat_template_direct_apply_impl(tmpl, inputs, std::nullopt, std::nullopt, context);
+    data.generation_prompt = common_chat_template_generation_prompt_impl(tmpl, inputs, std::nullopt, std::nullopt, context);
     data.format            = COMMON_CHAT_FORMAT_PEG_NATIVE;
     data.supports_thinking = true;
 

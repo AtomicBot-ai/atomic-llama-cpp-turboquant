@@ -394,6 +394,7 @@ struct common_params_speculative_ngram_cache {
 };
 
 struct common_params_speculative {
+    uint8_t inkling_lookup_min_matches = 0; // prior matches required for budgeted Metal lookup; zero disables it
     std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
 
     double synth_len = -1.0;

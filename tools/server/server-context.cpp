@@ -1581,6 +1581,11 @@ private:
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
         }
 
+        if (params_base.speculative.inkling_lookup_min_matches && (!spec || ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_RS ||
+                llama_n_rs_seq(ctx_tgt) < params_base.speculative.ngram_simple.size_m)) {
+            SRV_ERR("%s", "budgeted prompt lookup requires bounded target rollback\n");
+            return false;
+        }
         if ((common_atomic_dflash2_enabled(params_base) || common_atomic_inkling_dspark_enabled(params_base)) &&
                 (!spec || ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_RS ||
                  llama_n_rs_seq(ctx_tgt) < uint32_t(params_base.speculative.draft.n_max) ||
@@ -3242,7 +3247,7 @@ private:
                                 {"pressure_level", int(policy.level)}, {"policy_reason", int(policy.reason)},
                                 {"policy_decisions", policy.decisions}, {"headroom_bytes", policy.headroom},
                                 {"headroom_valid", int(policy.headroom_valid)}};
-                            if (common_atomic_inkling_dspark_enabled(params_base)) {
+                            if (common_atomic_inkling_dspark_enabled(params_base) || params_base.speculative.inkling_lookup_min_matches) {
                                 llama_expert_streaming_data experts {};
                                 if (llama_get_expert_streaming_stats(ctx_tgt, &experts)) {
                                     res->engine_memory["expert_logical_read_bytes"] = experts.logical_read_bytes;

@@ -2466,6 +2466,7 @@ struct common_speculative_impl_ngram_simple : public common_speculative_impl {
 
     // shared across all sequences
     common_ngram_simple_config config;
+    bool confirm_lookup;
 
     common_speculative_impl_ngram_simple(
             const common_params_speculative & params, uint32_t n_seq,
@@ -2473,6 +2474,7 @@ struct common_speculative_impl_ngram_simple : public common_speculative_impl {
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE, n_seq, params.ngram_simple.size_m)
         , params(params.ngram_simple)
         , config(config)
+        , confirm_lookup(params.inkling_lookup_min_matches == 2)
     {
         SPC_TRC("%s", "adding speculative implementation 'ngram-simple'\n");
         SPC_TRC("- size_n=%d, size_m=%d, min_hits=%d\n",
@@ -2498,6 +2500,7 @@ struct common_speculative_impl_ngram_simple : public common_speculative_impl {
             }
 
             *dp.result = common_ngram_simple_draft(config, *dp.prompt, dp.id_last);
+            if (confirm_lookup) { common_atomic_confirm_lookup(*dp.prompt, dp.id_last, config.size_ngram, *dp.result); }
         }
     }
 

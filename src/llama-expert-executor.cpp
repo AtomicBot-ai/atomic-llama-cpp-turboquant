@@ -68,6 +68,7 @@ struct llama_expert_executor::impl {
     ggml_backend_buffer_ptr prompt_down_workspace;
     const projection * prompt_down_ready = nullptr;
     uint64_t prompt_matrix_read_bytes = 0;
+    int64_t prompt_matrix_min_rows = 512;
     bool balanced_prompt = false;
     bool cache_prompt_tail = false;
     size_t wide_scheduler_floor = 0;
@@ -163,6 +164,7 @@ struct llama_expert_executor::impl {
     window_addresses_t inkling_addresses = nullptr;
     bool inkling_fused_ffn = false;
     bool inkling_pipeline = false;
+    bool inkling_lookup_reads = false;
     bool inkling_resident_first = false;
     ggml_tensor * (*inkling_situ)(ggml_context *, ggml_tensor *, float, float) = nullptr;
     bool (*inkling_host_bridge)(ggml_backend_t, ggml_tensor *) = nullptr;
@@ -227,8 +229,10 @@ struct llama_expert_executor::impl {
             inkling_addresses = reinterpret_cast<window_addresses_t>(
                 ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_expert_addresses_v1"));
             const char * prompt = std::getenv("LLAMA_EXPERIMENTAL_INKLING_PREFILL_MATRIX");
+            const bool compact_matrix = prompt && !std::strcmp(prompt, "compact");
+            if (compact_matrix) { prompt_matrix_min_rows = 128; }
             if (inkling_addresses && !source->packed_stride() && prompt &&
-                    (!std::strcmp(prompt, "1") || !std::strcmp(prompt, "2") || !std::strcmp(prompt, "3"))) {
+                    (compact_matrix || !std::strcmp(prompt, "1") || !std::strcmp(prompt, "2") || !std::strcmp(prompt, "3"))) {
                 prompt_host_base = reinterpret_cast<decltype(prompt_host_base)>(
                         ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_buffer_get_host_base"));
                 if (prompt_host_base) { prompt_matrix_source = source; }
@@ -289,8 +293,8 @@ struct llama_expert_executor::impl {
                 case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S: case GGML_TYPE_IQ3_XXS:
                     if (source->architecture() == "qwen4exp" && (metal || discrete.device)) { break; }
                     throw std::runtime_error("this expert format requires experimental Qwen4Exp Metal or CUDA streaming");
-                case GGML_TYPE_Q5_0:
-                    // Inkling's 1152-wide down projection uses 32-element quantization blocks.
+                case GGML_TYPE_Q5_0: // Inkling's 1152-wide down projection.
+                case GGML_TYPE_IQ1_S:
                     if (inkling_metal) { break; }
                     [[fallthrough]];
                 default: throw std::runtime_error("expert quantization is not qualified for streaming: " + std::string(w->name));
@@ -670,7 +674,7 @@ struct llama_expert_executor::impl {
             compute_cpu(p, dst, input, ids);
             return;
         }
-        if (prompt_matrix_source && !keep_vector && ids->ne[1] >= 512 && !tracing && !route_observer && !early && !preview) {
+        if (prompt_matrix_source && !keep_vector && ids->ne[1] >= prompt_matrix_min_rows && !tracing && !route_observer && !early && !preview) {
             if (routes && compute_inkling_prompt_matrix(p, dst, *routes)) {
                 ++n_projections;
                 return;
@@ -1339,6 +1343,7 @@ void llama_expert_executor::configure_acceleration(bool dflash_verify, bool prof
 }
 void llama_expert_executor::configure_resident_layers(const llama_model & model, uint32_t ubatch) {
     if (model.arch == LLM_ARCH_INKLING2_LOOP && model.memory_contract && pimpl->inkling_acceleration) {
+        pimpl->inkling_lookup_reads = model.memory_contract->inkling_lookup_depth != 0;
         // Native core banks do not need the address-table kernel used by streamed experts.
         const char * flag = std::getenv("LLAMA_EXPERIMENTAL_INKLING_CORE_BANKS");
         const bool prefer_full = flag && std::strcmp(flag, "full") == 0;

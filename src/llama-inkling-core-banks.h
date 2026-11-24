@@ -19,6 +19,7 @@ inline bool llama_inkling_native_expert_pair(const ggml_tensor * gate_up, const 
         case GGML_TYPE_Q4_K:    return down->type == GGML_TYPE_Q5_0;
         case GGML_TYPE_IQ3_S:   return down->type == GGML_TYPE_IQ4_NL;
         case GGML_TYPE_IQ2_XXS: return down->type == GGML_TYPE_IQ4_NL || down->type == GGML_TYPE_Q2_0;
+        case GGML_TYPE_IQ1_S:   return down->type == GGML_TYPE_Q2_0;
         default:                return false;
     }
 }

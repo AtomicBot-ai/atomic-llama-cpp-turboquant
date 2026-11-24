@@ -92,13 +92,27 @@ bool llama_atomic_is_inkling_dspark(const llama_model * draft) {
     return draft && draft->hparams.inkling2_dspark;
 }
 
-bool llama_atomic_inkling_dspark_enable(llama_model * target) {
+static bool inkling_metal_target(llama_model * target) {
     if (!target || target->arch != LLM_ARCH_INKLING2_LOOP || !target->memory_contract ||
             !target->expert_source || target->hparams.n_layer() != 48 || target->hparams.n_embd != 2304) {
         return false;
     }
     const auto device = target->dev_output();
-    if (!device || std::strcmp(ggml_backend_dev_name(device), "MTL0") != 0) { return false; }
+    return device && std::strcmp(ggml_backend_dev_name(device), "MTL0") == 0;
+}
+
+bool llama_atomic_inkling_lookup_enable(llama_model * target, uint32_t depth) {
+    if (!inkling_metal_target(target) || depth != 7 ||
+            (target->ftype() != LLAMA_FTYPE_MOSTLY_IQ2_XXS && target->ftype() != LLAMA_FTYPE_MOSTLY_IQ1_S) ||
+            target->memory_contract->ledger->snapshot(llama_memory_domain::host).requested != (size_t(4096) << 20)) {
+        return false;
+    }
+    target->memory_contract->inkling_lookup_depth = depth;
+    return true;
+}
+
+bool llama_atomic_inkling_dspark_enable(llama_model * target) {
+    if (!inkling_metal_target(target)) { return false; }
     target->memory_contract->inkling_dspark_target = true;
     return true;
 }

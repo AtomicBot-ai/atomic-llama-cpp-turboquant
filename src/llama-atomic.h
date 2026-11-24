@@ -28,6 +28,7 @@ LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target);
 LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target, bool flash_long_profile);
 LLAMA_API bool llama_atomic_dflash2_enable(struct llama_model * target, uint32_t flash_context);
 LLAMA_API bool llama_atomic_is_inkling_dspark(const struct llama_model * draft);
+LLAMA_API bool llama_atomic_inkling_lookup_enable(struct llama_model * target, uint32_t depth);
 LLAMA_API bool llama_atomic_inkling_dspark_enable(struct llama_model * target);
 LLAMA_API void llama_atomic_park_flash_draft(struct llama_context * draft);
 constexpr size_t llama_atomic_dflash2_slot_staging_bytes(uint32_t context) {
