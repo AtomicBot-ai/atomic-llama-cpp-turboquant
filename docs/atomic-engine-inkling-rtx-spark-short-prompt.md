@@ -1,0 +1,15 @@
+# RTX Spark short-prompt scratch reuse
+
+Set `LLAMA_EXPERIMENTAL_SPARK_SHORT_PROMPT_POOL=1` before starting the server to reuse charged CUDA scratch allocations during short Inkling prompt evaluation. Leave the variable unset or set it to `0` to use the original policy. This opt-in applies on Windows ARM64 to a managed unified device, NVFP4 Inkling fully offloaded to one GPU, all expert banks resident, one sequence and one output, microbatches of 2–511 tokens, and no evaluation callback. Speculative targets keep their existing policy.
+
+The scheduler already uses a split-local scratch pool for long prompts. On the original 57-token input, a CUDA trace counted 1,330 calls to cudaFree with about 269 ms cumulative host time. The short path can reuse a free block until the split ends. Its allocation ticket remains charged throughout. The existing pool trims retained blocks and retries under allocation pressure. This change touches prompt evaluation in `llama_context::process_ubatch`.
+
+## Qualification
+
+One warmed, uncached server ran at a time on an RTX Spark N1X with a 4,096-token context, Q4_0 KV, one slot and a 20,580 MiB engine cap. The release executable contains only the context change against `6115c7090`. On a same-executable off/on/on/off comparison with fixed input and continuation IDs, median client time to first token on the short requests went from **411 to 217 ms**. At 27, 54 and 57 input tokens, respectively, the medians went from 382 to 198 ms, 413 to 222 ms and 418 to 225 ms. At 1,536 input tokens the medians were 2605 and 2610 ms. Each arm has two independently launched processes.
+
+On six ordinary chat prompts at two seeds, the disabled control and pool-only release reached 43.66 and 42.77 committed decode updates/s. Median time to first token went from **502 to 297 ms**. Total wall time for the 12 requests was 165.6 s with the disabled control and 166.8 s with the release. The pooled rates count N−1 committed tokens per response. At a 1,536-token cap, 11/12 replies stopped naturally and 12/12 returned visible content. The visible answer, reasoning hash, finish reason and token count matched the control on 12/12 pairs. The live control was the combined study executable with both switches off. It reproduced all 12 frozen-engine answers.
+
+The full-vocabulary FP32 fingerprints matched the frozen path on 260 matched positions plus 65 positions in a repeated request. This includes the original path's warm-versus-fresh variation after a long prompt. The lower-budget control streamed expert weights at 16,484 MiB and matched all eight sampled positions with the switch on or off. Peak live ledger use was 17,978.1 MiB against 20,580 MiB. With DFlash2 and seven probabilistic proposals, the release reached 67.39 updates/s and reproduced 12/12 frozen DFlash2 responses. Full-suite verification, concurrent clients and a prolonged serving run were outside the qualification.
+
+[Measured rates, completion counts, fixed-position checks and binary hashes](atomic-engine-inkling-rtx-spark-short-prompt.json)
