@@ -303,6 +303,7 @@ struct llama_hparams {
     uint32_t dflash_conv_kernel_size = 0;
     uint32_t dflash_conv_group_size  = 0;
     uint32_t dflash_selector_rank    = 0;
+    bool dflash_post_softcap = false;
     uint32_t dflash_selector_top_k   = 0;
     bool inkling2_dspark = false;
     uint32_t lilicorr_hidden_size    = 0;

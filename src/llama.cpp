@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <stdexcept>
@@ -330,7 +331,9 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         }
         std::optional<llama_allocation_scope> allocation_scope;
         if (memory_contract) {
-            allocation_scope.emplace(memory_contract->ledger, llama_memory_category::weights, nullptr, memory_contract->discrete);
+            const auto category = memory_contract->discrete.unified && !memory_contract->stream_experts ?
+                llama_memory_category::drafter : llama_memory_category::weights;
+            allocation_scope.emplace(memory_contract->ledger, category, nullptr, memory_contract->discrete);
         }
         llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.load_mode,
             params.check_tensors, params.no_alloc, params.load_mtp, params.kv_overrides, params.tensor_buft_overrides,
@@ -384,6 +387,39 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             return {0, model_ptr.release()};
         }
 
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+        if (params.memory_budget_size && model->arch == LLM_ARCH_INKLING2_LOOP && model->devices.size() == 1) {
+            const auto dev = model->devices.front().dev;
+            if (std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "CUDA") == 0 &&
+                    std::strstr(ggml_backend_dev_description(dev), "RTX Spark N1X") != nullptr) {
+                const bool ad = model->name == "Inkling-2-Mini" && (ml.ftype == LLAMA_FTYPE_MOSTLY_IQ2_XXS ||
+                        ml.ftype == LLAMA_FTYPE_MOSTLY_IQ3_S || ml.ftype == LLAMA_FTYPE_MOSTLY_Q4_K_M);
+                const char * allow_nvfp4 = std::getenv("LLAMA_EXPERIMENTAL_SPARK_NVFP4");
+                const bool nvfp4 = ml.ftype == LLAMA_FTYPE_MOSTLY_NVFP4 && model->name == "Inkling 2 Mini" &&
+                        allow_nvfp4 && std::strcmp(allow_nvfp4, "1") == 0;
+                if ((!ad && !nvfp4) || model->hparams.n_layer() != 48 || model->hparams.n_embd != 2304) {
+                    throw std::runtime_error("RTX Spark streaming requires Inkling 2 Mini AD-IQ2_M, AD-IQ3_S, AD-Q4_K or the opt-in NVFP4 profile");
+                }
+                if (nvfp4) {
+                    for (int layer = 0; layer < 24; ++layer) {
+                        for (const char * projection : {"ffn_gate_up_exps", "ffn_down_exps"}) {
+                            const auto prefix = format("blk.%d.%s", layer, projection);
+                            const auto * weight = ml.require_tensor_meta(prefix + ".weight");
+                            if (weight->type != GGML_TYPE_NVFP4 ||
+                                    ml.get_tensor_meta((prefix + ".scale").c_str()) ||
+                                    ml.get_tensor_meta((prefix + ".input_scale").c_str())) {
+                                throw std::runtime_error("RTX Spark NVFP4 requires NVFP4 expert banks with inline block scales: " + prefix);
+                            }
+                        }
+                    }
+                }
+                memory_contract->discrete = {ggml_backend_dev_buffer_type(dev), ggml_backend_dev_host_buffer_type(dev), true};
+                memory_contract->device_list[0] = dev;
+                memory_contract->stream_experts = true;
+                allocation_scope.emplace(memory_contract->ledger, llama_memory_category::weights, nullptr, memory_contract->discrete);
+            }
+        }
+#endif
         if (!model->load_tensors(ml)) {
             return {-2, nullptr};
         }
@@ -482,6 +518,17 @@ struct llama_model * llama_model_load_from_file(
         struct llama_model_params params) {
     std::vector<std::string> splits = {};
     return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path_model, splits, /*file*/ nullptr, params);
+}
+
+llama_model * llama_load_spark_draft(const char * path, llama_model_params params,
+        const llama_memory_contract & target) {
+    auto contract = std::make_shared<llama_memory_contract>(target.ledger);
+    contract->discrete = target.discrete;
+    contract->device_list[0] = target.device_list[0];
+    params.devices = contract->device_list;
+    params.lazy_mode = LLAMA_LAZY_MODE_OFF;
+    std::vector<std::string> splits;
+    return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path, splits, nullptr, params, std::move(contract));
 }
 
 llama_model * llama_load_discrete_model(const char * path, llama_model_params params,

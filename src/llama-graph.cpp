@@ -3865,6 +3865,42 @@ ggml_tensor * llm_graph_context::build_attn(
 }
 
 // the iswa build_attn with the KQ mask and kv_rows given by the caller, which has to keep them in sync
+// Keep the complete KV sequence visible to every query. Only the expensive
+// per-head relative bias and Flash Attention workspaces are tiled.
+static ggml_tensor * build_inkling_tiled_attention(
+        const llm_graph_context & gctx, const llm_inkling_relative_tiles & rel,
+        ggml_tensor * q, ggml_tensor * k, ggml_tensor * v, ggml_tensor * mask,
+        ggml_tensor * zero_sinks, float scale, int il) {
+    auto * ctx = gctx.ctx0;
+    const int64_t heads = q->ne[1];
+    const int64_t nkv = rel.positions->ne[0];
+    ggml_tensor * output = nullptr;
+    for (int64_t first = 0; first < q->ne[2]; first += 512) {
+        const int64_t rows = std::min<int64_t>(512, q->ne[2] - first);
+        auto tile3 = [&](ggml_tensor * t) {
+            return ggml_view_3d(ctx, t, t->ne[0], t->ne[1], rows, t->nb[1], t->nb[2], first*t->nb[2]);
+        };
+        auto tile2 = [&](ggml_tensor * t) {
+            return ggml_view_2d(ctx, t, t->ne[0], rows, t->nb[1], first*t->nb[1]);
+        };
+        auto * table = ggml_mul_mat(ctx, rel.weights, tile3(rel.queries));
+        table = ggml_sub(ctx, table, ggml_reshape_3d(ctx, tile2(rel.sink_logits), 1, heads, rows));
+        table = ggml_cont(ctx, ggml_permute(ctx, table, 1, 0, 2, 3));
+        auto * bias = ggml_get_rows(ctx, table, tile2(rel.positions));
+        bias = ggml_cont(ctx, ggml_permute(ctx, bias, 2, 0, 1, 3));
+        auto * base = tile2(mask);
+        if (base->type != GGML_TYPE_F32) {
+            base = ggml_cast(ctx, base, GGML_TYPE_F32);
+        }
+        GGML_ASSERT(bias->ne[0] == nkv && bias->ne[1] == rows);
+        auto * combined = ggml_cast(ctx, ggml_add(ctx, bias, base), GGML_TYPE_F16);
+        auto * part = gctx.build_attn_mha(tile3(q), k, v, nullptr, combined, nullptr, zero_sinks, nullptr, 0, scale, il);
+        output = output ? ggml_concat(ctx, output, part, 1) : part;
+        ggml_build_forward_expand(gctx.gf, output);
+    }
+    return output;
+}
+
 static ggml_tensor * build_attn_iswa_impl(
         const llm_graph_context & gctx,
         llm_graph_input_attn_kv_iswa * inp,
@@ -3881,7 +3917,8 @@ static ggml_tensor * build_attn_iswa_impl(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il,
-        const llm_inkling_prefill_attention * prefill = nullptr) {
+        const llm_inkling_prefill_attention * prefill = nullptr,
+        const llm_inkling_relative_tiles * tiles = nullptr) {
     ggml_context * ctx0 = gctx.ctx0;
     ggml_cgraph  * gf   = gctx.gf;
 
@@ -3948,7 +3985,9 @@ static ggml_tensor * build_attn_iswa_impl(
     ggml_tensor * v = use_kv_cur ? v_cur : mctx_cur->get_v(ctx0, il);
 
     ggml_tensor * cur = nullptr;
-    if (prefill && prefill->create) {
+    if (tiles) {
+        cur = build_inkling_tiled_attention(gctx, *tiles, q, k, v, kq_mask, sinks, kq_scale, il);
+    } else if (prefill && prefill->create) {
         cur = prefill->create(ctx0, q, k, v, kq_mask, kq_scale);
         if (cur && ggml_backend_supports_op(prefill->backend, cur)) {
             ggml_backend_sched_set_tensor_backend(gctx.sched, cur, prefill->backend);
@@ -4598,7 +4637,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * sinks,
             float     kq_scale,
             int       il,
-            bool      prebuilt_mask) const {
+            bool      prebuilt_mask,
+        const llm_inkling_relative_tiles * tiles) const {
     const bool is_swa = hparams.is_swa(il);
 
     auto * inp_attn = inp->get_attn();
@@ -4608,6 +4648,11 @@ ggml_tensor * llm_graph_context::build_attn(
     // TODO: support kv_rows - fill the distances over the kv_rows cell lists and pass the rows to build_attn_mha,
     //       needs a kv_rows flash attention with a per-head mask (CUDA has none)
     GGML_ASSERT(attn_mask.rows == nullptr);
+
+    if (tiles) {
+        return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur,
+                nullptr, attn_mask.raw, nullptr, sinks, nullptr, kq_scale, il, nullptr, tiles);
+    }
 
     if (prebuilt_mask) {
         GGML_ASSERT(cparams.flash_attn && kq_b->type == GGML_TYPE_F16);
@@ -4808,7 +4853,24 @@ void llm_graph_context::build_h_nextn_dev() const {
     // the device buffer is only enabled for the unmasked extraction, which has a row per batch token
     GGML_ASSERT(src->ne[0] == h_nextn_dev->ne[0] && ggml_nrows(src) == n_tokens);
 
-    auto inp = std::make_unique<llm_graph_input_batch_idxs>();
+    // Verification may reject a suffix. Keep the draft head's anchor features
+    // by position across injection chunks, including the accepted boundary.
+    class spark_state_positions final : public llm_graph_input_batch_idxs {
+    public:
+        explicit spark_state_positions(int64_t capacity) : capacity(capacity) {}
+        void set_input(const llama_ubatch * batch) override {
+            GGML_ASSERT(ggml_backend_buffer_is_host(idxs->buffer));
+            auto * out = static_cast<int64_t *>(idxs->data);
+            for (uint32_t i = 0; i < batch->n_tokens; ++i) { out[i] = batch->pos[i] % capacity; }
+        }
+        const int64_t capacity;
+    };
+    std::unique_ptr<llm_graph_input_batch_idxs> inp;
+    if (model.hparams.inkling2_dspark && cparams.ctx_state_src) {
+        inp = std::make_unique<spark_state_positions>(h_nextn_dev->ne[1]);
+    } else {
+        inp = std::make_unique<llm_graph_input_batch_idxs>();
+    }
 
     inp->idxs = ggml_new_tensor_1d(ctx0, GGML_TYPE_I64, n_tokens);
     ggml_set_input(inp->idxs);

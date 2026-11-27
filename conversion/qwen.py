@@ -868,6 +868,23 @@ class Qwen3_5MoeTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
 class DFlashModel(Qwen3Model):
     model_arch = gguf.MODEL_ARCH.DFLASH
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inkling_vocab_size = 0
+        if self.target_model_dir is not None:
+            with open(self.target_model_dir / "config.json", encoding="utf-8") as f:
+                target = json.load(f)
+            if target.get("model_type") == "inkling2_loop" and self.hparams.get("architectures") == ["DFlash2DraftModel"]:
+                hp = target["text_config"]
+                loop = hp["loop_config"]
+                visits = hp["num_hidden_layers"] + (loop["core_end"] - loop["core_start"]) * (loop["num_passes"] - 1)
+                ids = self.hparams["dflash_config"]["target_layer_ids"]
+                if not ids or ids != sorted(set(ids)) or ids[0] < 0 or ids[-1] != visits:
+                    raise ValueError("Inkling DFlash2 requires visit indices ending at the target final norm")
+                self.inkling_vocab_size = hp["unpadded_vocab_size"]
+                if not 0 < self.inkling_vocab_size <= hp["vocab_size"] == self.hparams["vocab_size"]:
+                    raise ValueError("Inkling DFlash2 target and draft vocabulary sizes are incompatible")
+
     def set_vocab(self):
         if self.target_model_dir is None:
             raise ValueError(
@@ -886,7 +903,12 @@ class DFlashModel(Qwen3Model):
         target_arch = get_model_architecture(target_hparams, ModelType.TEXT)
         target_cls = get_model_class(target_arch)
 
-        if target_cls is not type(self):
+        if self.inkling_vocab_size:
+            from .inkling2 import Inkling2Model
+            tokens, types, pre = self.get_vocab_base()
+            Inkling2Model.write_vocab(self, tokens[:self.inkling_vocab_size], types[:self.inkling_vocab_size],
+                                      pre, target_hparams["eos_token_id"])
+        elif target_cls is not type(self):
             if target_arch == "NemotronHForCausalLM":
                 setattr(self, "is_moe", "num_experts_per_tok" in target_hparams)
             target_cls.set_vocab(self)  # ty: ignore[missing-attribute]
@@ -940,9 +962,17 @@ class DFlashModel(Qwen3Model):
         if embedding_scale is not None:
             self.gguf_writer.add_embedding_scale(float(embedding_scale))
 
+        mode = dflash_config.get("selector_softcap_mode", "before_correction")
+        if mode not in ("before_correction", "after_correction"):
+            raise ValueError(f"Unsupported DFlash selector softcap mode: {mode}")
+        if mode == "after_correction":
+            self.gguf_writer.add_bool("dflash.selector_softcap_after_correction", True)
+        if self.inkling_vocab_size:
+            self.gguf_writer.add_vocab_size_unpadded(self.inkling_vocab_size)
+
         target_layer_ids = dflash_config.get("target_layer_ids", self.hparams.get("target_layer_ids", []))
         if target_layer_ids:
-            extract_layer_ids = [i + 1 for i in target_layer_ids]
+            extract_layer_ids = target_layer_ids if self.inkling_vocab_size else [i + 1 for i in target_layer_ids]
             self.gguf_writer.add_target_layers(extract_layer_ids)
 
         use_sliding_window = self.hparams.get("use_sliding_window", False) or dflash_config.get("use_swa", False)
@@ -1062,6 +1092,8 @@ class DFlashModel(Qwen3Model):
             "model.candidate_selector.successor_codebook",
         ):
             name += ".weight"
+            if self.inkling_vocab_size:
+                data_torch = data_torch[:self.inkling_vocab_size]
 
         yield from super().modify_tensors(data_torch, name, bid)
 

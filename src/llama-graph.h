@@ -780,6 +780,13 @@ struct llm_inkling_prefill_attention {
     ggml_tensor * (*create)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor *, ggml_tensor *, float) = nullptr;
 };
 
+struct llm_inkling_relative_tiles {
+    ggml_tensor * weights;
+    ggml_tensor * queries;
+    ggml_tensor * sink_logits;
+    ggml_tensor * positions;
+};
+
 // hybrid iswa memory with a per-head attention bias that depends on the distance from the query to the cell (Inkling)
 // the KQ masks are always dense (rows == nullptr) and are filled from the same cells as the distances, so that the bias
 // gathered by distance lines up with the mask
@@ -1577,7 +1584,8 @@ struct llm_graph_context {
             ggml_tensor * sinks, // [n_head_q]
                   float   kq_scale,
                     int   il,
-                   bool   prebuilt_mask = false) const;
+                   bool   prebuilt_mask = false,
+                   const llm_inkling_relative_tiles * tiles = nullptr) const;
 
     //
     // pooling

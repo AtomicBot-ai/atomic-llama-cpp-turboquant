@@ -11,6 +11,7 @@ llama_model * common_atomic_discrete_load(const common_params & params, llama_mo
 void common_atomic_select_qwen35_profile(common_params & params);
 bool common_atomic_flash_next_dflash3_profile(const common_params & params);
 bool common_atomic_dflash2_enabled(const common_params & params);
+bool common_atomic_spark_dflash2_enabled(const common_params & params);
 bool common_atomic_inkling_dspark_enabled(const common_params & params);
 #ifdef GGML_USE_METAL
 void common_atomic_select_inkling_metal_profile(common_params & params);

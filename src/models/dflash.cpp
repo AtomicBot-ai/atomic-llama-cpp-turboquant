@@ -46,6 +46,8 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
         variant = VARIANT_DSPARK;
     } else if (has_selector) {
         variant = VARIANT_DFLASH2;
+        ml.get_key(LLM_KV_DFLASH_SELECTOR_POST_SOFTCAP, hparams.dflash_post_softcap, false);
+        ml.get_key(LLM_KV_VOCAB_SIZE_UNPADDED, hparams.n_vocab_unpadded, false);
     } else if (has_lilicorr) {
         variant = VARIANT_LILICORR;
         load_hparams_lilicorr(ml);
@@ -381,6 +383,12 @@ ggml_tensor * llama_model_dflash::graph_base::build_layers(ggml_tensor * inp_tok
     const float kq_scale = hparams.f_attention_scale != 0.0f ? hparams.f_attention_scale : 1.0f/sqrtf(float(n_embd_head));
 
     ggml_tensor * inpL = ggml_get_rows(ctx0, get_tok_embd(*this, model), inp_tokens);
+    if (hparams.n_vocab_unpadded && model.dflash_selector_hidden && !model.tok_embd && cparams.ctx_other) {
+        const auto * target = llama_get_model(cparams.ctx_other);
+        if (target->arch == LLM_ARCH_INKLING2_LOOP) {
+            inpL = build_norm(inpL, target->tok_norm, nullptr, LLM_NORM_RMS, -1);
+        }
+    }
     if (hparams.f_embedding_scale != 0.0f) {
         inpL = ggml_scale(ctx0, inpL, hparams.f_embedding_scale);
     }
@@ -489,7 +497,10 @@ ggml_tensor * llama_model_dflash::graph_base::build_layers(ggml_tensor * inp_tok
 }
 
 ggml_tensor * llama_model_dflash::graph_base::build_logits(ggml_tensor * cur) {
-    const auto [output, output_s] = get_lm_head(*this, model);
+    auto [output, output_s] = get_lm_head(*this, model);
+    if (hparams.n_vocab_unpadded && model.dflash_selector_hidden && output->ne[1] > hparams.n_vocab_unpadded) {
+        output = ggml_view_2d(ctx0, output, output->ne[0], hparams.n_vocab_unpadded, output->nb[1], 0);
+    }
     cur = build_lora_mm(output, cur, output_s);
 
     // DFlash2 feeds these logits to the selector, so they need the target's output
@@ -498,7 +509,7 @@ ggml_tensor * llama_model_dflash::graph_base::build_logits(ggml_tensor * cur) {
         if (hparams.f_logit_scale != 0.0f) {
             cur = ggml_scale(ctx0, cur, hparams.f_logit_scale);
         }
-        if (hparams.f_final_logit_softcapping > 0.0f) {
+        if (!hparams.dflash_post_softcap && hparams.f_final_logit_softcapping > 0.0f) {
             cur = ggml_scale(ctx0, cur, 1.0f / hparams.f_final_logit_softcapping);
             cur = ggml_tanh(ctx0, cur);
             cur = ggml_scale(ctx0, cur, hparams.f_final_logit_softcapping);

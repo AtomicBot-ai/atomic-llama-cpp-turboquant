@@ -1,4 +1,5 @@
 #include "models.h"
+#include "../llama-atomic.h"
 #include "../llama-expert-executor.h"
 #include "../llama-memory-hybrid-iswa.h"
 
@@ -183,6 +184,27 @@ ggml_tensor * llama_model_inkling2::graph::clip(ggml_tensor * cur, ggml_tensor *
 
 // attention over the depth: mix the earlier block outputs and cur with learned queries
 ggml_tensor * llama_model_inkling2::graph::mix(const std::vector<ggml_tensor *> & blocks, ggml_tensor * cur, ggml_tensor * query) {
+    if (depth_kernel && inkling_dense_backend) {
+        if (auto * output = depth_kernel(ctx0, query, cur, blocks.data(), blocks.size())) {
+            ggml_backend_sched_set_tensor_backend(sched, output, inkling_dense_backend);
+            return output;
+        }
+    }
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    if (target_pack && query->type == GGML_TYPE_F32 && ggml_is_contiguous(query) &&
+            ggml_is_matrix(query) && query->ne[0] == 2304) {
+        if (auto * packed = target_pack(ctx0, cur, blocks.data(), blocks.size())) {
+            ggml_backend_sched_set_tensor_backend(sched, packed, inkling_dense_backend);
+            // Width one needs no query repeat. Keep the original RMS and transpose operations.
+            auto * rows = ggml_view_2d(ctx0, packed, n_embd, blocks.size() + 1, n_embd*sizeof(float), 0);
+            rows = ggml_rms_norm(ctx0, rows, 1e-6f);
+            auto * cols = ggml_cont(ctx0, ggml_transpose(ctx0, rows));
+            auto * scores = ggml_mul_mat(ctx0, rows, query);
+            scores = ggml_soft_max_ext(ctx0, scores, nullptr, 1.0f/sqrtf(n_embd), 0.0f);
+            return ggml_mul_mat(ctx0, cols, scores);
+        }
+    }
+#endif
     ggml_tensor * states = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
     for (ggml_tensor * block : blocks) {
         states = ggml_concat(ctx0, ggml_reshape_3d(ctx0, block, n_embd, 1, n_tokens), states, 1);
@@ -206,7 +228,7 @@ ggml_tensor * llama_model_inkling2::graph::convolve(
         ggml_tensor * state,
         ggml_tensor * history,
         llm_graph_input_rs * inp,
-        int64_t offset) {
+        int64_t offset, bool target_site) {
     const int64_t n_conv       = hparams.n_shortconv_l_cache;
     const int64_t n_channels   = cur->ne[0];
     const int64_t n_seq_tokens = ubatch.n_seq_tokens;
@@ -214,6 +236,23 @@ ggml_tensor * llama_model_inkling2::graph::convolve(
 
     ggml_tensor * past = ggml_view_3d(ctx0, history, n_conv - 1, n_channels, n_seqs, history->nb[1], history->nb[2], offset*history->nb[1]);
 
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    if (target_conv && target_site && n_conv == 4 && n_seq_tokens == 1 && n_seqs == 1 &&
+            state->type == GGML_TYPE_F32) {
+        if (auto * packed = target_conv(ctx0, past, cur, weight, dynamic)) {
+            ggml_backend_sched_set_tensor_backend(sched, packed, inkling_dense_backend);
+            // State is graph-owned. Preserve the existing cell destination and order the copy
+            // after the entire kernel has finished reading the old history.
+            const size_t cell_offset = inp->mctx->get_head()*state->nb[1] + offset*3*sizeof(float);
+            auto * next = ggml_view_1d(ctx0, packed, 3*n_channels, n_channels*sizeof(float));
+            auto * cell = ggml_view_1d(ctx0, state, 3*n_channels, cell_offset);
+            ggml_build_forward_expand(gf, ggml_cpy(ctx0, next, cell));
+            return ggml_view_2d(ctx0, packed, n_channels, 1, n_channels*sizeof(float), 0);
+        }
+    }
+#else
+    GGML_UNUSED(target_site);
+#endif
     ggml_tensor * x = ggml_transpose(ctx0, ggml_reshape_3d(ctx0, cur, n_channels, n_seq_tokens, n_seqs));
     x = ggml_concat(ctx0, past, x, 0);
 
@@ -252,7 +291,18 @@ ggml_tensor * llama_model_inkling2::graph::convolve(
 
 // mix a cross-pass message into a looped layer input: (1 - forget)*cur + gain*message, both gated on cur and message
 ggml_tensor * llama_model_inkling2::graph::control(ggml_tensor * cur, ggml_tensor * message, const loop_layer & loop, int ctrl) {
-    ggml_tensor * gate = ggml_concat(ctx0, ggml_rms_norm(ctx0, cur, 1e-6f), ggml_rms_norm(ctx0, message, 1e-6f), 0);
+    ggml_tensor * gate = nullptr;
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    if (target_pack && cur->type == GGML_TYPE_F32 && message->type == GGML_TYPE_F32 &&
+            cur->ne[0] == 2304 && ggml_nelements(cur) == 2304 && ggml_are_same_shape(cur, message) &&
+            ggml_is_contiguous(cur) && ggml_is_contiguous(message)) {
+        // One two-row normalization preserves the independent per-row RMS reductions.
+        gate = ggml_reshape_2d(ctx0, ggml_rms_norm(ctx0, ggml_concat(ctx0, cur, message, 1), 1e-6f), 4608, 1);
+    }
+#endif
+    if (!gate) {
+        gate = ggml_concat(ctx0, ggml_rms_norm(ctx0, cur, 1e-6f), ggml_rms_norm(ctx0, message, 1e-6f), 0);
+    }
     gate = build_lora_mm(loop.ctrl_down[ctrl], gate);
 
     ggml_tensor * gain   = build_lora_mm(loop.ctrl_gain[ctrl],   gate);
@@ -348,9 +398,9 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int il, int ip, ggml_tens
     {
         ggml_tensor * Qcur = build_lora_mm(layer.wq, inputs[0]);
         ggml_tensor * Kcur = convolve(build_lora_mm(layer.wk, inputs[1]), layer.attn_k_conv,
-                is_swa ? nullptr : build_lora_mm(layer.attn_k_conv_proj, inputs[1]), state, history, recr, 0);
+                is_swa ? nullptr : build_lora_mm(layer.attn_k_conv_proj, inputs[1]), state, history, recr, 0, true);
         ggml_tensor * Vcur = convolve(build_lora_mm(layer.wv, inputs[2]), layer.attn_v_conv,
-                is_swa ? nullptr : build_lora_mm(layer.attn_v_conv_proj, inputs[2]), state, history, recr, n_embd_k_gqa);
+                is_swa ? nullptr : build_lora_mm(layer.attn_v_conv_proj, inputs[2]), state, history, recr, n_embd_k_gqa, true);
         ggml_tensor * Rcur = build_lora_mm(layer.attn_rel, inputs[0]);
 
         Qcur = clip(ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens), layer.attn_q_clip, hparams.f_qk_clip);
@@ -376,31 +426,38 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int il, int ip, ggml_tens
         ggml_tensor * sinks = build_lora_mm(layer.attn_sink_proj, inputs[0]);
 
         // project r on the bias table first, then gather by distance: only the gathered bias is n_kv x n_tokens x n_head
-        ggml_tensor * table = ggml_mul_mat(ctx0, ggml_pad(ctx0, layer.attn_rel_bias, 0, 1, 0, 0), Rcur);
-
+        ggml_tensor * rel_weights = ggml_pad(ctx0, layer.attn_rel_bias, 0, 1, 0, 0);
+        const bool tile_queries = n_tokens > 1024 && cparams.flash_attn && ubatch.n_seqs == 1 &&
+                n_stream == 1 && llama_atomic_spark_nvfp4_target(&model);
+        llm_inkling_relative_tiles tiles{rel_weights, Rcur, sinks, rel_pos};
         ggml_tensor * kq_b = nullptr;
-        if (inkling_dense_backend && rel_mask_kernel) {
-            const auto & mask = is_swa ? attn->self_attn_mask_swa : attn->self_attn_mask;
-            if (!mask.rows) { kq_b = rel_mask_kernel(ctx0, table, sinks, rel_pos, mask.raw); }
-        }
-        const bool prebuilt_mask = kq_b != nullptr;
-        if (prebuilt_mask) {
-            ggml_backend_sched_set_tensor_backend(sched, kq_b, inkling_dense_backend);
-        } else {
-            // Shift the logits by the per-query sink logit, using a zero sink.
-            table = ggml_sub(ctx0, table, ggml_reshape_3d(ctx0, sinks, 1, n_head, n_tokens));
-            table = ggml_cont(ctx0, ggml_permute(ctx0, table, 1, 0, 2, 3));
-            kq_b = ggml_get_rows(ctx0, table, rel_pos);
-            kq_b = ggml_reshape_4d(ctx0, kq_b, n_head, n_kv, n_tokens/n_stream, n_stream);
-            kq_b = ggml_cont(ctx0, ggml_permute(ctx0, kq_b, 2, 0, 1, 3));
-            cb(kq_b, "kq_b", il);
+        bool prebuilt_mask = false;
+        if (!tile_queries) {
+            ggml_tensor * table = ggml_mul_mat(ctx0, rel_weights, Rcur);
+
+            if (inkling_dense_backend && rel_mask_kernel) {
+                const auto & mask = is_swa ? attn->self_attn_mask_swa : attn->self_attn_mask;
+                if (!mask.rows) { kq_b = rel_mask_kernel(ctx0, table, sinks, rel_pos, mask.raw); }
+            }
+            prebuilt_mask = kq_b != nullptr;
+            if (prebuilt_mask) {
+                ggml_backend_sched_set_tensor_backend(sched, kq_b, inkling_dense_backend);
+            } else {
+                // Shift the logits by the per-query sink logit, using a zero sink.
+                table = ggml_sub(ctx0, table, ggml_reshape_3d(ctx0, sinks, 1, n_head, n_tokens));
+                table = ggml_cont(ctx0, ggml_permute(ctx0, table, 1, 0, 2, 3));
+                kq_b = ggml_get_rows(ctx0, table, rel_pos);
+                kq_b = ggml_reshape_4d(ctx0, kq_b, n_head, n_kv, n_tokens/n_stream, n_stream);
+                kq_b = ggml_cont(ctx0, ggml_permute(ctx0, kq_b, 2, 0, 1, 3));
+                cb(kq_b, "kq_b", il);
+            }
         }
 
         sinks = ggml_fill(ctx0, ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_head), 0.0f);
 
         cur = build_attn(inp,
                 nullptr, nullptr, nullptr,
-                Qcur, Kcur, Vcur, kq_b, sinks, 1.0f/sqrtf(n_embd_head), il, prebuilt_mask);
+                Qcur, Kcur, Vcur, kq_b, sinks, 1.0f/sqrtf(n_embd_head), il, prebuilt_mask, tile_queries ? &tiles : nullptr);
 
         cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, build_lora_mm(layer.wqkv_gate, inputs[0])));
         cur = convolve(build_lora_mm(layer.wo, cur), layer.attn_post_conv, nullptr, state, history, recr, 2*n_embd_k_gqa);
@@ -443,7 +500,7 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int il, int ip, ggml_tens
             layer.ffn_gate_exps_s,
             layer.ffn_down_exps_s);
 
-    cur = convolve(cur, layer.ffn_post_conv, nullptr, state, history, recr, 2*n_embd_k_gqa + n_embd);
+    cur = convolve(cur, layer.ffn_post_conv, nullptr, state, history, recr, 2*n_embd_k_gqa + n_embd, true);
     cb(cur, "ffn_out", il);
 
     cur = ggml_add(ctx0, ffn_inp, cur);

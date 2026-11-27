@@ -2524,7 +2524,7 @@ struct llama_model_inkling2 : public llama_model_base {
                 ggml_tensor * state,
                 ggml_tensor * history,
                 llm_graph_input_rs * inp,
-                int64_t offset);
+                int64_t offset, bool target_site = false);
         ggml_tensor * control(ggml_tensor * cur, ggml_tensor * message, const loop_layer & loop, int ctrl);
 
     protected:
@@ -2546,6 +2546,11 @@ struct llama_model_inkling2 : public llama_model_base {
         ggml_tensor * inp_out_ids = nullptr;
         ggml_tensor * tau         = nullptr; // log-scaled positions
         ggml_backend_t inkling_dense_backend = nullptr;
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+        ggml_tensor * (*target_pack)(ggml_context *, ggml_tensor *, ggml_tensor * const *, size_t) = nullptr;
+        ggml_tensor * (*target_conv)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor *, ggml_tensor *) = nullptr;
+#endif
+        ggml_tensor * (*depth_kernel)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor * const *, size_t) = nullptr;
         ggml_tensor * (*control_kernel)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor *, ggml_tensor *) = nullptr;
         ggml_tensor * (*clip_kernel)(ggml_context *, ggml_tensor *, ggml_tensor *, float) = nullptr;
         ggml_tensor * (*rel_mask_kernel)(ggml_context *, ggml_tensor *, ggml_tensor *, ggml_tensor *, ggml_tensor *) = nullptr;

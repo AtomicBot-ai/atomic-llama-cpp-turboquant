@@ -595,6 +595,10 @@ struct server_slot {
         generated_token_probs.push_back(token);
     }
 
+    // A resident Spark verification graph can evaluate a complete block at
+    // the generation limit. Only the live prefix is sampled and committed.
+    bool spark_fixed_verify = false;
+
     int get_n_draft_max() const {
         GGML_ASSERT(task);
 
@@ -607,7 +611,7 @@ struct server_slot {
         //       also, need to leave space for 1 extra token to allow context shifts
         int n_draft_max = n_ctx - prompt.n_tokens() - 2;
 
-        if (n_remaining() > 0) {
+        if (n_remaining() > 0 && !(spark_fixed_verify && !use_spec_rejection() && n_draft_max >= 7)) {
             n_draft_max = std::min(n_draft_max, n_remaining() - 1);
         }
 
@@ -1114,6 +1118,7 @@ private:
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
     common_speculative_ptr spec;
+    bool spark_block_verify = false;
     std::unique_ptr<common_atomic_dflash_cost> atomic_dflash_cost;
 
     bool add_bos_token = true;
@@ -1162,6 +1167,7 @@ private:
     void destroy() {
         prefix_checkpoints.reset();
         spec.reset();
+        spark_block_verify = false;
         atomic_dflash_cost.reset();
         spec_init.reset();
 
@@ -1364,7 +1370,17 @@ private:
             return false;
         }
 
+        // Release both owners before retrying. Draft rollback buffers belong to the target context.
+        auto retry_without_draft = [&]() {
+            auto compact = params;
+            compact.speculative = {};
+            destroy();
+            SRV_WRN("%s", "RTX Spark budget cannot admit DSpark, loading target only\n");
+            return load_model(compact);
+        };
+
         if (ctx_tgt == nullptr) {
+            if (llama_atomic_spark_draft_over_budget(model_tgt, nullptr, true)) { return retry_without_draft(); }
             SRV_ERR("failed to create_context with model '%s'\n", params_base.model.path.c_str());
             return false;
         }
@@ -1410,6 +1426,9 @@ private:
                 model_dft = spec_init->model();
                 ctx_dft   = spec_init->context();
 
+                if (params_base.engine_budget && llama_atomic_spark_draft_over_budget(model_tgt, ctx_tgt, !ctx_dft)) {
+                    return retry_without_draft();
+                }
                 if (has_draft && model_dft == nullptr) {
                     SRV_ERR("failed to load draft model, '%s'\n", params_dft.model.path.c_str());
                     return false;
@@ -1420,6 +1439,7 @@ private:
                     return false;
                 }
 
+                if (params_base.engine_budget) { llama_atomic_spark_draft_ready(model_tgt, ctx_tgt); }
                 params_base.speculative.draft.ctx_tgt = ctx_tgt;
                 params_base.speculative.draft.ctx_dft = ctx_dft;
             }
@@ -1560,8 +1580,17 @@ private:
         if (ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
             try {
                 const char * adaptive = std::getenv("LLAMA_EXPERIMENTAL_DFLASH2_ADAPTIVE");
-                params_base.speculative.draft.atomic_adaptive_dflash =
-                    adaptive && std::strcmp(adaptive, "1") == 0 && common_atomic_dflash2_enabled(params_base);
+                const char * block = std::getenv("LLAMA_EXPERIMENTAL_SPARK_BLOCK_VERIFY");
+                spark_block_verify = block && std::strcmp(block, "1") == 0 &&
+                    common_atomic_spark_dflash2_enabled(params_base) && params_base.speculative.draft.probabilistic;
+                if (spark_block_verify) {
+                    SRV_INF("%s", "Spark DFlash2 block verification enabled\n");
+                }
+                auto & draft_config = params_base.speculative.draft;
+                draft_config.spark_sampled_depth = adaptive && std::strcmp(adaptive, "1") == 0 &&
+                    common_atomic_spark_dflash2_enabled(params_base);
+                draft_config.atomic_adaptive_dflash = draft_config.spark_sampled_depth ||
+                    (adaptive && std::strcmp(adaptive, "1") == 0 && common_atomic_dflash2_enabled(params_base));
                 spec.reset(common_speculative_init(params_base.speculative, params_base.n_parallel));
                 if (spec && params_base.speculative.draft.atomic_adaptive_dflash) {
                     const char * timed = std::getenv("LLAMA_EXPERIMENTAL_DFLASH2_TIMED_COST");
@@ -1581,7 +1610,8 @@ private:
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
         }
 
-        if ((common_atomic_dflash2_enabled(params_base) || common_atomic_inkling_dspark_enabled(params_base)) &&
+        if ((common_atomic_dflash2_enabled(params_base) || common_atomic_inkling_dspark_enabled(params_base) ||
+                common_atomic_spark_dflash2_enabled(params_base)) &&
                 (!spec || ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_RS ||
                  llama_n_rs_seq(ctx_tgt) < uint32_t(params_base.speculative.draft.n_max) ||
                  ctx_dft_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART)) {
@@ -1607,6 +1637,12 @@ private:
 
             slot.id      = i;
             slot.ctx_tgt = ctx_tgt;
+            if (spec && ctx_dft && !params_base.speculative.has_synth() && llama_atomic_spark_nvfp4_target(model_tgt) && llama_n_rs_seq(ctx_tgt) >= 7 &&
+                    llama_atomic_is_inkling_dspark(llama_get_model(ctx_dft)) &&
+                    common_speculative_n_max(spec.get()) == 7 && params_base.n_parallel == 1) {
+                const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_VERIFY");
+                slot.spark_fixed_verify = mode && std::strcmp(mode, "1") == 0;
+            }
             slot.ctx_dft = ctx_dft;
             slot.mem.init(ctx_tgt, ctx_dft);
             slot.spec    = spec.get();
@@ -3242,7 +3278,7 @@ private:
                                 {"pressure_level", int(policy.level)}, {"policy_reason", int(policy.reason)},
                                 {"policy_decisions", policy.decisions}, {"headroom_bytes", policy.headroom},
                                 {"headroom_valid", int(policy.headroom_valid)}};
-                            if (common_atomic_inkling_dspark_enabled(params_base)) {
+                            if (common_atomic_inkling_dspark_enabled(params_base) || common_atomic_spark_dflash2_enabled(params_base)) {
                                 llama_expert_streaming_data experts {};
                                 if (llama_get_expert_streaming_stats(ctx_tgt, &experts)) {
                                     res->engine_memory["expert_logical_read_bytes"] = experts.logical_read_bytes;
@@ -4791,10 +4827,10 @@ private:
         // yield to the queue, so we can still handle metrics tasks while decoding
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
-        // In the budgeted single-slot profile, time only whole greedy target batches.
+        // In the budgeted single-slot profile, time only whole target verification batches.
         const bool measure_verify = atomic_dflash_cost && has_output && off == 0 && batch.view.size() == batch.size() &&
                 !batch.tokens[off].is_prompt && batch.slot_batched && batch.slot_batched->state == SLOT_STATE_GENERATING &&
-                batch.slot_batched->task->params.sampling.temp == 0.0f &&
+                (params_base.speculative.draft.spark_sampled_depth || batch.slot_batched->task->params.sampling.temp == 0.0f) &&
                 (batch.slot_batched->n_remaining() == -1 ||
                  batch.slot_batched->n_remaining() > params_base.speculative.draft.n_max);
         int64_t verify_us = 0;
@@ -5086,6 +5122,11 @@ private:
                 // drafters that fill no distribution fall back here
                 const bool use_rejection = slot.use_spec_rejection() && !slot.spec_draft_q.empty();
 
+                if (slot.spark_fixed_verify && !slot.use_spec_rejection() && slot.n_remaining() > 0 &&
+                        size_t(slot.n_remaining()) <= n_draft && !slot.spec_is_replay) {
+                    slot.spec_draft.resize(size_t(slot.n_remaining() - 1));
+                    spec_i_batch.resize(slot.spec_draft.size() + 1);
+                }
                 std::vector<llama_token> accepted;
                 if (!synth_probs.empty()) {
                     // synthetic acceptance replaces verification entirely, so it comes first
@@ -5094,6 +5135,8 @@ private:
                             synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
                 } else if (slot.spec_is_replay && slot.use_spec_rejection()) {
                     accepted = server_accept_replay(slot.smpl.get(), slot.ctx_tgt, spec_i_batch, slot.spec_draft);
+                } else if (use_rejection && spark_block_verify) {
+                    accepted = common_sampler_sample_and_accept_spark_block(slot.smpl.get(), slot.ctx_tgt, spec_i_batch, slot.spec_draft, slot.spec_draft_q);
                 } else if (use_rejection) {
                     accepted = common_sampler_sample_and_accept_n_rejection(slot.smpl.get(), slot.ctx_tgt, spec_i_batch, slot.spec_draft, slot.spec_draft_q);
                 } else {
@@ -5102,7 +5145,7 @@ private:
 
                 GGML_ASSERT(accepted.size() >= 1);
 
-                const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
+                const uint32_t n_rollback = n_draft + 1 - accepted.size();
 
                 // the recurrent snapshots are only guaranteed for batches of up to n_rs_seq + 1 tokens, so a longer draft uses its checkpoint
                 const bool use_ckpt_tgt =

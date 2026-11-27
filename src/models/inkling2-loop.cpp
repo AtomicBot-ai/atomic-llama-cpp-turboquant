@@ -1,4 +1,7 @@
 #include "models.h"
+#include "llama-atomic.h"
+#include "llama-memory-contract.h"
+#include "llama-expert-executor.h"
 #include "llama-expert-acceleration.h"
 
 #include <cstdlib>
@@ -116,6 +119,85 @@ llama_model_inkling2_loop::graph::graph(const llm_graph_params & params) : llama
             }
         }
     }
+
+    if (n_tokens <= 8 && n_outputs == n_tokens && cparams.flash_attn && ubatch.n_seqs == 1 &&
+            expert_executor && llama_atomic_spark_nvfp4_target(&model)) {
+        const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_VERIFY");
+        const char * streamed = std::getenv("LLAMA_EXPERIMENTAL_SPARK_STREAM_VERIFY");
+        // These dense operators do not read expert weights.
+        if (mode && std::strcmp(mode, "1") == 0 && (expert_executor->inkling_all_resident() ||
+                (streamed && std::strcmp(streamed, "1") == 0 && expert_executor->inkling_core_layer(start)))) {
+            const auto device = model.dev_output();
+            const auto reg = ggml_backend_dev_backend_reg(device);
+            depth_kernel = reinterpret_cast<decltype(depth_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_depth"));
+            control_kernel = reinterpret_cast<decltype(control_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_inkling_control_v1"));
+            conv_residual_kernel = reinterpret_cast<decltype(conv_residual_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_inkling_conv_residual_v1"));
+            rel_mask_kernel = reinterpret_cast<decltype(rel_mask_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_inkling_rel_mask_v1"));
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                auto backend = ggml_backend_sched_get_backend(sched, i);
+                if (ggml_backend_get_device(backend) == device) { inkling_dense_backend = backend; break; }
+            }
+        }
+    }
+
+    if (expert_executor && cparams.flash_attn && ubatch.n_seqs == 1 && n_tokens <= 1024 &&
+            (n_tokens >= 512 || inkling_dense_backend) && llama_atomic_spark_nvfp4_target(&model)) {
+        const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_ATTENTION");
+        const auto device = model.dev_output();
+        if (mode && std::strcmp(mode, "1") == 0 && device && model.devices.size() == 1 &&
+                model.n_gpu_layers() > hparams.n_layer_all) {
+            const auto reg = ggml_backend_dev_backend_reg(device);
+            for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+                auto backend = ggml_backend_sched_get_backend(sched, i);
+                if (ggml_backend_get_device(backend) != device) { continue; }
+                clip_kernel = reinterpret_cast<decltype(clip_kernel)>(
+                        ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_inkling_clip_v1"));
+                rel_mask_kernel = reinterpret_cast<decltype(rel_mask_kernel)>(
+                        ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_inkling_rel_mask_v1"));
+                inkling_dense_backend = backend;
+                break;
+            }
+        }
+    }
+
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    static const bool enable_target = [] {
+        const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_TARGET_FUSION");
+        return mode && std::strcmp(mode, "1") == 0;
+    }();
+    if (enable_target && n_tokens == 1 && n_outputs == 1 && ubatch.n_seqs == 1 && cparams.n_rs_seq == 0 &&
+            cparams.flash_attn && !cparams.cb_eval && expert_executor && model.memory_contract &&
+            model.memory_contract->discrete.unified && !model.memory_contract->inkling_dspark_target &&
+            model.ftype() == LLAMA_FTYPE_MOSTLY_NVFP4 && model.devices.size() == 1 &&
+            model.n_gpu_layers() > hparams.n_layer_all && expert_executor->inkling_all_resident()) {
+        const auto device = model.dev_output();
+        for (int i = 0; device && i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            auto backend = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(backend) != device) { continue; }
+            const auto reg = ggml_backend_dev_backend_reg(device);
+            const auto control = reinterpret_cast<decltype(control_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_target_control_v1"));
+            const auto mask = reinterpret_cast<decltype(rel_mask_kernel)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_target_rel_mask_v1"));
+            const auto pack = reinterpret_cast<decltype(target_pack)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_target_pack_v1"));
+            const auto conv = reinterpret_cast<decltype(target_conv)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_target_conv_v1"));
+            if (control && mask && pack && conv) {
+                control_kernel = control;
+                rel_mask_kernel = mask;
+                target_pack = pack;
+                target_conv = conv;
+                inkling_dense_backend = backend;
+            }
+            break;
+        }
+    }
+#endif
 
     auto * cur = build_inputs();
     // Keep the short verification graph and its scratch reservation on the decode path.

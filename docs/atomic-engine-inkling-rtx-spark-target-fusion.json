@@ -1,0 +1,83 @@
+{
+  "enabled": {
+    "matching_full_logit_vectors": 325,
+    "binary_sha256": "28a8ec01186c3a8aace14f9037b6294d91c4d65fdbaeeb7f60fd77027ff93f64"
+  },
+  "disabled": {
+    "matching_full_logit_vectors": 325,
+    "binary_sha256": "28a8ec01186c3a8aace14f9037b6294d91c4d65fdbaeeb7f60fd77027ff93f64"
+  },
+  "partial": {
+    "matching_full_logit_vectors": 8,
+    "binary_sha256": "28a8ec01186c3a8aace14f9037b6294d91c4d65fdbaeeb7f60fd77027ff93f64"
+  },
+  "DFlash2": {
+    "draft_n": 82,
+    "accepted": 18,
+    "binary_sha256": "28a8ec01186c3a8aace14f9037b6294d91c4d65fdbaeeb7f60fd77027ff93f64"
+  },
+  "fixed-0": {
+    "updates": 128,
+    "decode_ms": 2891.392,
+    "ms_per_update": 22.589,
+    "tps": 44.269334631900485,
+    "median_ttft_ms": 1339.000349980779,
+    "wall_s": 5.570635300013237,
+    "finish": {
+      "limit": 2
+    },
+    "binary_sha256": "d9773b066532ec63cabf4cbafcf07a2d793873e2ce7e138d97bbdb78106d3b67"
+  },
+  "fixed-1": {
+    "updates": 128,
+    "decode_ms": 2562.411,
+    "ms_per_update": 20.0188359375,
+    "tps": 49.95295446358917,
+    "median_ttft_ms": 1383.5571000236087,
+    "wall_s": 5.330479700118303,
+    "finish": {
+      "limit": 2
+    },
+    "binary_sha256": "d9773b066532ec63cabf4cbafcf07a2d793873e2ce7e138d97bbdb78106d3b67"
+  },
+  "fixed-2": {
+    "updates": 128,
+    "decode_ms": 2588.017,
+    "ms_per_update": 20.2188828125,
+    "tps": 49.45871684768686,
+    "median_ttft_ms": 1394.1187999444082,
+    "wall_s": 5.378394599887542,
+    "finish": {
+      "limit": 2
+    },
+    "binary_sha256": "d9773b066532ec63cabf4cbafcf07a2d793873e2ce7e138d97bbdb78106d3b67"
+  },
+  "fixed-3": {
+    "updates": 128,
+    "decode_ms": 2918.4080000000004,
+    "ms_per_update": 22.800062500000003,
+    "tps": 43.85952889383526,
+    "median_ttft_ms": 1413.1468000123277,
+    "wall_s": 5.74483079998754,
+    "finish": {
+      "limit": 2
+    },
+    "binary_sha256": "d9773b066532ec63cabf4cbafcf07a2d793873e2ce7e138d97bbdb78106d3b67"
+  },
+  "fixed_abba": {
+    "order": [
+      "off",
+      "on",
+      "on",
+      "off"
+    ],
+    "off_updates_per_s": 44.063478949361425,
+    "on_updates_per_s": 49.70460707343157,
+    "gain_percent": 12.802275849696375,
+    "single_device_sample": {
+      "sm_clock_mhz": 2522,
+      "power_w": 41.55,
+      "utilization_percent": 89
+    }
+  }
+}

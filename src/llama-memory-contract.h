@@ -11,6 +11,9 @@
 struct llama_discrete_buffer_types {
     ggml_backend_buffer_type_t device = nullptr;
     ggml_backend_buffer_type_t pinned_host = nullptr;
+    // CUDA buffer ownership and physical memory topology are independent on RTX Spark.
+    bool unified = false;
+    bool separate_limits() const { return device && !unified; }
 };
 
 // Reusable, synchronous loader staging for an explicitly selected discrete
@@ -81,6 +84,7 @@ struct llama_memory_contract : std::enable_shared_from_this<llama_memory_contrac
     bool stream_cuda_boundary_reduction = false;
     bool dflash2_target = false;
     bool inkling_dspark_target = false;
+    bool spark_dflash2_draft = false;
     bool flash_next_dflash3 = false;
     uint32_t flash_next_extended_ctx = 0;
     uint32_t qwen35_profile_layers = 0;
@@ -94,6 +98,9 @@ struct llama_memory_contract : std::enable_shared_from_this<llama_memory_contrac
 
 struct llama_model;
 struct llama_file;
+struct llama_model_params;
+llama_model * llama_load_spark_draft(const char * path, llama_model_params params,
+        const llama_memory_contract & target);
 class llama_io_read_i;
 class llama_io_write_i;
 // Optional file-state staging for discrete Qwen; null preserves the ordinary IO path.

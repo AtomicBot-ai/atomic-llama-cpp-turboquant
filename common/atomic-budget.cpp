@@ -355,16 +355,26 @@ bool common_atomic_dflash2_enabled(const common_params & params) {
     return params.engine_qwen35_layers || (enabled && std::strcmp(enabled, "1") == 0);
 }
 
-bool common_atomic_inkling_dspark_enabled(const common_params & params) {
+static bool inkling_budget_profile(const common_params & params, common_speculative_type selected) {
     const auto & types = params.speculative.types;
     const auto & draft = params.speculative.draft;
     return params.engine_budget && !params.engine_ram_budget && !params.engine_vram_budget &&
            !params.engine_memory_auto && !params.engine_prefill_window &&
            params.slot_save_path.empty() && params.n_parallel == 1 &&
-           std::count(types.begin(), types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK) == 1 &&
-           std::all_of(types.begin(), types.end(), [](common_speculative_type type) {
-               return type == COMMON_SPECULATIVE_TYPE_NONE || type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+           std::count(types.begin(), types.end(), selected) == 1 &&
+           std::all_of(types.begin(), types.end(), [selected](common_speculative_type type) {
+               return type == COMMON_SPECULATIVE_TYPE_NONE || type == selected;
            }) &&
            params.speculative.has_dft() && !params.speculative.has_synth() &&
            draft.n_max > 0 && draft.n_max < 8 && draft.n_max < params.n_ubatch && draft.p_min == 0.0f;
+}
+
+bool common_atomic_inkling_dspark_enabled(const common_params & params) {
+    return inkling_budget_profile(params, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK);
+}
+
+bool common_atomic_spark_dflash2_enabled(const common_params & params) {
+    if (!inkling_budget_profile(params, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2)) { return false; }
+    const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_DFLASH2");
+    return mode && std::strcmp(mode, "1") == 0;
 }

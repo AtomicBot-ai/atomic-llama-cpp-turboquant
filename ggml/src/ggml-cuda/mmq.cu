@@ -2,8 +2,13 @@
 #include "mmq.cuh"
 #include "quantize.cuh"
 #include "mmid.cuh"
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#include "spark-compact-routes.cuh"
+#endif
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 
 static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream, const ggml_prec prec_src1) {
     switch (args.type_x) {
@@ -161,9 +166,10 @@ static int ggml_cuda_mmq_get_J_best(
     return J_best;
 }
 
-void ggml_cuda_mul_mat_q(
+template <bool compact_verify = false>
+static void ggml_cuda_mul_mat_q_impl(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
-        const ggml_cuda_mm_fusion_args_host * fusion) {
+        const ggml_cuda_mm_fusion_args_host * fusion, bool q8_verify) {
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
@@ -238,7 +244,7 @@ void ggml_cuda_mul_mat_q(
     const bool fallback = ggml_cuda_mmq_needs_fallback(ne01);
 
     // With fusion dst is the GLU output or the scale node, not a MUL_MAT; the src1 precision requested by the fused MUL_MATs is in the fusion args.
-    const ggml_prec prec_src1 = ggml_cuda_mmq_get_prec_src1(src0->type, fusion ? fusion->prec_src1 : ggml_prec_get_src(dst, 1), cc);
+    const ggml_prec prec_src1 = q8_verify ? GGML_PREC_Q8 : ggml_cuda_mmq_get_prec_src1(src0->type, fusion ? fusion->prec_src1 : ggml_prec_get_src(dst, 1), cc);
 
     const bool use_native_fp4 = prec_src1 == GGML_PREC_Q4;
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
@@ -322,7 +328,9 @@ void ggml_cuda_mul_mat_q(
     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx.pool(), ne_get_rows);
     ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), ne_get_rows + J_best-1); // Needs to be padded for unconditional memory access.
 
-    const int ntj = (ne_get_rows + J_best - 1) / J_best + ne02;
+    const bool compact = compact_verify && src0->type == GGML_TYPE_NVFP4 && ne02 == 128 &&
+                         ne12 >= 2 && ne12 <= 8 && ne_get_rows > 0 && ne_get_rows <= 64;
+    const int ntj = compact ? ne_get_rows : (ne_get_rows + J_best - 1) / J_best + ne02;
     ggml_cuda_pool_alloc<ggml_cuda_mm_id_tile_spec> tile_spec(ctx.pool(), ntj);
 
     // gate/up activations are broadcast across experts (ne11 == 1): quantize each token once and
@@ -334,8 +342,16 @@ void ggml_cuda_mul_mat_q(
         const int si1  = ids->nb[1] / ggml_element_size(ids);
         const int sis1 = nb12 / nb11;
 
-        ggml_cuda_launch_mm_ids_helper((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(), tile_spec.get(),
-            ne02, ne12, n_expert_used, ne11, J_best, si1, sis1, /*write_inverse =*/ dedup_bcast, stream);
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+        if (compact) {
+            spark_verify_routes<<<1, 64, 0, stream>>>((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(),
+                    tile_spec.get(), ne_get_rows, n_expert_used, ne11, J_best, si1, sis1, dedup_bcast);
+        } else
+#endif
+        {
+            ggml_cuda_launch_mm_ids_helper((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(), tile_spec.get(),
+                    ne02, ne12, n_expert_used, ne11, J_best, si1, sis1, /*write_inverse =*/ dedup_bcast, stream);
+        }
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -391,6 +407,27 @@ void ggml_cuda_mul_mat_q(
 
     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
 }
+
+void ggml_cuda_mul_mat_q(
+        ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
+        const ggml_cuda_mm_fusion_args_host * fusion) {
+    ggml_cuda_mul_mat_q_impl(ctx, src0, src1, ids, dst, fusion, false);
+}
+
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+void ggml_cuda_spark_mul_mat_verify(ggml_backend_cuda_context & ctx, const ggml_tensor * src0,
+        const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst, bool q8_verify) {
+    static const bool compact = [] {
+        const char * value = std::getenv("LLAMA_EXPERIMENTAL_SPARK_COMPACT_ROUTES");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    if (compact) {
+        ggml_cuda_mul_mat_q_impl<true>(ctx, src0, src1, ids, dst, nullptr, q8_verify);
+    } else {
+        ggml_cuda_mul_mat_q_impl(ctx, src0, src1, ids, dst, nullptr, q8_verify);
+    }
+}
+#endif
 
 bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t n_experts) {
 #ifdef GGML_CUDA_FORCE_CUBLAS
