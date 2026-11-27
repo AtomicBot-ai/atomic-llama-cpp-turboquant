@@ -2137,7 +2137,19 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             budget_control->set_spark_decode_graph(budget_control->spark_backend, resident);
         }
     }
-    const bool spark_prompt = ((!expert_decode && ubatch.n_tokens >= 512) || cparams.spark_draft_ids ||
+    bool short_spark_prompt = false;
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    if (!expert_decode && ubatch.n_tokens > 1 && ubatch.n_tokens < 512 && ubatch.n_seqs == 1 &&
+            gparams.n_outputs == 1 && budget_control && budget_control->set_spark_prompt_pool &&
+            !cparams.cb_eval && expert_executor && model.arch == LLM_ARCH_INKLING2_LOOP &&
+            model.memory_contract && model.memory_contract->discrete.unified && !model.memory_contract->inkling_dspark_target &&
+            model.ftype() == LLAMA_FTYPE_MOSTLY_NVFP4 && model.devices.size() == 1 &&
+            model.n_gpu_layers() > model.hparams.n_layer_all) {
+        const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_SHORT_PROMPT_POOL");
+        short_spark_prompt = mode && std::strcmp(mode, "1") == 0 && expert_executor->inkling_all_resident();
+    }
+#endif
+    const bool spark_prompt = (short_spark_prompt || (!expert_decode && ubatch.n_tokens >= 512) || cparams.spark_draft_ids ||
             (cparams.ctx_state_src == this && model.hparams.inkling2_dspark)) && budget_control &&
             budget_control->set_spark_prompt_pool && !cparams.cb_eval;
     if (spark_prompt) { budget_control->set_spark_prompt_pool(budget_control->spark_backend, true); }
