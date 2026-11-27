@@ -1,7 +1,8 @@
 // Private single-sequence Inkling verify operations. The graph builder pins
 // these nodes to the same backend that supplied their constructors.
 constexpr int spark_op_tag = GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1;
-enum spark_verify_op { spark_conv = 0x53564331, spark_mask, spark_control, spark_depth, spark_clip, spark_control_project };
+enum spark_verify_op { spark_conv = 0x53564331, spark_mask, spark_control, spark_depth, spark_clip, spark_control_project,
+    spark_target_control, spark_target_mask, spark_target_short_conv, spark_target_depth_pack };
 
 static void spark_verify_device_only(ggml_tensor *, int, int, void *) {
     GGML_ABORT("Spark verification op requires the CUDA backend");
@@ -11,7 +12,19 @@ static bool spark_verify_owned(const ggml_tensor * t) {
     ggml_custom_op_params params;
     memcpy(&params, t->op_params, sizeof(params));
     return params.fun == spark_verify_device_only &&
-            t->op_params[spark_op_tag] >= spark_conv && t->op_params[spark_op_tag] <= spark_control_project;
+            t->op_params[spark_op_tag] >= spark_conv && t->op_params[spark_op_tag] <= spark_target_depth_pack;
+}
+
+// The same process-start switch gates both factory lookup and capture policy.
+static bool spark_target_fusion_enabled() {
+    static const bool enabled = ggml_cuda_env_flag("LLAMA_EXPERIMENTAL_SPARK_TARGET_FUSION");
+    return enabled;
+}
+
+static bool spark_target_boundary(const ggml_tensor * node) {
+    return node->op == GGML_OP_CUSTOM && spark_verify_owned(node) &&
+            (node->op_params[spark_op_tag] == spark_target_control || node->op_params[spark_op_tag] == spark_target_mask ||
+             node->op_params[spark_op_tag] == spark_target_short_conv);
 }
 
 // Match the reduction geometry of sum_rows_f32_cuda for the two Inkling head widths.
@@ -138,6 +151,50 @@ static __global__ void spark_depth_kernel(spark_depth_states states, const float
     }
 }
 
+// Read the entire four-tap window before staging this channel's next recurrent state.
+static __global__ void spark_target_conv_kernel(const float * past, const float * cur, const float * weights,
+        const float * taps, float * next, float * out, int channels, int heads, float scale) {
+    const int c = blockIdx.x*blockDim.x + threadIdx.x;
+    if (c >= channels) { return; }
+    const float x[] = {past[3*c], past[3*c+1], past[3*c+2], cur[c]};
+    float sum = 0;
+    for (int k = 0; k < 4; ++k) {
+        sum = __fmaf_rn(x[k], weights[4*c+k], sum);
+    }
+    if (taps) {
+        const float * head = taps + 4*(c/(channels/heads));
+        for (int k = 0; k < 4; ++k) {
+            sum = __fadd_rn(sum, __fmul_rn(x[3-k], head[k]));
+        }
+    }
+    for (int k = 0; k < 3; ++k) { next[3*c+k] = x[k+1]; }
+    out[c] = __fmul_rn(__fadd_rn(cur[c], sum), scale);
+}
+
+static __global__ void spark_target_pack_rows(spark_depth_states inputs, float4 * out) {
+    constexpr int row_width = 2304 / 4;
+    const int i = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i < row_width) {
+        out[blockIdx.y*row_width+i] = reinterpret_cast<const float4 *>(inputs.data[blockIdx.y])[i];
+    }
+}
+
+static ggml_tensor * spark_target_make_pack(ggml_context * ctx, ggml_tensor * cur, ggml_tensor * const * blocks, size_t n) {
+    if (n >= 8 || cur->ne[0] != 2304 || ggml_nelements(cur) != 2304) { return nullptr; }
+    ggml_tensor * inputs[8]{};
+    for (size_t i = 0; i <= n; ++i) {
+        // The ordinary graph prepends each block to the previous concatenation.
+        auto * t = i == n ? cur : blocks[n-1-i];
+        if (t->type != GGML_TYPE_F32 || !ggml_are_same_shape(t, cur) || !ggml_is_contiguous(t) || t->view_offs % 16) {
+            return nullptr;
+        }
+        inputs[i] = t;
+    }
+    auto * dst = ggml_custom_4d(ctx, GGML_TYPE_F32, 2304*(n+1), 1, 1, 1, inputs, int(n+1), spark_verify_device_only, 1, nullptr);
+    dst->op_params[spark_op_tag] = spark_target_depth_pack;
+    return dst;
+}
+
 static bool spark_verify_dispatch(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     if (!spark_verify_owned(dst)) { return false; }
     const auto f = [&](int i) { return static_cast<const float *>(dst->src[i]->data); };
@@ -160,12 +217,26 @@ static bool spark_verify_dispatch(ggml_backend_cuda_context & ctx, ggml_tensor *
             spark_depth_kernel<<<dim3(dst->ne[1],dst->ne[2]),256,0,ctx.stream()>>>(states, f(0),
                     static_cast<float *>(dst->data), depth, width, dst->ne[1]);
         } break;
+        case spark_target_depth_pack: {
+            spark_depth_states inputs{};
+            const int depth = dst->ne[0]/2304;
+            for (int i = 0; i < depth; ++i) { inputs.data[i] = f(i); }
+            spark_target_pack_rows<<<dim3(3, depth), 256, 0, ctx.stream()>>>(inputs, static_cast<float4 *>(dst->data));
+        } break;
+        case spark_target_short_conv: {
+            const int channels = dst->src[1]->ne[0];
+            auto * out = static_cast<float *>(dst->data);
+            const auto * taps = dst->src[3];
+            spark_target_conv_kernel<<<(channels+127)/128, 128, 0, ctx.stream()>>>(f(0), f(1), f(2), taps ? f(3) : nullptr,
+                    out+channels, out, channels, taps ? taps->ne[0]/4 : 0, ggml_get_op_params_f32(dst, spark_op_tag-1));
+        } break;
         case spark_conv: {
             const auto * dyn = dst->src[3];
             spark_conv_kernel<<<grid,256,0,ctx.stream()>>>(f(0), f(1), f(2), dyn ? f(3) : nullptr,
                     static_cast<float *>(dst->data), width, rows, dyn ? dyn->ne[0] : 0,
                     ggml_get_op_params_f32(dst, spark_op_tag-1));
         } break;
+        case spark_target_mask:
         case spark_mask: {
             grid.z = dst->ne[2];
             auto * pos = static_cast<const int *>(dst->src[2]->data);
@@ -182,6 +253,7 @@ static bool spark_verify_dispatch(ggml_backend_cuda_context & ctx, ggml_tensor *
             spark_control_project_kernel<<<2304/8, 256, 0, ctx.stream()>>>(f(0), f(1), f(2), f(3), f(4),
                     static_cast<float *>(dst->data), rows);
         } break;
+        case spark_target_control:
         case spark_control: {
             const int n = width*rows;
             spark_control_kernel<<<(n+255)/256,256,0,ctx.stream()>>>(f(0), f(1), f(2), f(3), static_cast<float *>(dst->data), n);
@@ -208,6 +280,7 @@ static ggml_tensor * ggml_backend_cuda_spark_inkling_clip_v1(ggml_context * ctx,
     return node;
 }
 
+template <bool target_only>
 static ggml_tensor * ggml_backend_cuda_spark_inkling_rel_mask_v1(ggml_context * ctx, ggml_tensor * table,
         ggml_tensor * sinks, ggml_tensor * distances, ggml_tensor * causal) {
     if (table->type != GGML_TYPE_F32 || sinks->type != GGML_TYPE_F32 || distances->type != GGML_TYPE_I32 ||
@@ -222,10 +295,11 @@ static ggml_tensor * ggml_backend_cuda_spark_inkling_rel_mask_v1(ggml_context * 
     ggml_tensor * args[] = {table, sinks, distances, causal};
     auto * node = ggml_custom_4d(ctx, GGML_TYPE_F16, causal->ne[0], causal->ne[1], table->ne[1], 1,
             args, 4, spark_verify_device_only, 1, nullptr);
-    node->op_params[spark_op_tag] = spark_mask;
+    node->op_params[spark_op_tag] = target_only ? spark_target_mask : spark_mask;
     return node;
 }
 
+template <bool target_only>
 static ggml_tensor * ggml_backend_cuda_spark_inkling_control_v1(ggml_context * ctx, ggml_tensor * cur,
         ggml_tensor * message, ggml_tensor * gain, ggml_tensor * forget) {
     ggml_tensor * args[] = {cur, message, gain, forget};
@@ -239,7 +313,7 @@ static ggml_tensor * ggml_backend_cuda_spark_inkling_control_v1(ggml_context * c
         const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_CONTROL_PROJECT");
         return mode && std::strcmp(mode, "1") == 0;
     }();
-    if (project && gain->op == GGML_OP_MUL_MAT && forget->op == GGML_OP_MUL_MAT &&
+    if (!target_only && project && gain->op == GGML_OP_MUL_MAT && forget->op == GGML_OP_MUL_MAT &&
             gain->src[1] == forget->src[1]) {
         auto * gate = gain->src[1];
         auto * wg = gain->src[0];
@@ -257,7 +331,7 @@ static ggml_tensor * ggml_backend_cuda_spark_inkling_control_v1(ggml_context * c
     }
     auto * node = ggml_custom_4d(ctx, GGML_TYPE_F32, cur->ne[0], cur->ne[1], 1, 1, args, 4,
             spark_verify_device_only, 1, nullptr);
-    node->op_params[spark_op_tag] = spark_control;
+    node->op_params[spark_op_tag] = target_only ? spark_target_control : spark_control;
     return node;
 }
 
@@ -301,4 +375,25 @@ static ggml_tensor * ggml_backend_cuda_spark_depth(ggml_context * ctx, ggml_tens
             args, int(count)+2, spark_verify_device_only, 1, nullptr);
     dst->op_params[spark_op_tag] = spark_depth;
     return dst;
+}
+
+static ggml_tensor * spark_target_make_conv(ggml_context * ctx, ggml_tensor * past, ggml_tensor * cur,
+        ggml_tensor * weight, ggml_tensor * taps) {
+    const int64_t n = cur->ne[0];
+    if ((n != 1024 && n != 2304) || ggml_nelements(cur) != n || past->ne[0] != 3 || past->ne[1] != n ||
+            ggml_nelements(past) != 3*n || weight->ne[0] != 4 || weight->ne[1] != n || ggml_nelements(weight) != 4*n) {
+        return nullptr;
+    }
+    for (auto * t : {past, cur, weight}) {
+        if (t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t)) { return nullptr; }
+    }
+    if (taps && (taps->type != GGML_TYPE_F32 || !ggml_is_contiguous(taps) ||
+            taps->ne[0] != 32 || ggml_nelements(taps) != 32 || n != 1024)) {
+        return nullptr;
+    }
+    ggml_tensor * inputs[] = {past, cur, weight, taps};
+    auto * node = ggml_custom_4d(ctx, GGML_TYPE_F32, 4*n, 1, 1, 1, inputs, taps ? 4 : 3, spark_verify_device_only, 1, nullptr);
+    ggml_set_op_params_f32(node, spark_op_tag-1, 1.0f/sqrtf(taps ? 9.0f : 5.0f));
+    node->op_params[spark_op_tag] = spark_target_short_conv;
+    return node;
 }

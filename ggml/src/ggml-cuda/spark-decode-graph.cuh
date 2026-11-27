@@ -126,9 +126,22 @@ static ggml_status ggml_backend_cuda_spark_decode(ggml_backend_t backend, ggml_c
     if (pool.arena) {
         capture_guard guard;
         const bool split = ggml_cuda_env_flag("LLAMA_EXPERIMENTAL_SPARK_VERIFY") && graph->n_nodes > 1024;
+        const bool target_chunks = split && spark_target_fusion_enabled() &&
+                std::any_of(graph->nodes, graph->nodes + graph->n_nodes, spark_target_boundary);
+        struct target_capture_scope {
+            bool saved;
+            explicit target_capture_scope(bool active) : saved(spark_target_capture) { spark_target_capture = active; }
+            ~target_capture_scope() { spark_target_capture = saved; }
+        } target_scope(target_chunks && !pool.parent_uid);
         const int stride = split ? (graph->n_nodes + pool.max_chunks - 1) / pool.max_chunks : graph->n_nodes;
         while (first < graph->n_nodes) {
-            const int end = std::min(first + stride, graph->n_nodes);
+            int end = std::min(first + stride, graph->n_nodes);
+            // An arbitrary cut can change which surrounding operations CUDA fuses.
+            // A target-only custom op is a standalone dispatch. Advancing a cut
+            // keeps that fusion decision intact and cannot increase the chunk count.
+            while (target_chunks && end < graph->n_nodes && !spark_target_boundary(graph->nodes[end])) {
+                ++end;
+            }
             auto chunk = ggml_graph_view(graph, first, end);
             capture_status = cudaStreamBeginCapture(ctx->stream(), cudaStreamCaptureModeRelaxed);
             if (capture_status != cudaSuccess) { break; }

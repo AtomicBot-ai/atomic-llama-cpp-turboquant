@@ -4561,6 +4561,10 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
     return false;
 }
 
+#ifdef GGML_CUDA_SPARK_VERIFY
+#include "spark-target-fusion.cuh"
+#endif
+
 // try and fuse nodes and return the number of nodes to skip
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
@@ -4570,6 +4574,13 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+#ifdef GGML_CUDA_SPARK_VERIFY
+    if (spark_target_capture) {
+        if (node->op == GGML_OP_MUL_MAT && spark_target_try_project(cuda_ctx, cgraph, i)) { return 2; }
+        if (node->op == GGML_OP_SQR && spark_target_try_clip(cuda_ctx, cgraph, i, true)) { return 7; }
+        if (node->op == GGML_OP_SQRT && spark_target_try_clip(cuda_ctx, cgraph, i, false)) { return 5; }
+    }
+#endif
     if (node->op == GGML_OP_MUL_MAT_ID && cuda_ctx->stream_context().concurrent_events.empty() &&
             ggml_cuda_match_shared_expert(cgraph, i, i + 3) &&
             ggml_cuda_should_fuse_mul_mat_vec_q(cgraph->nodes[i + 2]->src[1])) {
@@ -7166,11 +7177,23 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     GGML_UNUSED(reg);
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 #if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    if (strcmp(name, "ggml_backend_cuda_spark_target_pack_v1") == 0) {
+        return spark_target_fusion_enabled() ? (void *) spark_target_make_pack : nullptr;
+    }
+    if (strcmp(name, "ggml_backend_cuda_spark_target_conv_v1") == 0) {
+        return spark_target_fusion_enabled() ? (void *) spark_target_make_conv : nullptr;
+    }
     if (strcmp(name, "ggml_backend_cuda_spark_inkling_rel_mask_v1") == 0) {
-        return (void *) ggml_backend_cuda_spark_inkling_rel_mask_v1;
+        return (void *) ggml_backend_cuda_spark_inkling_rel_mask_v1<false>;
+    }
+    if (strcmp(name, "ggml_backend_cuda_spark_target_rel_mask_v1") == 0) {
+        return spark_target_fusion_enabled() ? (void *) ggml_backend_cuda_spark_inkling_rel_mask_v1<true> : nullptr;
     }
     if (strcmp(name, "ggml_backend_cuda_spark_inkling_control_v1") == 0) {
-        return (void *) ggml_backend_cuda_spark_inkling_control_v1;
+        return (void *) ggml_backend_cuda_spark_inkling_control_v1<false>;
+    }
+    if (strcmp(name, "ggml_backend_cuda_spark_target_control_v1") == 0) {
+        return spark_target_fusion_enabled() ? (void *) ggml_backend_cuda_spark_inkling_control_v1<true> : nullptr;
     }
     if (strcmp(name, "ggml_backend_cuda_spark_inkling_conv_residual_v1") == 0) {
         return (void *) ggml_backend_cuda_spark_inkling_conv_residual_v1;
