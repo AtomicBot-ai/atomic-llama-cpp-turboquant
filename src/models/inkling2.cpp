@@ -1,4 +1,5 @@
 #include "models.h"
+#include "../llama-atomic.h"
 #include "../llama-expert-executor.h"
 #include "../llama-memory-hybrid-iswa.h"
 
@@ -183,6 +184,12 @@ ggml_tensor * llama_model_inkling2::graph::clip(ggml_tensor * cur, ggml_tensor *
 
 // attention over the depth: mix the earlier block outputs and cur with learned queries
 ggml_tensor * llama_model_inkling2::graph::mix(const std::vector<ggml_tensor *> & blocks, ggml_tensor * cur, ggml_tensor * query) {
+    if (depth_kernel && inkling_dense_backend) {
+        if (auto * output = depth_kernel(ctx0, query, cur, blocks.data(), blocks.size())) {
+            ggml_backend_sched_set_tensor_backend(sched, output, inkling_dense_backend);
+            return output;
+        }
+    }
     ggml_tensor * states = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
     for (ggml_tensor * block : blocks) {
         states = ggml_concat(ctx0, ggml_reshape_3d(ctx0, block, n_embd, 1, n_tokens), states, 1);
@@ -376,31 +383,38 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int il, int ip, ggml_tens
         ggml_tensor * sinks = build_lora_mm(layer.attn_sink_proj, inputs[0]);
 
         // project r on the bias table first, then gather by distance: only the gathered bias is n_kv x n_tokens x n_head
-        ggml_tensor * table = ggml_mul_mat(ctx0, ggml_pad(ctx0, layer.attn_rel_bias, 0, 1, 0, 0), Rcur);
-
+        ggml_tensor * rel_weights = ggml_pad(ctx0, layer.attn_rel_bias, 0, 1, 0, 0);
+        const bool tile_queries = n_tokens > 1024 && cparams.flash_attn && ubatch.n_seqs == 1 &&
+                n_stream == 1 && llama_atomic_spark_nvfp4_target(&model);
+        llm_inkling_relative_tiles tiles{rel_weights, Rcur, sinks, rel_pos};
         ggml_tensor * kq_b = nullptr;
-        if (inkling_dense_backend && rel_mask_kernel) {
-            const auto & mask = is_swa ? attn->self_attn_mask_swa : attn->self_attn_mask;
-            if (!mask.rows) { kq_b = rel_mask_kernel(ctx0, table, sinks, rel_pos, mask.raw); }
-        }
-        const bool prebuilt_mask = kq_b != nullptr;
-        if (prebuilt_mask) {
-            ggml_backend_sched_set_tensor_backend(sched, kq_b, inkling_dense_backend);
-        } else {
-            // Shift the logits by the per-query sink logit, using a zero sink.
-            table = ggml_sub(ctx0, table, ggml_reshape_3d(ctx0, sinks, 1, n_head, n_tokens));
-            table = ggml_cont(ctx0, ggml_permute(ctx0, table, 1, 0, 2, 3));
-            kq_b = ggml_get_rows(ctx0, table, rel_pos);
-            kq_b = ggml_reshape_4d(ctx0, kq_b, n_head, n_kv, n_tokens/n_stream, n_stream);
-            kq_b = ggml_cont(ctx0, ggml_permute(ctx0, kq_b, 2, 0, 1, 3));
-            cb(kq_b, "kq_b", il);
+        bool prebuilt_mask = false;
+        if (!tile_queries) {
+            ggml_tensor * table = ggml_mul_mat(ctx0, rel_weights, Rcur);
+
+            if (inkling_dense_backend && rel_mask_kernel) {
+                const auto & mask = is_swa ? attn->self_attn_mask_swa : attn->self_attn_mask;
+                if (!mask.rows) { kq_b = rel_mask_kernel(ctx0, table, sinks, rel_pos, mask.raw); }
+            }
+            prebuilt_mask = kq_b != nullptr;
+            if (prebuilt_mask) {
+                ggml_backend_sched_set_tensor_backend(sched, kq_b, inkling_dense_backend);
+            } else {
+                // Shift the logits by the per-query sink logit, using a zero sink.
+                table = ggml_sub(ctx0, table, ggml_reshape_3d(ctx0, sinks, 1, n_head, n_tokens));
+                table = ggml_cont(ctx0, ggml_permute(ctx0, table, 1, 0, 2, 3));
+                kq_b = ggml_get_rows(ctx0, table, rel_pos);
+                kq_b = ggml_reshape_4d(ctx0, kq_b, n_head, n_kv, n_tokens/n_stream, n_stream);
+                kq_b = ggml_cont(ctx0, ggml_permute(ctx0, kq_b, 2, 0, 1, 3));
+                cb(kq_b, "kq_b", il);
+            }
         }
 
         sinks = ggml_fill(ctx0, ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_head), 0.0f);
 
         cur = build_attn(inp,
                 nullptr, nullptr, nullptr,
-                Qcur, Kcur, Vcur, kq_b, sinks, 1.0f/sqrtf(n_embd_head), il, prebuilt_mask);
+                Qcur, Kcur, Vcur, kq_b, sinks, 1.0f/sqrtf(n_embd_head), il, prebuilt_mask, tile_queries ? &tiles : nullptr);
 
         cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, build_lora_mm(layer.wqkv_gate, inputs[0])));
         cur = convolve(build_lora_mm(layer.wo, cur), layer.attn_post_conv, nullptr, state, history, recr, 2*n_embd_k_gqa);

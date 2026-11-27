@@ -2391,7 +2391,29 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_f(const ggml_tensor * tensor, cons
     return use_mul_mat_vec_f;
 }
 
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+void ggml_cuda_spark_mul_mat_verify(ggml_backend_cuda_context &, const ggml_tensor *, const ggml_tensor *, const ggml_tensor *, ggml_tensor *, bool);
+static constexpr int spark_verify_mmq_tag = 0x53514d31;
+static void ggml_backend_cuda_spark_mark_verify_mmq(ggml_tensor * weight) {
+    if (weight->type == GGML_TYPE_NVFP4 && weight->ne[2] == 128 && weight->op == GGML_OP_NONE) {
+        const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_VERIFY_MMQ");
+        weight->op_params[GGML_MAX_OP_PARAMS/sizeof(int32_t)-1] =
+                mode && std::strcmp(mode, "q8") == 0 ? spark_verify_mmq_tag + 1 : spark_verify_mmq_tag;
+    }
+}
+static bool ggml_cuda_spark_verify_mmq(const ggml_tensor * dst) {
+    if (dst->op != GGML_OP_MUL_MAT_ID || dst->ne[2] < 2 || dst->ne[2] > 8 || dst->src[0]->type != GGML_TYPE_NVFP4) {
+        return false;
+    }
+    const int tag = dst->src[0]->op_params[GGML_MAX_OP_PARAMS/sizeof(int32_t)-1];
+    return tag == spark_verify_mmq_tag || tag == spark_verify_mmq_tag + 1;
+}
+#endif
+
 static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    if (ggml_cuda_spark_verify_mmq(tensor)) { return false; }
+#endif
     ggml_tensor *       src0 = tensor->src[0];
     ggml_tensor *       src1 = tensor->src[1];
     const ggml_tensor * dst  = tensor;
@@ -2708,6 +2730,13 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
     // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
     if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+        if (ggml_cuda_spark_verify_mmq(dst) && blackwell_mma_available(cc)) {
+            const bool q8 = src0->op_params[GGML_MAX_OP_PARAMS/sizeof(int32_t)-1] == spark_verify_mmq_tag + 1;
+            ggml_cuda_spark_mul_mat_verify(ctx, src0, src1, ids, dst, q8);
+            return;
+        }
+#endif
         // up to 24 tokens few-row MMQ is faster than MMQ, on DGX Spark also faster than MMVQ
         const bool use_mmq_few = ggml_cuda_should_use_mmq_few(src0, src1, ids, cc);
 
@@ -2867,8 +2896,17 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#define GGML_CUDA_SPARK_VERIFY
+#include "spark-verify.cuh"
+#endif
+
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     switch (dst->op) {
+#ifdef GGML_CUDA_SPARK_VERIFY
+        case GGML_OP_CUSTOM:
+            return spark_verify_dispatch(ctx, dst);
+#endif
         case GGML_OP_ARGMAX:
             ggml_cuda_argmax(ctx, dst);
             break;
@@ -6421,6 +6459,10 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
     }
 
     switch (op->op) {
+#ifdef GGML_CUDA_SPARK_VERIFY
+        case GGML_OP_CUSTOM:
+            return spark_verify_owned(op);
+#endif
         case GGML_OP_UNARY:
             switch (ggml_get_unary_op(op)) {
                 case GGML_UNARY_OP_ABS:
@@ -7114,9 +7156,45 @@ static bool ggml_backend_cuda_enable_observed_pool(ggml_backend_t backend) {
 }
 #endif
 
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)) && !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#include "spark-prompt-pool.cuh"
+#include "spark-decode-graph.cuh"
+#include "spark-prompt-weights.cuh"
+#endif
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+#if defined(USE_CUDA_GRAPH) && defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    if (strcmp(name, "ggml_backend_cuda_spark_inkling_rel_mask_v1") == 0) {
+        return (void *) ggml_backend_cuda_spark_inkling_rel_mask_v1;
+    }
+    if (strcmp(name, "ggml_backend_cuda_spark_inkling_control_v1") == 0) {
+        return (void *) ggml_backend_cuda_spark_inkling_control_v1;
+    }
+    if (strcmp(name, "ggml_backend_cuda_spark_inkling_conv_residual_v1") == 0) {
+        return (void *) ggml_backend_cuda_spark_inkling_conv_residual_v1;
+    }
+    if (strcmp(name, "ggml_backend_cuda_spark_depth") == 0) { return (void *) ggml_backend_cuda_spark_depth; }
+    if (strcmp(name, "ggml_backend_cuda_spark_inkling_clip_v1") == 0) {
+        return (void *) ggml_backend_cuda_spark_inkling_clip_v1;
+    }
+    if (strcmp(name, "ggml_backend_cuda_spark_mark_verify_mmq") == 0) {
+        return (void *) ggml_backend_cuda_spark_mark_verify_mmq;
+    }
+    if (strcmp(name, "ggml_backend_cuda_spark_prompt_weights") == 0) {
+        return (void *) ggml_backend_cuda_spark_prompt_weights;
+    }
+    if (strcmp(name, "ggml_backend_cuda_set_spark_prompt_pool") == 0) {
+        return (void *) ggml_backend_cuda_set_spark_prompt_pool;
+    }
+    if (strcmp(name, "ggml_backend_cuda_set_spark_decode_graph") == 0) {
+        return (void *) ggml_backend_cuda_set_spark_decode_graph;
+    }
+    if (strcmp(name, "ggml_backend_cuda_set_spark_split_graph") == 0) {
+        return (void *) ggml_backend_cuda_set_spark_split_graph;
+    }
+#endif
     if (strcmp(name, "ggml_backend_cuda_enable_observed_pool") == 0) {
         return (void *)ggml_backend_cuda_enable_observed_pool;
     }

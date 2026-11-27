@@ -60,6 +60,7 @@ struct llama_context {
     //   - etc.
     void sched_reserve();
     friend void llama_atomic_park_flash_draft(llama_context * draft);
+    friend int llama_atomic_spark_propose(llama_context *, llama_batch_ext *, llama_token *, int);
     void reset_expert_graphs();
 
     void synchronize();
@@ -370,6 +371,8 @@ private:
     //
     // members
     //
+
+    llama_memory_reclaimer budget_reclaimer() const;
 
     const llama_model & model;
     std::unique_ptr<struct llama_context_budget> budget_control;

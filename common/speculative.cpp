@@ -1017,6 +1017,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
     // inject target features from the target's device buffer instead of host copies (env LLAMA_DFLASH_DEV=0 disables)
     bool use_dev_features = false;
+    bool spark_proposals = false;
 
     common_speculative_impl_draft_dflash(const common_params_speculative & params, uint32_t n_seq)
         : common_speculative_impl_draft_dflash(params, n_seq, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)
@@ -1248,6 +1249,7 @@ public:
                                 __func__, rc, (int) n_chunk, (int) offset);
                         return false;
                     }
+                    if (spark_proposals) { store_context_features(seq_id, n_chunk); }
                     continue;
                 }
 
@@ -1380,6 +1382,8 @@ struct common_speculative_impl_draft_dspark final : public common_speculative_im
     // The recurrent head uses the anchor features from the injection.
     bool has_rnn_context = false;
     bool use_prompt_lookup = false;
+    bool device_anchor = false;
+    int32_t model_depth = 0;
 
     size_t context_rows = 0;
     std::vector<float>     context_embd;
@@ -1398,6 +1402,9 @@ struct common_speculative_impl_draft_dspark final : public common_speculative_im
         }
 
         has_rnn_context = llama_atomic_is_inkling_dspark(model_dft);
+        const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_DSPARK_GPU");
+        spark_proposals = has_rnn_context && n_seq == 1 && block_size == 8 && mode && std::strcmp(mode, "1") == 0 &&
+                llama_atomic_spark_nvfp4_target(llama_get_model(this->params.ctx_tgt));
         if (has_rnn_context && n_seq == 1) {
             const char * lookup = std::getenv("LLAMA_EXPERIMENTAL_INKLING_PROMPT_LOOKUP");
             use_prompt_lookup = lookup && std::strcmp(lookup, "1") == 0;
@@ -1434,11 +1441,36 @@ struct common_speculative_impl_draft_dspark final : public common_speculative_im
         init({
             /* .n_draft_max      = */ sample_from_anchor ? block_size : block_size - 1,
             /* .backend_sampling = */ !has_rnn_context,
-            /* .dev_features     = */ !has_rnn_context,
+            /* .dev_features     = */ !has_rnn_context || spark_proposals,
             /* .nextn_masked     = */ !has_rnn_context,
         });
 
+        model_depth = this->params.n_max;
+        if (spark_proposals) {
+            // A prompt match can offer the full block without running the recurrent draft head.
+            // Cap only the learned proposals; keep all mask rows for noncausal attention.
+            const char * depth = std::getenv("LLAMA_EXPERIMENTAL_SPARK_DSPARK_MODEL_DEPTH");
+            if (depth && depth[0] >= '1' && depth[0] <= '7' && depth[1] == '\0' &&
+                    depth[0] - '0' >= this->params.n_min && depth[0] - '0' <= model_depth) {
+                model_depth = depth[0] - '0';
+                LOG_INF("%s: Spark DSpark model depth = %d (block limit %d)\n",
+                        __func__, model_depth, this->params.n_max);
+            } else if (depth) {
+                LOG_WRN("%s: invalid Spark DSpark model depth, keeping %d\n", __func__, model_depth);
+            }
+        }
+
         if (has_rnn_context) {
+            if (spark_proposals && use_dev_features && llama_set_embeddings_nextn_dev(this->params.ctx_dft, true)) {
+                device_anchor = llama_set_ctx_state_src(this->params.ctx_dft, this->params.ctx_dft);
+                if (!device_anchor) {
+                    llama_set_ctx_state_src(this->params.ctx_dft, nullptr);
+                    llama_set_embeddings_nextn_dev(this->params.ctx_dft, false);
+                }
+            }
+            if (spark_proposals) {
+                LOG_INF("%s: Spark DSpark device proposals, device anchor=%d\n", __func__, int(device_anchor));
+            }
             // Inkling2 uses host sampling to keep the first-maximum tie rule.
             for (auto & s : smpls) {
                 common_params_sampling sparams;
@@ -1480,8 +1512,8 @@ protected:
             return;
         }
         // Keep the committed boundary when the target rejects part of a verification batch.
-        const float * projected = llama_get_embeddings_nextn(params.ctx_dft);
-        if (projected) {
+        const float * projected = device_anchor ? nullptr : llama_get_embeddings_nextn(params.ctx_dft);
+        if (device_anchor || projected) {
             const size_t seq_offset = (size_t) seq_id * context_rows;
             const llama_pos pos_min = std::max(0, batch_inject.tokens.back().pos[0] - block_size);
             for (int32_t i = 0; i < n_chunk; ++i) {
@@ -1490,8 +1522,10 @@ protected:
                     continue;
                 }
                 const size_t slot = seq_offset + (size_t) pos % context_rows;
-                std::memcpy(context_embd.data() + slot * (size_t) n_embd_dec,
-                        projected + (size_t) i * n_embd_dec, (size_t) n_embd_dec * sizeof(float));
+                if (!device_anchor) {
+                    std::memcpy(context_embd.data() + slot * (size_t) n_embd_dec,
+                            projected + (size_t) i * n_embd_dec, (size_t) n_embd_dec * sizeof(float));
+                }
                 context_pos[slot] = pos;
             }
         }
@@ -1535,9 +1569,11 @@ public:
             i_block_beg[seq_id] = batch.size();
             for (int32_t i = 0; i < n_block_tokens; ++i) {
                 // All mask tokens participate in attention. Only the prefix is read by the single-sequence RNN drafter.
-                const bool output = !has_rnn_context || n_seq != 1 || i < i_draft_beg + params.n_max;
+                const bool output = !has_rnn_context || n_seq != 1 || i < i_draft_beg + model_depth;
                 const int32_t idx = batch.add(i == 0 ? dp.id_last : mask_token_id, n + i, seq_id, output);
-                if (context) {
+                if (device_anchor) {
+                    batch.set_embd_state_row(idx, (dp.pos0 - 1) % (llama_n_batch(ctx_dft) + llama_n_seq_max(ctx_dft)));
+                } else if (context) {
                     batch.set_embd_state(idx, { context, 1, (size_t) n_embd_dec });
                 }
             }
@@ -1547,6 +1583,17 @@ public:
             return;
         }
 
+        if (spark_proposals) {
+            std::array<llama_token, 7> ids;
+            const int count = model_depth;
+            if (llama_atomic_spark_propose(ctx_dft, batch.get(), ids.data(), count) != 0) {
+                throw std::runtime_error("Spark DSpark proposal graph failed");
+            }
+            if (count >= params.n_min) {
+                dparams[0].result->assign(ids.begin(), ids.begin() + count);
+            }
+            return;
+        }
         int ret = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get());
         if (ret != 0) {
             LOG_WRN("%s: llama_process returned %d\n", __func__, ret);
@@ -1608,6 +1655,7 @@ public:
 // DFlash2: walks the lattice of the selector over the top-k candidates of the block
 struct common_speculative_impl_draft_dflash2 final : public common_speculative_impl_draft_dflash {
     int32_t selector_top_k = 0;
+    bool spark_native_block = false;
 
     // probabilistic drafting: one generator per sequence and the seed it was last seeded with (-1: reseed)
     std::vector<std::mt19937> dflash2_rng;
@@ -1618,6 +1666,10 @@ struct common_speculative_impl_draft_dflash2 final : public common_speculative_i
         : common_speculative_impl_draft_dflash(params, n_seq, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2)
     {
         selector_top_k = llama_model_dflash_selector_top_k(llama_get_model(this->params.ctx_dft));
+        if (llama_atomic_spark_nvfp4_target(llama_get_model(this->params.ctx_tgt))) {
+            const char * mode = std::getenv("LLAMA_EXPERIMENTAL_SPARK_DFLASH_NATIVE_BLOCK");
+            spark_native_block = mode && std::strcmp(mode, "1") == 0 && block_size == 8;
+        }
         dflash2_rng.resize(n_seq);
         dflash2_seed.assign(n_seq, -1);
         if (this->params.atomic_adaptive_dflash) {
@@ -1666,7 +1718,8 @@ struct common_speculative_impl_draft_dflash2 final : public common_speculative_i
 
             const int32_t n = (int32_t) dp.pos0;
 
-            const int32_t n_draft = params.n_max;
+            // Noncausal draft attention sees the trained block even when the target checks a shorter prefix.
+            const int32_t n_draft = spark_native_block ? block_size - 1 : params.n_max;
             const int32_t n_block_tokens = n_draft + 1;
             i_block_beg[seq_id] = batch.size();
             n_block    [seq_id] = n_block_tokens;
@@ -1702,7 +1755,7 @@ struct common_speculative_impl_draft_dflash2 final : public common_speculative_i
 
             // DFlash2 can instead sample each step and hand q to the verifier for rejection sampling
             const bool sample = params.probabilistic && dp.result_q;
-            const bool adapt = atomic_depth && dp.temp == 0.0f && !sample;
+            const bool adapt = atomic_depth && !sample && (dp.temp == 0.0f || params.spark_sampled_depth);
             std::array<float, common_atomic_dflash_depth::capacity> confidence;
 
             // greedy keeps temperature 1, sampling uses the target's
@@ -1717,8 +1770,27 @@ struct common_speculative_impl_draft_dflash2 final : public common_speculative_i
             std::vector<float>   probs;
             std::vector<int32_t> sorted_idx;
 
+            int32_t verify_rows = std::min(n_block_tokens - 1, params.n_max);
+            if (atomic_depth && params.spark_sampled_depth && sample) {
+                // Choose the window before drawing any proposal. Truncating on
+                // a sampled token would condition q and invalidate rejection sampling.
+                int32_t greedy_prev = 0;
+                const int32_t offered = dp.n_max > 0 ? std::min(verify_rows, dp.n_max) : verify_rows;
+                for (int32_t i = 0; i < offered; ++i) {
+                    const float * row = lattice + size_t(beg + i + 1) * n_embd_dec;
+                    const float * scores = row + selector_top_k + size_t(greedy_prev) * selector_top_k;
+                    greedy_prev = int32_t(std::max_element(scores, scores + selector_top_k) - scores);
+                    float sum = 0.0f;
+                    for (int32_t k = 0; k < selector_top_k; ++k) {
+                        sum += std::exp((scores[k] - scores[greedy_prev]) / temp);
+                    }
+                    confidence[i] = 1.0f / sum;
+                }
+                verify_rows = int32_t(atomic_depth->choose(confidence.data(), offered, params.n_min, dp.atomic_verify_row_cost));
+            }
+
             int32_t predecessor = 0;
-            for (int32_t i = 1; i < n_block_tokens; ++i) {
+            for (int32_t i = 1; i <= verify_rows; ++i) {
                 const float * row = lattice + (size_t) (beg + i) * n_embd_dec;
                 const int32_t top_k = selector_top_k;
                 const float * scores = row + top_k + (size_t) predecessor * top_k;

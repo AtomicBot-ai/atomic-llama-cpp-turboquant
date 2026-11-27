@@ -98,31 +98,88 @@ bool llama_atomic_inkling_dspark_enable(llama_model * target) {
         return false;
     }
     const auto device = target->dev_output();
-    if (!device || std::strcmp(ggml_backend_dev_name(device), "MTL0") != 0) { return false; }
+    if (!device || (!target->memory_contract->discrete.unified && std::strcmp(ggml_backend_dev_name(device), "MTL0") != 0)) { return false; }
     target->memory_contract->inkling_dspark_target = true;
     return true;
+}
+
+bool llama_atomic_spark_dflash2_enable(llama_model * target) {
+    if (!target || !target->memory_contract || !target->memory_contract->discrete.unified ||
+            target->ftype() != LLAMA_FTYPE_MOSTLY_NVFP4 || !llama_atomic_inkling_dspark_enable(target)) {
+        return false;
+    }
+    target->memory_contract->spark_dflash2_draft = true;
+    return true;
+}
+
+bool llama_atomic_spark_nvfp4_target(const llama_model * target) {
+    return target && target->arch == LLM_ARCH_INKLING2_LOOP && target->ftype() == LLAMA_FTYPE_MOSTLY_NVFP4 &&
+            target->memory_contract && target->memory_contract->discrete.unified && target->memory_contract->inkling_dspark_target;
+}
+
+int llama_atomic_spark_propose(llama_context * ctx, llama_batch_ext * batch, llama_token * ids, int count) {
+    if (!ctx || !batch || !ids || count < 1 || count > 7 || batch->tokens.size() != 8 ||
+            !llama_atomic_is_inkling_dspark(&ctx->model) || !ctx->cparams.ctx_other ||
+            !llama_atomic_spark_nvfp4_target(&ctx->cparams.ctx_other->model)) { return -1; }
+    struct restore_mode {
+        bool & mode;
+        ~restore_mode() { mode = false; }
+    } restore{ctx->cparams.spark_draft_ids};
+    ctx->cparams.spark_draft_ids = true;
+    const int rc = ctx->decode(*batch);
+    if (rc != 0) { return rc; }
+    ctx->synchronize();
+    auto * result = ctx->get_gf_res_prev();
+    auto * proposals = ggml_graph_get_tensor(result->get_gf(), "spark_dspark_proposals");
+    if (!proposals || proposals->type != GGML_TYPE_I32 || ggml_nelements(proposals) != count) { return -1; }
+    ggml_backend_tensor_get(proposals, ids, 0, count * sizeof(*ids));
+    return 0;
+}
+
+bool llama_atomic_spark_draft_over_budget(const llama_model * target, const llama_context * ctx, bool init_failed) {
+    if (!target || !target->memory_contract || !target->memory_contract->discrete.unified ||
+            !target->memory_contract->inkling_dspark_target) { return false; }
+    if (init_failed && target->memory_contract->ledger->spark_admission_failed) { return true; }
+    llama_budget_data data{};
+    return ctx && llama_memory_budget_get(ctx, &data) && data.minimum > data.applied;
+}
+
+void llama_atomic_spark_draft_ready(llama_model * target, llama_context * ctx) {
+    if (target && ctx && target->memory_contract && target->memory_contract->discrete.unified &&
+            target->memory_contract->inkling_dspark_target) {
+        // Admit optional banks after both contexts and the draft weights have tickets.
+        const auto cap = target->memory_contract->ledger->snapshot(llama_memory_domain::host).applied;
+        llama_memory_budget_request(ctx, cap);
+        llama_memory_budget_apply(ctx);
+    }
 }
 
 llama_model * llama_atomic_budget_draft_load(llama_model * target, const char * path, llama_model_params params) {
     if (!target || !target->memory_contract ||
             (!target->memory_contract->dflash2_target && !target->memory_contract->inkling_dspark_target)) { return nullptr; }
     auto ledger = target->memory_contract->ledger;
+    if (target->memory_contract->discrete.unified) { ledger->spark_admission_failed = false; }
     llama_allocation_scope admission(ledger, llama_memory_category::drafter);
     params.memory_budget_size = 0;
     params.load_mode = LLAMA_LOAD_MODE_NONE;
     params.use_extra_bufts = false;
-    std::unique_ptr<llama_model> draft(llama_model_load_from_file(path, params));
+    std::unique_ptr<llama_model> draft(target->memory_contract->discrete.unified ?
+            llama_load_spark_draft(path, params, *target->memory_contract) : llama_model_load_from_file(path, params));
     if (!draft || draft->arch != LLM_ARCH_DFLASH || draft->vocab.n_tokens() != target->vocab.n_tokens() ||
             draft->hparams.n_embd != target->hparams.n_embd) { return nullptr; }
     if (target->memory_contract->inkling_dspark_target) {
         constexpr int32_t visits[] = {5, 23, 41, 48};
-        if (!llama_atomic_is_inkling_dspark(draft.get()) || draft->dev_output() != target->dev_output() ||
+        const bool compatible = target->memory_contract->spark_dflash2_draft ?
+                draft->dflash_selector_hidden && draft->hparams.dflash_post_softcap &&
+                    draft->hparams.n_vocab_unpadded == target->hparams.n_vocab_unpadded :
+                llama_atomic_is_inkling_dspark(draft.get()) &&
+                    (draft->dspark_markov_w2 || draft->hparams.n_vocab_padded == target->hparams.n_vocab_padded);
+        if (!compatible || draft->dev_output() != target->dev_output() ||
                 draft->n_gpu_layers() <= draft->hparams.n_layer_all ||
-                (!draft->dspark_markov_w2 && draft->hparams.n_vocab_padded != target->hparams.n_vocab_padded) ||
                 !std::equal(draft->target_layer_ids.begin(), draft->target_layer_ids.end(), std::begin(visits), std::end(visits))) {
             return nullptr;
         }
-        // The draft indexes its Markov weights with the target's token ids.
+        // Both drafters index learned weights with the target's token ids.
         for (llama_token id = 0; id < int32_t(target->vocab.n_tokens()); ++id) {
             if (draft->vocab.get_token_data(id).text != target->vocab.get_token_data(id).text) {
                 return nullptr;
@@ -133,7 +190,7 @@ llama_model * llama_atomic_budget_draft_load(llama_model * target, const char * 
                 [&](int32_t i) { return i < 0 || uint32_t(i) >= target->hparams.n_layer(); })) {
         return nullptr;
     }
-    draft->memory_contract = std::make_shared<llama_memory_contract>(ledger);
+    if (!draft->memory_contract) { draft->memory_contract = std::make_shared<llama_memory_contract>(ledger); }
     return draft.release();
 }
 
@@ -295,7 +352,7 @@ bool llama_get_expert_streaming_stats(const llama_context * ctx, llama_expert_st
 }
 
 bool llama_context::configure_memory_policy(const llama_memory_policy_config & config, bool system_source) {
-    if (!model.memory_contract || model.memory_contract->discrete.device || !expert_executor) { return false; }
+    if (!model.memory_contract || model.memory_contract->discrete.separate_limits() || !expert_executor) { return false; }
     std::lock_guard<std::mutex> lock(budget_control->budget_mutex);
     if (budget_control->budget_status == LLAMA_BUDGET_PENDING) { return false; }
     auto candidate = budget_control->budget_policy;
@@ -321,7 +378,7 @@ bool llama_context::submit_memory_pressure(const llama_memory_pressure_sample & 
 }
 
 bool llama_context::memory_policy_stats(llama_memory_policy_data & result) const {
-    if (!model.memory_contract || model.memory_contract->discrete.device || !expert_executor) { return false; }
+    if (!model.memory_contract || model.memory_contract->discrete.separate_limits() || !expert_executor) { return false; }
     std::lock_guard<std::mutex> lock(budget_control->budget_mutex);
     result = budget_control->budget_policy.status();
     result.minimum = std::max(result.config.minimum, expert_executor->stats().minimum_bytes);
@@ -343,7 +400,7 @@ bool llama_memory_policy_get(const llama_context * ctx, llama_memory_policy_data
 }
 
 uint64_t llama_context::request_memory_budget(size_t target) {
-    if (!model.memory_contract || model.memory_contract->discrete.device) { return 0; }
+    if (!model.memory_contract || model.memory_contract->discrete.separate_limits()) { return 0; }
     std::lock_guard<std::mutex> lock(budget_control->budget_mutex);
     if (budget_control->budget_request_id == UINT64_MAX) { return 0; }
     budget_control->budget_policy.manual();
@@ -353,7 +410,7 @@ uint64_t llama_context::request_memory_budget(size_t target) {
 }
 
 bool llama_context::resize_discrete_budget(size_t host_target, size_t device_target, size_t scratch_headroom) {
-    if (!model.memory_contract || !model.memory_contract->discrete.device || !expert_executor) {
+    if (!model.memory_contract || !model.memory_contract->discrete.separate_limits() || !expert_executor) {
         return false;
     }
     ggml_backend_sched_synchronize(sched.get());
@@ -366,7 +423,7 @@ bool llama_discrete_budget_resize(llama_context * ctx, size_t host_target, size_
 
 bool llama_context::set_discrete_prefill_probe(bool (*mid_read)(void *) noexcept,
         bool (*boundary)(llama_context *, void *) noexcept, void * user, bool worker, llama_expert_read_probe submitted_read) {
-    if (!model.memory_contract || !model.memory_contract->discrete.device || !expert_executor) {
+    if (!model.memory_contract || !model.memory_contract->discrete.separate_limits() || !expert_executor) {
         return false;
     }
     expert_executor->set_discrete_read_probe(mid_read, user, worker, submitted_read);
@@ -382,7 +439,7 @@ bool llama_discrete_prefill_probe_set(llama_context * ctx, bool (*mid_read)(void
 }
 
 bool llama_context::apply_memory_budget() {
-    if (!model.memory_contract || model.memory_contract->discrete.device || !expert_executor) { return false; }
+    if (!model.memory_contract || model.memory_contract->discrete.separate_limits() || !expert_executor) { return false; }
     std::lock_guard<std::mutex> lock(budget_control->budget_mutex);
     if (budget_control->budget_status != LLAMA_BUDGET_PENDING && budget_control->budget_policy.status().config.mode == llama_memory_mode::automatic) {
         const auto now = llama_memory_policy_now_ms();
@@ -408,7 +465,7 @@ bool llama_context::apply_memory_budget() {
 }
 
 bool llama_context::memory_budget_stats(llama_budget_data & result) const {
-    if (!model.memory_contract || model.memory_contract->discrete.device || !expert_executor) { return false; }
+    if (!model.memory_contract || model.memory_contract->discrete.separate_limits() || !expert_executor) { return false; }
     std::lock_guard<std::mutex> lock(budget_control->budget_mutex);
     const auto stats = expert_executor->stats();
     result = {};
@@ -435,7 +492,7 @@ bool llama_memory_budget_get(const llama_context * ctx, llama_budget_data * resu
 bool llama_discrete_budget_get(const llama_context * ctx, llama_discrete_budget_data * result) {
     if (!ctx || !result) { return false; }
     const auto & contract = ctx->get_model().memory_contract;
-    if (!contract || !contract->discrete.device) { return false; }
+    if (!contract || !contract->discrete.separate_limits()) { return false; }
     *result = {};
     for (size_t i = 0; i < 2; ++i) {
         const auto snapshot = contract->ledger->snapshot(i == 0 ? llama_memory_domain::host : llama_memory_domain::device);

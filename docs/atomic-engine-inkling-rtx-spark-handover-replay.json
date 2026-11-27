@@ -1,0 +1,771 @@
+{
+  "experts": {
+    "unique_experts_min_mean_max": [
+      13,
+      29.354166666666668,
+      39
+    ],
+    "assignments_per_expert": {
+      "1": 895,
+      "3": 121,
+      "2": 299,
+      "4": 45,
+      "5": 26,
+      "6": 23
+    },
+    "unique_weight_bytes": [
+      4207251456,
+      2103625728
+    ],
+    "l2_sector_bytes": [
+      {
+        "lts__t_sectors_op_read_lookup_hit.sum": 2176921472.0,
+        "lts__t_sectors_op_read.sum": 6389080736.0,
+        "lts__t_sectors_op_read_lookup_miss.sum": 4213324896.0,
+        "lts__t_sectors_aperture_sysmem_op_read.sum": 6389080736.0
+      },
+      {
+        "lts__t_sectors_op_read_lookup_hit.sum": 1449701088.0,
+        "lts__t_sectors_op_read_lookup_miss.sum": 2116907584.0,
+        "lts__t_sectors_op_read.sum": 3566653344.0,
+        "lts__t_sectors_aperture_sysmem_op_read.sum": 3566653344.0
+      }
+    ],
+    "scan_GBps": [
+      214.89901225023368,
+      247.06866003539193,
+      238.28115553962328
+    ],
+    "replay_ms_gate_down": [
+      [
+        18.7292,
+        10.5557
+      ],
+      [
+        19.0479,
+        11.645
+      ],
+      [
+        18.2219,
+        10.4207
+      ]
+    ],
+    "scan_bank_bytes": 382205952,
+    "l2_bytes": 25165824
+  },
+  "draft": {
+    "fixed": {
+      "1": {
+        "rounds": 32,
+        "accepted": 31,
+        "path": [
+          [
+            0,
+            1
+          ],
+          [
+            2,
+            1
+          ],
+          [
+            4,
+            1
+          ],
+          [
+            6,
+            1
+          ],
+          [
+            8,
+            1
+          ],
+          [
+            10,
+            1
+          ],
+          [
+            12,
+            1
+          ],
+          [
+            14,
+            1
+          ],
+          [
+            16,
+            1
+          ],
+          [
+            18,
+            1
+          ],
+          [
+            20,
+            1
+          ],
+          [
+            22,
+            0
+          ],
+          [
+            23,
+            1
+          ],
+          [
+            25,
+            1
+          ],
+          [
+            27,
+            1
+          ],
+          [
+            29,
+            1
+          ],
+          [
+            31,
+            1
+          ],
+          [
+            33,
+            1
+          ],
+          [
+            35,
+            1
+          ],
+          [
+            37,
+            1
+          ],
+          [
+            39,
+            1
+          ],
+          [
+            41,
+            1
+          ],
+          [
+            43,
+            1
+          ],
+          [
+            45,
+            1
+          ],
+          [
+            47,
+            1
+          ],
+          [
+            49,
+            1
+          ],
+          [
+            51,
+            1
+          ],
+          [
+            53,
+            1
+          ],
+          [
+            55,
+            1
+          ],
+          [
+            57,
+            1
+          ],
+          [
+            59,
+            1
+          ],
+          [
+            61,
+            1
+          ]
+        ]
+      },
+      "2": {
+        "rounds": 23,
+        "accepted": 40,
+        "path": [
+          [
+            0,
+            2
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            5,
+            2
+          ],
+          [
+            8,
+            2
+          ],
+          [
+            11,
+            2
+          ],
+          [
+            14,
+            2
+          ],
+          [
+            17,
+            1
+          ],
+          [
+            19,
+            2
+          ],
+          [
+            22,
+            0
+          ],
+          [
+            23,
+            2
+          ],
+          [
+            26,
+            0
+          ],
+          [
+            27,
+            2
+          ],
+          [
+            30,
+            2
+          ],
+          [
+            33,
+            2
+          ],
+          [
+            36,
+            2
+          ],
+          [
+            39,
+            2
+          ],
+          [
+            42,
+            2
+          ],
+          [
+            45,
+            2
+          ],
+          [
+            48,
+            2
+          ],
+          [
+            51,
+            2
+          ],
+          [
+            54,
+            2
+          ],
+          [
+            57,
+            2
+          ],
+          [
+            60,
+            2
+          ]
+        ]
+      },
+      "3": {
+        "rounds": 17,
+        "accepted": 46,
+        "path": [
+          [
+            0,
+            2
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            5,
+            3
+          ],
+          [
+            9,
+            3
+          ],
+          [
+            13,
+            3
+          ],
+          [
+            17,
+            1
+          ],
+          [
+            19,
+            3
+          ],
+          [
+            23,
+            3
+          ],
+          [
+            27,
+            3
+          ],
+          [
+            31,
+            3
+          ],
+          [
+            35,
+            3
+          ],
+          [
+            39,
+            3
+          ],
+          [
+            43,
+            3
+          ],
+          [
+            47,
+            3
+          ],
+          [
+            51,
+            3
+          ],
+          [
+            55,
+            3
+          ],
+          [
+            59,
+            3
+          ]
+        ]
+      },
+      "4": {
+        "rounds": 15,
+        "accepted": 48,
+        "path": [
+          [
+            0,
+            2
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            5,
+            3
+          ],
+          [
+            9,
+            4
+          ],
+          [
+            14,
+            4
+          ],
+          [
+            19,
+            3
+          ],
+          [
+            23,
+            3
+          ],
+          [
+            27,
+            4
+          ],
+          [
+            32,
+            4
+          ],
+          [
+            37,
+            4
+          ],
+          [
+            42,
+            4
+          ],
+          [
+            47,
+            3
+          ],
+          [
+            51,
+            4
+          ],
+          [
+            56,
+            4
+          ],
+          [
+            61,
+            1
+          ]
+        ]
+      },
+      "5": {
+        "rounds": 14,
+        "accepted": 49,
+        "path": [
+          [
+            0,
+            2
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            5,
+            3
+          ],
+          [
+            9,
+            5
+          ],
+          [
+            15,
+            3
+          ],
+          [
+            19,
+            3
+          ],
+          [
+            23,
+            3
+          ],
+          [
+            27,
+            5
+          ],
+          [
+            33,
+            3
+          ],
+          [
+            37,
+            5
+          ],
+          [
+            43,
+            4
+          ],
+          [
+            48,
+            5
+          ],
+          [
+            54,
+            5
+          ],
+          [
+            60,
+            2
+          ]
+        ]
+      },
+      "6": {
+        "rounds": 14,
+        "accepted": 49,
+        "path": [
+          [
+            0,
+            2
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            5,
+            3
+          ],
+          [
+            9,
+            5
+          ],
+          [
+            15,
+            3
+          ],
+          [
+            19,
+            3
+          ],
+          [
+            23,
+            3
+          ],
+          [
+            27,
+            5
+          ],
+          [
+            33,
+            3
+          ],
+          [
+            37,
+            6
+          ],
+          [
+            44,
+            3
+          ],
+          [
+            48,
+            6
+          ],
+          [
+            55,
+            5
+          ],
+          [
+            61,
+            1
+          ]
+        ]
+      },
+      "7": {
+        "rounds": 14,
+        "accepted": 49,
+        "path": [
+          [
+            0,
+            2
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            5,
+            3
+          ],
+          [
+            9,
+            5
+          ],
+          [
+            15,
+            3
+          ],
+          [
+            19,
+            3
+          ],
+          [
+            23,
+            3
+          ],
+          [
+            27,
+            5
+          ],
+          [
+            33,
+            3
+          ],
+          [
+            37,
+            7
+          ],
+          [
+            45,
+            2
+          ],
+          [
+            48,
+            7
+          ],
+          [
+            56,
+            5
+          ],
+          [
+            62,
+            0
+          ]
+        ]
+      }
+    },
+    "oracle_width_1_to_7": {
+      "rounds": 13,
+      "anchors": [
+        0,
+        2,
+        7,
+        12,
+        19,
+        23,
+        27,
+        28,
+        34,
+        42,
+        47,
+        50,
+        57
+      ]
+    },
+    "adaptive_replay": {
+      "rounds": 14,
+      "verified_rows": 74
+    }
+  },
+  "abba": [
+    {
+      "graphs_reused": 12,
+      "label": "control1",
+      "decode_tps": 65.88290411841355,
+      "ttft_s": 4.492519399966113,
+      "decode_ms": 956.242,
+      "rounds": 14,
+      "drafted": 67,
+      "peak_GiB": 17.539630085229874,
+      "max_depth": 5,
+      "adaptive": false,
+      "exact_ids": 64,
+      "exe_sha256": "299096c632cf44d2b5170c4ab2ed7c2bc0e568ffac716d389ffc163a5d9d0c00"
+    },
+    {
+      "graphs_reused": 9,
+      "label": "candidate1",
+      "decode_tps": 53.85259774673893,
+      "ttft_s": 4.472070100018755,
+      "decode_ms": 1169.86,
+      "rounds": 16,
+      "drafted": 67,
+      "peak_GiB": 17.539630085229874,
+      "max_depth": 5,
+      "adaptive": true,
+      "exact_ids": 64,
+      "exe_sha256": "299096c632cf44d2b5170c4ab2ed7c2bc0e568ffac716d389ffc163a5d9d0c00"
+    },
+    {
+      "graphs_reused": 9,
+      "label": "candidate2",
+      "decode_tps": 52.63263423828047,
+      "ttft_s": 4.503562199999578,
+      "decode_ms": 1196.976,
+      "rounds": 16,
+      "drafted": 67,
+      "peak_GiB": 17.539630085229874,
+      "max_depth": 5,
+      "adaptive": true,
+      "exact_ids": 64,
+      "exe_sha256": "299096c632cf44d2b5170c4ab2ed7c2bc0e568ffac716d389ffc163a5d9d0c00"
+    },
+    {
+      "graphs_reused": 12,
+      "label": "control2",
+      "decode_tps": 65.77683486046959,
+      "ttft_s": 4.523871900048107,
+      "decode_ms": 957.784,
+      "rounds": 14,
+      "drafted": 67,
+      "peak_GiB": 17.539630085229874,
+      "max_depth": 5,
+      "adaptive": false,
+      "exact_ids": 64,
+      "exe_sha256": "299096c632cf44d2b5170c4ab2ed7c2bc0e568ffac716d389ffc163a5d9d0c00"
+    }
+  ],
+  "counter_capability": {
+    "chip": "GB20B",
+    "counter_domains": [
+      "fe",
+      "gcc",
+      "gpc",
+      "gpu",
+      "gr",
+      "idc",
+      "l1tex",
+      "lts",
+      "sm",
+      "smsp",
+      "sys",
+      "tpc"
+    ],
+    "memory_controller_counters": []
+  },
+  "first_adaptive_trace_divergence": {
+    "round": 4,
+    "anchor": 9,
+    "offered": 4,
+    "recorded_prefix_hits": 4,
+    "live_accepted": 3
+  },
+  "adaptive_live_verified_rows": 83,
+  "prior_trace": {
+    "round_shapes": [
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      3
+    ],
+    "first_round_ms": 120.254,
+    "last_round_ms": 87.105,
+    "middle_target_ms": 48.6305,
+    "middle_draft_ms": 11.1515,
+    "mean_rollback_trim_ms": 0.01207,
+    "round7_gate_ms": 17.587048999999997,
+    "round7_down_ms": 8.608853000000002,
+    "full_window_rounds": 6,
+    "partial_window_rounds": 8
+  },
+  "device": {
+    "name": "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)",
+    "driver": "617.21"
+  },
+  "fixture": {
+    "input_tokens": 4000,
+    "output_tokens": 64,
+    "decode_intervals": 63,
+    "engine_limit_MiB": 18532,
+    "engine_budget_GiB_before_KV": 18,
+    "kv_allowance_MiB": 100
+  },
+  "measurement_notes": [
+    "L2 metrics cover all kernels in each replayed projection, including input preparation and stores; only read sectors are aggregated here.",
+    "Direct DRAM byte counters were not advertised under the queried metric names; L2 read misses are reported in 32-byte sectors.",
+    "The read benchmark uses a contiguous resident weight bank and decimal GB/s. Its fastest result is a comparison point, not a hardware limit.",
+    "The diagnostic privately reserves 128 MiB of CUDA memory outside the engine ledger. ABBA uses no diagnostic arena.",
+    "The all-prefix trace uses teacher forcing only to estimate the best achievable round count. Measured ABBA has no access to reference tokens during generation."
+  ],
+  "median_saved_ms": -226.4050000000002
+}

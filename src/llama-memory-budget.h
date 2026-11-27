@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <memory>
 
@@ -60,6 +61,8 @@ public:
     // Returns an empty ticket on insufficient capacity. No allocation is allowed
     // until a nonempty ticket is obtained. Zero-byte reservations are invalid.
     ticket reserve(llama_memory_domain domain, llama_memory_category category, size_t bytes);
+    // Set only for failed optional Spark startup, after any reclamation retry.
+    std::atomic<bool> spark_admission_failed{false};
     // Admissions immediately honor the new target; applied changes only once all
     // outstanding reservations and allocations fit. Growth applies immediately.
     void request(llama_memory_domain domain, size_t target);

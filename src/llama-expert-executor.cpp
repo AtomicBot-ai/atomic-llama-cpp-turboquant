@@ -63,6 +63,15 @@ struct llama_expert_executor::impl {
     std::map<const ggml_tensor *, projection> projections;
     std::shared_ptr<llama_expert_source> row_source;
     std::shared_ptr<llama_expert_source> prompt_matrix_source;
+    std::shared_ptr<llama_expert_source> spark_prompt_source;
+    bool spark_iq2_parallel_reads = false;
+    bool spark_nvfp4_matrix = false;
+    bool spark_retain_staging = false;
+    size_t spark_tiled_prompt_cap = 0;
+    size_t spark_wide_matrix_reserve = 0;
+    ggml_backend_buffer_t (*spark_alloc_shared)(ggml_backend_t, size_t, void **) = nullptr;
+    ggml_backend_buffer_ptr spark_shared_weights;
+    void * spark_shared_cpu = nullptr;
     void * (*prompt_host_base)(ggml_backend_buffer_t) = nullptr;
     ggml_backend_buffer_ptr prompt_matrix_workspace;
     ggml_backend_buffer_ptr prompt_down_workspace;
@@ -189,7 +198,7 @@ struct llama_expert_executor::impl {
         if (!source || !device || weights.empty()) { throw std::invalid_argument("invalid expert executor configuration"); }
         const std::string device_name = ggml_backend_dev_name(device);
         if (discrete_contract && (!discrete.device || ggml_backend_dev_buffer_type(device) != discrete.device ||
-                ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU ||
+                (!discrete.unified && ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU) ||
                 std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "CUDA") != 0)) {
             throw std::invalid_argument("invalid discrete CUDA expert executor configuration");
         }
@@ -202,6 +211,11 @@ struct llama_expert_executor::impl {
         // matrix waves. Both retain the same budget and lease checks.
         vector_read_overlap = metal && source->architecture() == "qwen4exp";
         const bool requested_acceleration = metal && !discrete.device && llama_expert_acceleration_requested();
+#if defined(_WIN32)
+        if (discrete.unified && source->architecture() == "inkling2_loop" && !source->packed_stride()) {
+            spark_prompt_source = source;
+        }
+#endif
         const bool inkling_metal = metal && source->architecture() == "inkling2_loop";
         inkling_acceleration = inkling_metal && requested_acceleration;
         // Explicit auto/off takes precedence; an absent unified setting preserves legacy opt-ins.
@@ -280,18 +294,26 @@ struct llama_expert_executor::impl {
         if (set_threads) { set_threads(backend.get(), 1); }
         size_t max_input = 0, max_output = 0, max_expert = 0;
         for (const auto * w : weights) {
+            if (discrete.unified && w->type != GGML_TYPE_Q4_K && w->type != GGML_TYPE_Q5_0 &&
+                    w->type != GGML_TYPE_IQ2_XXS && w->type != GGML_TYPE_IQ3_S &&
+                    w->type != GGML_TYPE_IQ4_NL && w->type != GGML_TYPE_Q2_0 && w->type != GGML_TYPE_NVFP4) {
+                throw std::runtime_error("unsupported RTX Spark Inkling expert format: " + std::string(w->name));
+            }
             switch (w->type) {
                 case GGML_TYPE_F32: case GGML_TYPE_F16: case GGML_TYPE_Q4_0:
                 case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_IQ4_XS: break;
+                case GGML_TYPE_NVFP4:
+                    if (discrete.unified) { break; }
+                    throw std::runtime_error("NVFP4 expert streaming requires the RTX Spark profile");
                 case GGML_TYPE_Q2_0: case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL:
-                    if (inkling_metal) { break; }
+                    if (inkling_metal || discrete.unified) { break; }
                     [[fallthrough]];
                 case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S: case GGML_TYPE_IQ3_XXS:
                     if (source->architecture() == "qwen4exp" && (metal || discrete.device)) { break; }
                     throw std::runtime_error("this expert format requires experimental Qwen4Exp Metal or CUDA streaming");
                 case GGML_TYPE_Q5_0:
                     // Inkling's 1152-wide down projection uses 32-element quantization blocks.
-                    if (inkling_metal) { break; }
+                    if (inkling_metal || discrete.unified) { break; }
                     [[fallthrough]];
                 default: throw std::runtime_error("expert quantization is not qualified for streaming: " + std::string(w->name));
             }
@@ -362,7 +384,8 @@ struct llama_expert_executor::impl {
             host_bytes = host_elements * sizeof(float);
             minimum = meta_size + buffer_size + host_bytes + max_expert_allocation + max_expert;
             fixed_workspace = meta_size + buffer_size + host_bytes;
-            if (discrete.device) {
+            if (discrete.unified) { minimum += ggml_tensor_overhead(); }
+            if (discrete.separate_limits()) {
                 const auto vram = budget->snapshot(buffer_domain);
                 fixed_workspace = meta_size + host_bytes;
                 minimum = fixed_workspace + ggml_tensor_overhead() + max_expert_payload;
@@ -603,6 +626,9 @@ struct llama_expert_executor::impl {
 
 #include "llama-flash-next-prompt-tiles.inc"
 #include "llama-inkling-prompt-matrix.inc"
+#if defined(_WIN32)
+#include "llama-spark-prompt-matrix.inc"
+#endif
 #include "llama-inkling-expert-ffn.inc"
 
     void compute(const projection & p, ggml_tensor * dst, bool keep_vector = false) {
@@ -670,6 +696,40 @@ struct llama_expert_executor::impl {
             compute_cpu(p, dst, input, ids);
             return;
         }
+#if defined(_WIN32)
+        const bool spark_short = spark_nvfp4_matrix && ids->ne[0] == 8 && ids->ne[1] > 1 && ids->ne[1] <= 32;
+        if (spark_prompt_source && !keep_vector && (ids->ne[1] >= 512 || spark_short) && !tracing && !route_observer &&
+                !early && !preview && !profile && !policy_override) {
+            const size_t cap = spark_nvfp4_matrix && !spark_short ? budget->snapshot(llama_memory_domain::host).applied : 0;
+            const bool tiled = cap && spark_tiled_prompt_cap == cap;
+            if (compute_spark_prompt_matrix(p, dst, spark_short, tiled)) {
+                ++n_projections;
+                return;
+            }
+            spark_shared_weights.reset();
+            spark_shared_cpu = nullptr;
+            prompt_matrix_workspace.reset();
+            // If the full prompt matrix ran out of room, retain bank residency
+            // and retry with smaller activation tiles at this same fixed cap.
+            if (spark_nvfp4_matrix && ids->ne[1] > 1024) {
+                if (compute_spark_grouped_prompt(p, dst)) {
+                    ++n_projections;
+                    return;
+                }
+                spark_shared_weights.reset();
+                spark_shared_cpu = nullptr;
+            } else if (cap && !tiled && ids->ne[1] % 2 == 0) {
+                if (compute_spark_prompt_matrix(p, dst, false, true)) {
+                    spark_tiled_prompt_cap = cap;
+                    ++n_projections;
+                    return;
+                }
+                spark_shared_weights.reset();
+                spark_shared_cpu = nullptr;
+                prompt_matrix_workspace.reset();
+            }
+        }
+#endif
         if (prompt_matrix_source && !keep_vector && ids->ne[1] >= 512 && !tracing && !route_observer && !early && !preview) {
             if (routes && compute_inkling_prompt_matrix(p, dst, *routes)) {
                 ++n_projections;
@@ -690,10 +750,13 @@ struct llama_expert_executor::impl {
         const bool address_batch = (vector_batch && window_addresses) || (inkling_addresses && !matrix_wave);
         // CUDA selects indexed kernels by the original token count. Preserve
         // that dimension even when only a few rows route to this expert.
-        if (discrete.device && ids->ne[1] > int64_t(max_wave_rows)) {
+        if (discrete.separate_limits() && ids->ne[1] > int64_t(max_wave_rows)) {
             throw std::runtime_error("discrete expert projection requires a microbatch of at most 32 tokens");
         }
-        const size_t wave_rows = discrete.device ? size_t(ids->ne[1]) : matrix_wave || vector_batch ? max_wave_rows : 1;
+        // A large Spark prefill streams each selected weight once and processes its
+        // routed rows in the already admitted workspace.
+        const size_t wave_rows = discrete.device ? std::min(size_t(ids->ne[1]), max_wave_rows) :
+            matrix_wave || vector_batch ? max_wave_rows : 1;
         // Select a group size that can retain every referenced expert plus one
         // miss staging buffer, even if every victim has the largest slice size.
         size_t available = 0;
@@ -1338,6 +1401,35 @@ void llama_expert_executor::configure_acceleration(bool dflash_verify, bool prof
     pimpl->configure_acceleration();
 }
 void llama_expert_executor::configure_resident_layers(const llama_model & model, uint32_t ubatch) {
+    if (pimpl->discrete.unified && model.arch == LLM_ARCH_INKLING2_LOOP) {
+        const auto & inkling = static_cast<const llama_model_inkling2_loop &>(model);
+#if defined(_WIN32)
+        pimpl->spark_iq2_parallel_reads = llama_model_ftype(&model) == LLAMA_FTYPE_MOSTLY_IQ2_XXS;
+        pimpl->spark_nvfp4_matrix = llama_model_ftype(&model) == LLAMA_FTYPE_MOSTLY_NVFP4;
+        const char * retain = std::getenv("LLAMA_EXPERIMENTAL_SPARK_RETAIN_STAGING");
+        pimpl->spark_retain_staging = pimpl->spark_nvfp4_matrix && model.memory_contract &&
+                model.memory_contract->inkling_dspark_target && retain && std::strcmp(retain, "1") == 0;
+        if (pimpl->spark_nvfp4_matrix && ubatch > 1024) {
+            // One original expert matrix must coexist with the scheduler and
+            // its routed activations while processing the whole prompt.
+            pimpl->spark_wide_matrix_reserve = model.hparams.n_expert * pimpl->max_expert_allocation;
+        }
+        if (pimpl->spark_iq2_parallel_reads || pimpl->spark_nvfp4_matrix) {
+            const auto reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(pimpl->backend.get()));
+            pimpl->spark_alloc_shared = reinterpret_cast<decltype(pimpl->spark_alloc_shared)>(
+                    ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_spark_prompt_weights"));
+        }
+#endif
+        pimpl->inkling_core = std::make_unique<llama_inkling_core_banks>(inkling, true, false);
+#if defined(_WIN32)
+        if (pimpl->spark_nvfp4_matrix) { pimpl->inkling_core->set_spark_backend(pimpl->backend.get()); }
+#endif
+        const auto state = stats();
+        if (!model.memory_contract->inkling_dspark_target) {
+            pimpl->inkling_core->grow(pimpl->inkling_core->allowance(state.memory.applied, state.minimum_bytes, false));
+        }
+        return;
+    }
     if (model.arch == LLM_ARCH_INKLING2_LOOP && model.memory_contract && pimpl->inkling_acceleration) {
         // Native core banks do not need the address-table kernel used by streamed experts.
         const char * flag = std::getenv("LLAMA_EXPERIMENTAL_INKLING_CORE_BANKS");
@@ -1356,7 +1448,7 @@ void llama_expert_executor::configure_resident_layers(const llama_model & model,
             pimpl->inkling_core.reset(new (std::nothrow) llama_inkling_core_banks(
                     inkling, pimpl->balanced_prompt && overlap_prompt, prefer_full));
             if (!pimpl->inkling_core) { return; }
-            pimpl->inkling_core->grow(llama_inkling_core_banks::allowance(state.memory.applied, state.minimum_bytes, pimpl->balanced_prompt));
+            pimpl->inkling_core->grow(pimpl->inkling_core->allowance(state.memory.applied, state.minimum_bytes, pimpl->balanced_prompt));
             if (pimpl->balanced_prompt && overlap_prompt) {
                 for (const auto & l : inkling.layers) {
                     auto gate = pimpl->projections.find(l.ffn_gate_up_exps);
@@ -1388,6 +1480,10 @@ void llama_expert_executor::configure_resident_layers(const llama_model & model,
 const std::array<ggml_tensor *, 3> * llama_expert_executor::resident_layer(int il) const {
     return pimpl->lfm_resident && !pimpl->layer_window ? pimpl->lfm_resident->get(il) : nullptr;
 }
+bool llama_expert_executor::inkling_all_resident() const {
+    return pimpl->inkling_core && pimpl->inkling_core->all_resident() && !pimpl->tracing && !pimpl->route_observer;
+}
+
 bool llama_expert_executor::has_inkling_core_policy() const { return bool(pimpl->inkling_core); }
 
 const std::array<ggml_tensor *, 2> * llama_expert_executor::inkling_core_layer(int ip) const {
@@ -1448,7 +1544,7 @@ llama_expert_execution_stats llama_expert_executor::stats() const {
         store.buffer_reuses += host.buffer_reuses;
     }
     const auto memory = pimpl->budget->snapshot(llama_memory_domain::host);
-    const size_t minimum = memory.used() - (pimpl->discrete.device ? store.entries * ggml_tensor_overhead() : store.resident_bytes + store.pooled_bytes) +
+    const size_t minimum = memory.used() - (pimpl->discrete.separate_limits() ? store.entries * ggml_tensor_overhead() : store.resident_bytes + store.pooled_bytes) +
                 pimpl->minimum - pimpl->fixed_workspace - pimpl->optional_bytes() -
                 (pimpl->lfm_resident ? pimpl->lfm_resident->bytes() : 0) -
                 (pimpl->inkling_core ? pimpl->inkling_core->bytes() : 0);
@@ -1460,6 +1556,13 @@ llama_expert_execution_stats llama_expert_executor::stats() const {
             pimpl->optional_bytes(), pimpl->moe ? pimpl->moe->prefetch_candidates() : 0};
 }
 void llama_expert_executor::release_prompt_matrix() {
+    // Only the mapped staging allocation survives. Each projection overwrites
+    // its selected weights, and every retained byte keeps its ledger ticket.
+    if (!pimpl->spark_retain_staging || error() ||
+            pimpl->budget->snapshot(llama_memory_domain::host).applied != (size_t(16484) << 20)) {
+        pimpl->spark_shared_weights.reset();
+        pimpl->spark_shared_cpu = nullptr;
+    }
     pimpl->prompt_down_ready = nullptr;
     pimpl->prompt_down_workspace.reset();
     pimpl->prompt_matrix_workspace.reset();
@@ -1476,13 +1579,20 @@ void llama_expert_executor::set_compact_inkling_scheduler(bool compact) {
 }
 
 bool llama_expert_executor::resize(size_t target) {
-    if (pimpl->discrete.device || error()) { return false; }
+    if (pimpl->discrete.separate_limits() || error()) { return false; }
+    if (pimpl->spark_retain_staging) {
+        // The context synchronized the scheduler before this admission boundary.
+        pimpl->spark_shared_weights.reset();
+        pimpl->spark_shared_cpu = nullptr;
+    }
     const bool drop_history = target != class_lru_budget && pimpl->class_policy && !pimpl->policy_override;
     const size_t optional_bytes = drop_history ? pimpl->store->class_lru_history_bytes() : 0;
     const auto state = stats();
     if (target < state.minimum_bytes - optional_bytes) { return false; }
-    const auto core_allowance = llama_inkling_core_banks::allowance(target, state.minimum_bytes, pimpl->balanced_prompt);
+    llama_inkling_core_banks::limits core_allowance{};
     if (pimpl->inkling_core) {
+        core_allowance = pimpl->inkling_core->allowance(target, state.minimum_bytes + pimpl->spark_wide_matrix_reserve,
+                pimpl->balanced_prompt);
         pimpl->inkling_core->shrink(core_allowance);
     }
     // The context has synchronized and invalidated graphs before resizing.
@@ -1501,8 +1611,9 @@ bool llama_expert_executor::resize(size_t target) {
     pimpl->store->request_budget(llama_memory_domain::host, target);
     const bool applied = !pimpl->budget->snapshot(llama_memory_domain::host).pending();
     if (applied) {
-        if (pimpl->inkling_core && target > state.memory.applied) {
-            if (pimpl->inkling_core->can_restore_full(core_allowance)) {
+        if (pimpl->inkling_core && (target > state.memory.applied ||
+                (pimpl->discrete.unified && target == state.memory.applied && !pimpl->inkling_core->bytes()))) {
+            if (pimpl->discrete.unified || pimpl->inkling_core->can_restore_full(core_allowance)) {
                 // Demand-cached experts from the smaller budget duplicate the
                 // returning banks. Evict only idle entries, before measuring
                 // each bank's charge against the shared expert category.
@@ -1518,7 +1629,7 @@ bool llama_expert_executor::resize(size_t target) {
     return applied;
 }
 bool llama_expert_executor::resize_discrete(size_t host_target, size_t device_target, size_t scratch_headroom) {
-    if (!pimpl->discrete.device || error()) { return false; }
+    if (!pimpl->discrete.separate_limits() || error()) { return false; }
     const auto cache = pimpl->store->stats();
     const auto cpu = pimpl->cpu_store ? pimpl->cpu_store->stats() : llama_expert_store_stats{};
     if (cache.pinned_entries || cpu.entries) { return false; }
@@ -1547,11 +1658,11 @@ void llama_expert_executor::set_discrete_read_probe(bool (*callback)(void *) noe
         llama_expert_read_probe submitted_read) {
     pimpl->store->set_read_probe(callback, user, worker, submitted_read);
 }
-llama_memory_reclaimer llama_expert_executor::allocation_reclaimer() {
-    if (!pimpl->selective_reclaim || pimpl->tracing) { return {}; }
+llama_memory_reclaimer llama_expert_executor::allocation_reclaimer(bool shared_draft) {
+    if ((!pimpl->selective_reclaim && !(shared_draft && pimpl->discrete.unified)) || pimpl->tracing) { return {}; }
     return {[](void * user, llama_memory_domain domain, size_t bytes) {
         auto & self = *static_cast<impl *>(user);
-        self.store->reclaim_to_fit(domain, bytes);
+        self.store->reclaim_to_fit(self.discrete.unified ? llama_memory_domain::device : domain, bytes);
     }, pimpl.get()};
 }
 

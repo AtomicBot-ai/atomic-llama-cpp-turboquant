@@ -42,6 +42,7 @@ void * llama_allocation_scope::reserve(ggml_backend_buffer_type_t buft, size_t s
             ticket = scope.budget->reserve(domain, scope.category, charge);
         }
         if (!ticket) {
+            if (scope.discrete.unified) { scope.budget->spark_admission_failed = true; }
             const auto state = scope.budget->snapshot(domain);
             std::fprintf(stderr, "engine budget: denied %zu bytes for %s; used=%zu target=%zu category=%d\n",
                 charge, name, state.used(), state.requested, int(scope.category));

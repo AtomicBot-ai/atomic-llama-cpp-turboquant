@@ -68,9 +68,14 @@ public:
     };
     void read_experts(const read_request * requests, size_t count, bool speculative = false,
                     bool concurrent_demand = false, llama_expert_read_layout layout = llama_expert_read_layout::separate);
-#if defined(__APPLE__)
-    // Exact contiguous expert slices into one already admitted Metal or staging range.
+#if defined(__APPLE__) || defined(_WIN32)
+    // Exact contiguous expert slices into one already admitted host-accessible range.
     void read_expert_range(const std::string & name, int64_t first, int64_t end, void * dst, size_t bytes);
+#endif
+#if defined(_WIN32)
+    bool read_spark_expert_range(const std::string & name, int64_t first, int64_t end, void * dst, size_t bytes);
+    bool read_spark_selected_experts(const std::string & name, const std::array<bool, 128> & selected,
+            void * dst, size_t bytes, const std::array<int32_t, 128> * slots = nullptr);
 #endif
     // Best-effort macOS file-cache hint for one known demand expert. No user
     // buffer, published weight, offset change or validation bypass. False means

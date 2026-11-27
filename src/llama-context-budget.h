@@ -9,6 +9,10 @@
 // Control metadata is owned only by contexts with an explicit engine budget.
 // Like other control objects, it is covered by the runtime envelope.
 struct llama_context_budget {
+    ggml_backend_t spark_backend = nullptr;
+    void (*set_spark_prompt_pool)(ggml_backend_t, bool) = nullptr;
+    void (*set_spark_decode_graph)(ggml_backend_t, bool) = nullptr;
+    void (*set_spark_split_graph)(ggml_backend_t, const ggml_cgraph *) = nullptr;
     llama_prefill_window_data prefill_window;
     bool prefill_window_wide_default = false;
     uint32_t partial_wide_min = 0;

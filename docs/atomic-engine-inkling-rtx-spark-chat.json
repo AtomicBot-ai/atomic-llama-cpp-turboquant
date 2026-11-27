@@ -1,0 +1,2417 @@
+{
+  "date": "2026-11-25",
+  "platform": "Windows ARM64 RTX Spark",
+  "args": [
+    "-m",
+    "inkling-2-mini-q4_k-nvfp4.gguf",
+    "--device",
+    "CUDA0",
+    "-ngl",
+    "all",
+    "-c",
+    "4096",
+    "-b",
+    "1000",
+    "-ub",
+    "1000",
+    "-np",
+    "1",
+    "-t",
+    "8",
+    "-tb",
+    "8",
+    "-fit",
+    "off",
+    "-fa",
+    "on",
+    "-ctk",
+    "q4_0",
+    "-ctv",
+    "q4_0",
+    "--cache-ram",
+    "0",
+    "--ctx-checkpoints",
+    "0",
+    "--no-warmup",
+    "--metrics",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--engine-budget-mib",
+    "20580",
+    "-md",
+    "dspark-Inkling-2-Mini-Q8_0.gguf",
+    "-ngld",
+    "all",
+    "--spec-type",
+    "draft-dspark",
+    "--spec-draft-n-max",
+    "7",
+    "--spec-draft-n-ubatch",
+    "32",
+    "-ctkd",
+    "q4_0",
+    "-ctvd",
+    "q4_0"
+  ],
+  "baseline_env": {
+    "LLAMA_EXPERIMENTAL_SPARK_NVFP4": "1",
+    "GGML_CUDA_MMQ_PREC": "q4",
+    "LLAMA_EXPERIMENTAL_SPARK_DSPARK_GPU": "1",
+    "LLAMA_EXPERIMENTAL_SPARK_VERIFY": "1",
+    "LLAMA_EXPERIMENTAL_SPARK_VERIFY_MMQ": "q8",
+    "LLAMA_EXPERIMENTAL_SPARK_ATTENTION": "1",
+    "LLAMA_EXPERIMENTAL_INKLING_PROMPT_LOOKUP": "1",
+    "LLAMA_EXPERIMENTAL_SPARK_STREAM_VERIFY": "1",
+    "LLAMA_EXPERIMENTAL_SPARK_HOT_EXPERTS": "0",
+    "LLAMA_EXPERIMENTAL_SPARK_SPLIT_GRAPH": "1",
+    "LLAMA_EXPERIMENTAL_SPARK_RETAIN_STAGING": "1",
+    "GGML_CUDA_GRAPH_DEBUG": "1",
+    "LLAMA_EXPERIMENTAL_SPARK_DSPARK_MODEL_DEPTH": "2"
+  },
+  "baseline_server_sha256": "f6728cd71b2c15d9236bca23cf839c3a90bf3a5873bc9e8382a38c26af1a9399",
+  "compact_build_sha256": "94ec647838ca9f549dc264d3c897a9f8829a95419bb203042bf0af69716050d7",
+  "requests": [
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Give me a quick lunch idea with eggs."
+        },
+        {
+          "role": "assistant",
+          "content": "Try a spinach omelet."
+        },
+        {
+          "role": "user",
+          "content": "I only have eggs, rice and soy sauce. What can I make? Keep it short."
+        }
+      ],
+      "seed": 42,
+      "max_tokens": 256,
+      "cache_prompt": false
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Why does the sky look blue? Answer in two sentences."
+        }
+      ],
+      "seed": 42,
+      "max_tokens": 256,
+      "cache_prompt": false
+    }
+  ],
+  "temperature_default": 1.0,
+  "method": "Sequential uncached requests. One request per case and configuration. Server decode includes reasoning tokens. Wall time includes prompt processing. Stock was stopped during isolated experiments and idle during the live request.",
+  "cases": {
+    "q8_reference": {
+      "verify_mmq": "q8",
+      "learned_depth": 2,
+      "compact_routes": false,
+      "results": [
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 57,
+            "prompt_ms": 629.225,
+            "prompt_per_token_ms": 11.039035087719299,
+            "prompt_per_second": 90.5876276371727,
+            "predicted_n": 206,
+            "predicted_ms": 5271.907,
+            "predicted_per_token_ms": 25.716619512195123,
+            "predicted_per_second": 38.885359700009886,
+            "draft_n": 210,
+            "draft_n_accepted": 100
+          },
+          "wall": 5.918529500020668,
+          "stop": "stop",
+          "answer": "Scramble eggs with a splash of soy sauce and serve over rice. Optional: stir eggs over the rice for a quick soy egg-fried-rice bowl.",
+          "reasoning_hash": "f79b910017d1373632a252fa5fe3722f4134b7b6d59d7da857447738b13f8218"
+        },
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 437.99,
+            "prompt_per_token_ms": 16.221851851851852,
+            "prompt_per_second": 61.64524304207859,
+            "predicted_n": 185,
+            "predicted_ms": 4125.985,
+            "predicted_per_token_ms": 22.423831521739128,
+            "predicted_per_second": 44.595411762282225,
+            "draft_n": 168,
+            "draft_n_accepted": 101
+          },
+          "wall": 4.566136100096628,
+          "stop": "stop",
+          "answer": "Sunlight contains many wavelengths, and air molecules scatter shorter blue wavelengths much more strongly than longer red ones. This scattered blue light reaches our eyes from all parts of the sky, making it look blue.",
+          "reasoning_hash": "737bf403a65b2c9861bb801edcdad916ddf6820eb951fe29335dfc637ec8480f"
+        }
+      ]
+    },
+    "default_dispatch": {
+      "verify_mmq": "0",
+      "learned_depth": 2,
+      "compact_routes": false,
+      "results": [
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 57,
+            "prompt_ms": 626.389,
+            "prompt_per_token_ms": 10.989280701754387,
+            "prompt_per_second": 90.99776656358908,
+            "predicted_n": 133,
+            "predicted_ms": 3191.356,
+            "predicted_per_token_ms": 24.176939393939396,
+            "predicted_per_second": 41.3617283687561,
+            "draft_n": 142,
+            "draft_n_accepted": 61
+          },
+          "wall": 3.835704799974337,
+          "stop": "stop",
+          "answer": "Scrambled eggs with rice, seasoned with soy sauce.",
+          "reasoning_hash": "af73d5b6204eb7f3c14edfe61a416a85988cca8bb97d3e6be8b035906eb85685"
+        },
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 438.637,
+            "prompt_per_token_ms": 16.245814814814814,
+            "prompt_per_second": 61.55431484348105,
+            "predicted_n": 185,
+            "predicted_ms": 3858.002,
+            "predicted_per_token_ms": 20.967402173913044,
+            "predicted_per_second": 47.69308051162234,
+            "draft_n": 174,
+            "draft_n_accepted": 97
+          },
+          "wall": 4.31422639999073,
+          "stop": "stop",
+          "answer": "Sunlight contains all visible wavelengths, and air molecules scatter shorter blue wavelengths much more strongly than longer red ones. The blue scattered light fills the sky, so it appears blue in every direction.",
+          "reasoning_hash": "b6a77f18de261b4a4f72ca1fa39f37bf73013df3a021ac99d9e7ef1f24209eff"
+        }
+      ]
+    },
+    "fp4_1": {
+      "verify_mmq": "1",
+      "learned_depth": 1,
+      "compact_routes": false,
+      "results": [
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 57,
+            "prompt_ms": 608.092,
+            "prompt_per_token_ms": 10.668280701754385,
+            "prompt_per_second": 93.73581629095598,
+            "predicted_n": 142,
+            "predicted_ms": 3392.338,
+            "predicted_per_token_ms": 24.05913475177305,
+            "predicted_per_second": 41.56425450529988,
+            "draft_n": 86,
+            "draft_n_accepted": 55
+          },
+          "wall": 4.018609300022945,
+          "stop": "stop",
+          "answer": "Scrambled-egg fried rice: scramble eggs, mix with warm rice and a splash of soy sauce.",
+          "reasoning_hash": "e25bc58a9d00df390122f8ff80a9ae831537ae443de049a71f548919bbbf9877"
+        },
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 462.012,
+            "prompt_per_token_ms": 17.111555555555555,
+            "prompt_per_second": 58.440040518428084,
+            "predicted_n": 231,
+            "predicted_ms": 5557.235,
+            "predicted_per_token_ms": 24.161891304347826,
+            "predicted_per_second": 41.38748856220764,
+            "draft_n": 142,
+            "draft_n_accepted": 88
+          },
+          "wall": 6.037839099997655,
+          "stop": "stop",
+          "answer": "Sunlight contains many wavelengths, and Earth\u2019s air scatters shorter blue wavelengths more strongly than longer ones. That scattered blue light reaches our eyes from across the sky, so the sky appears blue.",
+          "reasoning_hash": "bfd76311561706f0c861e79887a474e61876586e0ee200a4d394cd7991388f08"
+        }
+      ]
+    },
+    "fp4_2": {
+      "verify_mmq": "1",
+      "learned_depth": 2,
+      "compact_routes": false,
+      "results": [
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 57,
+            "prompt_ms": 633.197,
+            "prompt_per_token_ms": 11.108719298245614,
+            "prompt_per_second": 90.0193778555489,
+            "predicted_n": 168,
+            "predicted_ms": 3886.23,
+            "predicted_per_token_ms": 23.270838323353292,
+            "predicted_per_second": 42.97223787578193,
+            "draft_n": 172,
+            "draft_n_accepted": 82
+          },
+          "wall": 4.5387017000466585,
+          "stop": "stop",
+          "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+          "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+        },
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 439.944,
+            "prompt_per_token_ms": 16.294222222222224,
+            "prompt_per_second": 61.37144727510774,
+            "predicted_n": 190,
+            "predicted_ms": 3775.882,
+            "predicted_per_token_ms": 19.97821164021164,
+            "predicted_per_second": 50.05453030576697,
+            "draft_n": 168,
+            "draft_n_accepted": 105
+          },
+          "wall": 4.233200400019996,
+          "stop": "stop",
+          "answer": "Sunlight contains many wavelengths, but air molecules scatter shorter blue wavelengths more strongly than longer wavelengths. That scattered blue light reaches our eyes from every direction, making the sky appear blue.",
+          "reasoning_hash": "2428991a7553c13eecceff8c25bd23fa95464788aa4a44cf5e5bf81f21f9b5f4"
+        }
+      ]
+    },
+    "fp4_3": {
+      "verify_mmq": "1",
+      "learned_depth": 3,
+      "compact_routes": false,
+      "results": [
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 57,
+            "prompt_ms": 636.57,
+            "prompt_per_token_ms": 11.167894736842106,
+            "prompt_per_second": 89.5423912531222,
+            "predicted_n": 112,
+            "predicted_ms": 2650.579,
+            "predicted_per_token_ms": 23.87909009009009,
+            "predicted_per_second": 41.8776425829979,
+            "draft_n": 147,
+            "draft_n_accepted": 63
+          },
+          "wall": 3.3042370000621304,
+          "stop": "stop",
+          "answer": "Egg fried rice: cook rice, scramble eggs, toss with soy sauce. Ready in minutes.",
+          "reasoning_hash": "056be78fe78dad1123f501b46f1f60b603d4004e259f50529f5d45781c55516d"
+        },
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 456.506,
+            "prompt_per_token_ms": 16.90762962962963,
+            "prompt_per_second": 59.14489623356538,
+            "predicted_n": 256,
+            "predicted_ms": 6239.869,
+            "predicted_per_token_ms": 24.470074509803922,
+            "predicted_per_second": 40.86624254451496,
+            "draft_n": 348,
+            "draft_n_accepted": 138
+          },
+          "wall": 6.704360500094481,
+          "stop": "length",
+          "answer": "Sunlight contains all visible wavelengths and is scattered by air molecules. Blue light is",
+          "reasoning_hash": "5db5b54de67b54487f5685656cdeddb63ba76ce97ba377d570e535c76a2113bf"
+        }
+      ]
+    },
+    "q8_compact": {
+      "verify_mmq": "q8",
+      "learned_depth": 2,
+      "compact_routes": true,
+      "results": [
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 57,
+            "prompt_ms": 659.692,
+            "prompt_per_token_ms": 11.573543859649122,
+            "prompt_per_second": 86.4039582108014,
+            "predicted_n": 206,
+            "predicted_ms": 4987.417,
+            "predicted_per_token_ms": 24.32886341463415,
+            "predicted_per_second": 41.10344091941781,
+            "draft_n": 210,
+            "draft_n_accepted": 100
+          },
+          "wall": 5.664713200065307,
+          "stop": "stop",
+          "answer": "Scramble eggs with a splash of soy sauce and serve over rice. Optional: stir eggs over the rice for a quick soy egg-fried-rice bowl.",
+          "reasoning_hash": "f79b910017d1373632a252fa5fe3722f4134b7b6d59d7da857447738b13f8218"
+        },
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 438.89,
+            "prompt_per_token_ms": 16.255185185185184,
+            "prompt_per_second": 61.51883159789469,
+            "predicted_n": 185,
+            "predicted_ms": 3906.319,
+            "predicted_per_token_ms": 21.229994565217392,
+            "predicted_per_second": 47.103167969640985,
+            "draft_n": 168,
+            "draft_n_accepted": 101
+          },
+          "wall": 4.3668510999996215,
+          "stop": "stop",
+          "answer": "Sunlight contains many wavelengths, and air molecules scatter shorter blue wavelengths much more strongly than longer red ones. This scattered blue light reaches our eyes from all parts of the sky, making it look blue.",
+          "reasoning_hash": "737bf403a65b2c9861bb801edcdad916ddf6820eb951fe29335dfc637ec8480f"
+        }
+      ]
+    },
+    "fp4_compact": {
+      "verify_mmq": "1",
+      "learned_depth": 2,
+      "compact_routes": true,
+      "results": [
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 57,
+            "prompt_ms": 674.717,
+            "prompt_per_token_ms": 11.837140350877192,
+            "prompt_per_second": 84.4798634093998,
+            "predicted_n": 168,
+            "predicted_ms": 3893.937,
+            "predicted_per_token_ms": 23.316988023952096,
+            "predicted_per_second": 42.88718589951507,
+            "draft_n": 172,
+            "draft_n_accepted": 82
+          },
+          "wall": 4.575144000002183,
+          "stop": "stop",
+          "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+          "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+        },
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 449.347,
+            "prompt_per_token_ms": 16.642481481481482,
+            "prompt_per_second": 60.087193193678836,
+            "predicted_n": 190,
+            "predicted_ms": 3780.56,
+            "predicted_per_token_ms": 20.00296296296296,
+            "predicted_per_second": 49.99259368982373,
+            "draft_n": 168,
+            "draft_n_accepted": 105
+          },
+          "wall": 4.247213899972849,
+          "stop": "stop",
+          "answer": "Sunlight contains many wavelengths, but air molecules scatter shorter blue wavelengths more strongly than longer wavelengths. That scattered blue light reaches our eyes from every direction, making the sky appear blue.",
+          "reasoning_hash": "2428991a7553c13eecceff8c25bd23fa95464788aa4a44cf5e5bf81f21f9b5f4"
+        }
+      ]
+    },
+    "q8_gate_off": {
+      "verify_mmq": "q8",
+      "learned_depth": 2,
+      "compact_routes": false,
+      "results": [
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 57,
+            "prompt_ms": 624.607,
+            "prompt_per_token_ms": 10.958017543859649,
+            "prompt_per_second": 91.25738264220543,
+            "predicted_n": 206,
+            "predicted_ms": 5291.72,
+            "predicted_per_token_ms": 25.813268292682928,
+            "predicted_per_second": 38.73976703226928,
+            "draft_n": 210,
+            "draft_n_accepted": 100
+          },
+          "wall": 5.934052099939436,
+          "stop": "stop",
+          "answer": "Scramble eggs with a splash of soy sauce and serve over rice. Optional: stir eggs over the rice for a quick soy egg-fried-rice bowl.",
+          "reasoning_hash": "f79b910017d1373632a252fa5fe3722f4134b7b6d59d7da857447738b13f8218"
+        },
+        {
+          "t": {
+            "cache_n": 0,
+            "prompt_n": 27,
+            "prompt_ms": 448.166,
+            "prompt_per_token_ms": 16.59874074074074,
+            "prompt_per_second": 60.245534020876185,
+            "predicted_n": 185,
+            "predicted_ms": 4184.044,
+            "predicted_per_token_ms": 22.73936956521739,
+            "predicted_per_second": 43.97659298037975,
+            "draft_n": 168,
+            "draft_n_accepted": 101
+          },
+          "wall": 4.634056500042789,
+          "stop": "stop",
+          "answer": "Sunlight contains many wavelengths, and air molecules scatter shorter blue wavelengths much more strongly than longer red ones. This scattered blue light reaches our eyes from all parts of the sky, making it look blue.",
+          "reasoning_hash": "737bf403a65b2c9861bb801edcdad916ddf6820eb951fe29335dfc637ec8480f"
+        }
+      ]
+    }
+  },
+  "q8_phase_profile": {
+    "rounds": 105,
+    "ms": {
+      "draft": 795.09,
+      "target": 4281.01,
+      "inject": 147.02,
+      "sampling": 47.43,
+      "trim": 0.67
+    },
+    "response": {
+      "t": {
+        "cache_n": 0,
+        "prompt_n": 57,
+        "prompt_ms": 666.76,
+        "prompt_per_token_ms": 11.697543859649123,
+        "prompt_per_second": 85.48803167556542,
+        "predicted_n": 206,
+        "predicted_ms": 5282.581,
+        "predicted_per_token_ms": 25.76868780487805,
+        "predicted_per_second": 38.806787818303214,
+        "draft_n": 210,
+        "draft_n_accepted": 100
+      },
+      "wall": 5.967800299986266,
+      "stop": "stop",
+      "answer": "Scramble eggs with a splash of soy sauce and serve over rice. Optional: stir eggs over the rice for a quick soy egg-fried-rice bowl.",
+      "reasoning_hash": "f79b910017d1373632a252fa5fe3722f4134b7b6d59d7da857447738b13f8218"
+    }
+  },
+  "q8_target_round_7": {
+    "cupti_wall_ms": 44.0097,
+    "mul_mat_q_count": 96,
+    "mul_mat_q_sum_ms": 20.93
+  },
+  "compact_archive": {
+    "1": {
+      "exact": true,
+      "t": {
+        "cache_n": 0,
+        "prompt_n": 4000,
+        "prompt_ms": 5201.959,
+        "prompt_per_token_ms": 1.3004897499999999,
+        "prompt_per_second": 768.9410854641492,
+        "predicted_n": 64,
+        "predicted_ms": 604.487,
+        "predicted_per_token_ms": 9.595031746031745,
+        "predicted_per_second": 104.22060358618134,
+        "draft_n": 56,
+        "draft_n_accepted": 55
+      }
+    },
+    "q8": {
+      "exact": true,
+      "t": {
+        "cache_n": 0,
+        "prompt_n": 4000,
+        "prompt_ms": 5167.272,
+        "prompt_per_token_ms": 1.291818,
+        "prompt_per_second": 774.1028534979387,
+        "predicted_n": 64,
+        "predicted_ms": 638.48,
+        "predicted_per_token_ms": 10.134603174603175,
+        "predicted_per_second": 98.67184563337928,
+        "draft_n": 56,
+        "draft_n_accepted": 55
+      }
+    }
+  },
+  "live_fp4_lunch": {
+    "wall": 4.5158444999251515,
+    "t": {
+      "cache_n": 0,
+      "prompt_n": 57,
+      "prompt_ms": 609.9,
+      "prompt_per_token_ms": 10.7,
+      "prompt_per_second": 93.45794392523365,
+      "predicted_n": 168,
+      "predicted_ms": 3903.477,
+      "predicted_per_token_ms": 23.37411377245509,
+      "predicted_per_second": 42.7823706915655,
+      "draft_n": 172,
+      "draft_n_accepted": 82
+    },
+    "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+    "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+    "stop": "stop"
+  },
+  "prior_lunch_without_draft": {
+    "engine": {
+      "default_temperature": 1.0,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 57,
+        "prompt_ms": 568.481,
+        "prompt_per_token_ms": 9.973350877192983,
+        "prompt_per_second": 100.2672033014296,
+        "predicted_n": 146,
+        "predicted_ms": 3975.741,
+        "predicted_per_token_ms": 27.418903448275863,
+        "predicted_per_second": 36.4711886413124
+      },
+      "wall_s": 4.664632625004742,
+      "stop": "stop",
+      "answer": "Scrambled eggs with cooked rice, drizzled with soy sauce. Add a pinch of salt or pepper if you have it."
+    },
+    "stock": {
+      "default_temperature": 1.0,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 57,
+        "prompt_ms": 298.151,
+        "prompt_per_token_ms": 5.2307192982456145,
+        "prompt_per_second": 191.17829556164494,
+        "predicted_n": 256,
+        "predicted_ms": 7105.809,
+        "predicted_per_token_ms": 27.865917647058826,
+        "predicted_per_second": 35.886132036478884
+      },
+      "wall_s": 7.489358416001778,
+      "stop": "length",
+      "answer": "Rice fried egg: stir-fry rice with "
+    }
+  },
+  "fp4_expert_experiment": {
+    "case_index": 0,
+    "single_request_runs": {
+      "lunch-A": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 638.547,
+          "prompt_per_token_ms": 11.202578947368421,
+          "prompt_per_second": 89.26515980812688,
+          "predicted_n": 168,
+          "predicted_ms": 3890.901,
+          "predicted_per_token_ms": 23.29880838323353,
+          "predicted_per_second": 42.920649998547894,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 4.5484409999335185,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      },
+      "lunch-B": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 668.618,
+          "prompt_per_token_ms": 11.730140350877194,
+          "prompt_per_second": 85.2504718688399,
+          "predicted_n": 168,
+          "predicted_ms": 4038.426,
+          "predicted_per_token_ms": 24.182191616766467,
+          "predicted_per_second": 41.35274485653569,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 4.72206910001114,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      },
+      "lunch-coalesced": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 664.553,
+          "prompt_per_token_ms": 11.65882456140351,
+          "prompt_per_second": 85.77193993556571,
+          "predicted_n": 168,
+          "predicted_ms": 3862.789,
+          "predicted_per_token_ms": 23.130473053892217,
+          "predicted_per_second": 43.23301117405067,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 4.543769499985501,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      },
+      "lunch-split": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 643.289,
+          "prompt_per_token_ms": 11.285771929824561,
+          "prompt_per_second": 88.60714235747852,
+          "predicted_n": 168,
+          "predicted_ms": 3833.388,
+          "predicted_per_token_ms": 22.954419161676647,
+          "predicted_per_second": 43.56459612228139,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 4.495198200107552,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      },
+      "lunch-order": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 654.324,
+          "prompt_per_token_ms": 11.47936842105263,
+          "prompt_per_second": 87.11280649953235,
+          "predicted_n": 168,
+          "predicted_ms": 4028.104,
+          "predicted_per_token_ms": 24.120383233532934,
+          "predicted_per_second": 41.45871109584063,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 4.684732800000347,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      },
+      "lunch-bulk": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 602.879,
+          "prompt_per_token_ms": 10.576824561403509,
+          "prompt_per_second": 94.54633516841687,
+          "predicted_n": 168,
+          "predicted_ms": 5214.036,
+          "predicted_per_token_ms": 31.22177245508982,
+          "predicted_per_second": 32.02893113894879,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 5.8224296000553295,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      },
+      "lunch-bulk-split": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 594.594,
+          "prompt_per_token_ms": 10.431473684210527,
+          "prompt_per_second": 95.86373222736857,
+          "predicted_n": 168,
+          "predicted_ms": 4179.31,
+          "predicted_per_token_ms": 25.025808383233535,
+          "predicted_per_second": 39.95874917151395,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 4.792155100032687,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      },
+      "confirm-B": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 610.126,
+          "prompt_per_token_ms": 10.703964912280702,
+          "prompt_per_second": 93.42332567371331,
+          "predicted_n": 168,
+          "predicted_ms": 3829.297,
+          "predicted_per_token_ms": 22.929922155688622,
+          "predicted_per_second": 43.61113802350667,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 4.457899400033057,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      },
+      "confirm-A": {
+        "t": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 588.435,
+          "prompt_per_token_ms": 10.323421052631579,
+          "prompt_per_second": 96.86711361492773,
+          "predicted_n": 168,
+          "predicted_ms": 3872.128,
+          "predicted_per_token_ms": 23.18639520958084,
+          "predicted_per_second": 43.12873954580014,
+          "draft_n": 172,
+          "draft_n_accepted": 82
+        },
+        "wall": 4.479621900012717,
+        "stop": "stop",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_hash": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919"
+      }
+    },
+    "prefix_accepted_per_round": {
+      "2": 32,
+      "1": 18,
+      "0": 36
+    },
+    "logical_layer_route_counts": {
+      "observations": 4128,
+      "mean_unique_experts": 16.217296511627907,
+      "histogram": {
+        "13": 333,
+        "18": 429,
+        "17": 555,
+        "16": 539,
+        "15": 495,
+        "11": 142,
+        "10": 68,
+        "14": 428,
+        "19": 344,
+        "20": 261,
+        "21": 167,
+        "22": 94,
+        "12": 213,
+        "23": 45,
+        "9": 6,
+        "24": 8,
+        "8": 1
+      },
+      "round_7": [
+        18,
+        21,
+        21,
+        22,
+        20,
+        23,
+        18,
+        20,
+        15,
+        16,
+        19,
+        18,
+        18,
+        17,
+        17,
+        14,
+        16,
+        10,
+        21,
+        17,
+        19,
+        16,
+        20,
+        20,
+        17,
+        19,
+        18,
+        14,
+        18,
+        12,
+        19,
+        16,
+        17,
+        15,
+        17,
+        18,
+        16,
+        18,
+        18,
+        18,
+        21,
+        18,
+        14,
+        18,
+        14,
+        17,
+        16,
+        15
+      ]
+    },
+    "phase_ms": {
+      "baseline": {
+        "rounds": 86,
+        "ms": {
+          "draft": 650.55,
+          "target": 3074.99,
+          "inject": 125.11,
+          "sampling": 40.12,
+          "trim": 0.62
+        }
+      },
+      "split_tile": {
+        "rounds": 86,
+        "ms": {
+          "draft": 653.4,
+          "target": 3007.49,
+          "inject": 121.23,
+          "sampling": 39.3,
+          "trim": 0.62
+        }
+      }
+    },
+    "cupti_round_7_ms": {
+      "baseline": {
+        "target": 38.9554,
+        "expert_mmul": 15.52083
+      },
+      "split_tile": {
+        "target": 38.6205,
+        "expert_mmul": 14.631
+      }
+    },
+    "served_mode": "Original FP4 verifier. The split-K trial changes accumulation order."
+  },
+  "draft_target_overlap": {
+    "method": "Fixed observed greedy-draft trajectory. p is the post-sampler target probability vector. q is the normalized temperature-one softmax of the highest k DSpark logits at the same prefix. expected_accept sums min(p,q) over tokens and contexts. conditional_on_observed_token sums min(1,q(token)/p(token)) for the recorded target draws. Neither is a live throughput measurement. Second-position contexts only include rounds where the first greedy token matched.",
+    "same_visible_answer_and_reasoning_hash_as_fp4": true,
+    "observed": {
+      "rounds": 86,
+      "first_rejections": 36,
+      "first_rejections_where_target_mode_equals_draft_mode": 9,
+      "output_tokens": 168,
+      "draft_tokens": 172,
+      "accepted_draft_tokens": 82
+    },
+    "metrics": {
+      "all": {
+        "1": {
+          "n": 86,
+          "expected_greedy": 49.661643334299995,
+          "expected_accept": 49.661643334299995,
+          "conditional_on_observed_token": 50.0,
+          "sampled_in_q": 50,
+          "q_mass_mean": 0.7780543884933339
+        },
+        "4": {
+          "n": 86,
+          "expected_greedy": 49.661643334299995,
+          "expected_accept": 55.417388560299834,
+          "conditional_on_observed_token": 54.52916601054707,
+          "sampled_in_q": 69,
+          "q_mass_mean": 0.9411584845673254
+        },
+        "8": {
+          "n": 86,
+          "expected_greedy": 49.661643334299995,
+          "expected_accept": 55.93365155179808,
+          "conditional_on_observed_token": 55.28117990576756,
+          "sampled_in_q": 77,
+          "q_mass_mean": 0.9703362003825999
+        },
+        "16": {
+          "n": 86,
+          "expected_greedy": 49.661643334299995,
+          "expected_accept": 55.85754568462222,
+          "conditional_on_observed_token": 55.168784332786466,
+          "sampled_in_q": 81,
+          "q_mass_mean": 0.9843055880926304
+        },
+        "32": {
+          "n": 86,
+          "expected_greedy": 49.661643334299995,
+          "expected_accept": 55.78432820474488,
+          "conditional_on_observed_token": 54.99305280462155,
+          "sampled_in_q": 81,
+          "q_mass_mean": 0.9911504879673303
+        },
+        "64": {
+          "n": 86,
+          "expected_greedy": 49.661643334299995,
+          "expected_accept": 55.72040520995678,
+          "conditional_on_observed_token": 54.90851185010351,
+          "sampled_in_q": 82,
+          "q_mass_mean": 0.9949574190429122
+        }
+      },
+      "first_missed": {
+        "1": {
+          "n": 36,
+          "expected_greedy": 7.5125283093,
+          "expected_accept": 7.5125283093,
+          "conditional_on_observed_token": 0.0,
+          "sampled_in_q": 0,
+          "q_mass_mean": 0.6216077505415512
+        },
+        "4": {
+          "n": 36,
+          "expected_greedy": 7.5125283093,
+          "expected_accept": 12.415212605110744,
+          "conditional_on_observed_token": 5.931873914620675,
+          "sampled_in_q": 19,
+          "q_mass_mean": 0.8866757830150911
+        },
+        "8": {
+          "n": 36,
+          "expected_greedy": 7.5125283093,
+          "expected_accept": 12.990964391871042,
+          "conditional_on_observed_token": 6.819249736026275,
+          "sampled_in_q": 27,
+          "q_mass_mean": 0.943181219155877
+        },
+        "16": {
+          "n": 36,
+          "expected_greedy": 7.5125283093,
+          "expected_accept": 12.973583185991957,
+          "conditional_on_observed_token": 6.756936728385484,
+          "sampled_in_q": 31,
+          "q_mass_mean": 0.970361133247322
+        },
+        "32": {
+          "n": 36,
+          "expected_greedy": 7.5125283093,
+          "expected_accept": 12.935392165362414,
+          "conditional_on_observed_token": 6.61436988688529,
+          "sampled_in_q": 31,
+          "q_mass_mean": 0.983548322004959
+        },
+        "64": {
+          "n": 36,
+          "expected_greedy": 7.5125283093,
+          "expected_accept": 12.89862511081167,
+          "conditional_on_observed_token": 6.554690187986609,
+          "sampled_in_q": 32,
+          "q_mass_mean": 0.990622454415678
+        }
+      },
+      "first_matched": {
+        "1": {
+          "n": 50,
+          "expected_greedy": 42.149115025,
+          "expected_accept": 42.149115025,
+          "conditional_on_observed_token": 50,
+          "sampled_in_q": 50,
+          "q_mass_mean": 0.8906959678186177
+        },
+        "4": {
+          "n": 50,
+          "expected_greedy": 42.149115025,
+          "expected_accept": 43.00217595518909,
+          "conditional_on_observed_token": 48.59729209592641,
+          "sampled_in_q": 50,
+          "q_mass_mean": 0.9803860296849345
+        },
+        "8": {
+          "n": 50,
+          "expected_greedy": 42.149115025,
+          "expected_accept": 42.942687159927026,
+          "conditional_on_observed_token": 48.46193016974129,
+          "sampled_in_q": 50,
+          "q_mass_mean": 0.9898877868658404
+        },
+        "16": {
+          "n": 50,
+          "expected_greedy": 42.149115025,
+          "expected_accept": 42.88396249863026,
+          "conditional_on_observed_token": 48.41184760440098,
+          "sampled_in_q": 50,
+          "q_mass_mean": 0.9943455955812519
+        },
+        "32": {
+          "n": 50,
+          "expected_greedy": 42.149115025,
+          "expected_accept": 42.848936039382444,
+          "conditional_on_observed_token": 48.37868291773626,
+          "sampled_in_q": 50,
+          "q_mass_mean": 0.9966240474602371
+        },
+        "64": {
+          "n": 50,
+          "expected_greedy": 42.149115025,
+          "expected_accept": 42.8217800991451,
+          "conditional_on_observed_token": 48.35382166211689,
+          "sampled_in_q": 50,
+          "q_mass_mean": 0.9980785935745209
+        }
+      },
+      "second_reached": {
+        "1": {
+          "n": 50,
+          "expected_greedy": 28.242385606800006,
+          "expected_accept": 28.242385606800006,
+          "conditional_on_observed_token": 32.0,
+          "sampled_in_q": 32,
+          "q_mass_mean": 0.7023620226233916
+        },
+        "4": {
+          "n": 50,
+          "expected_greedy": 28.242385606800006,
+          "expected_accept": 29.692847228620117,
+          "conditional_on_observed_token": 31.263429609921243,
+          "sampled_in_q": 39,
+          "q_mass_mean": 0.9062798660839972
+        },
+        "8": {
+          "n": 50,
+          "expected_greedy": 28.242385606800006,
+          "expected_accept": 29.771534524593473,
+          "conditional_on_observed_token": 30.513778041946406,
+          "sampled_in_q": 42,
+          "q_mass_mean": 0.9507177908399538
+        },
+        "16": {
+          "n": 50,
+          "expected_greedy": 28.242385606800006,
+          "expected_accept": 29.63592900003453,
+          "conditional_on_observed_token": 30.1982719347072,
+          "sampled_in_q": 45,
+          "q_mass_mean": 0.9726540702262144
+        },
+        "32": {
+          "n": 50,
+          "expected_greedy": 28.242385606800006,
+          "expected_accept": 29.472661994467447,
+          "conditional_on_observed_token": 30.021376333812338,
+          "sampled_in_q": 46,
+          "q_mass_mean": 0.9844070367348827
+        },
+        "64": {
+          "n": 50,
+          "expected_greedy": 28.242385606800006,
+          "expected_accept": 29.38997103760451,
+          "conditional_on_observed_token": 29.93371524951618,
+          "sampled_in_q": 47,
+          "q_mass_mean": 0.990696540517067
+        }
+      }
+    }
+  },
+  "two_first_token_branches": {
+    "request_index": 0,
+    "budget_mib": 20580,
+    "method": "One uncached request per variant. Target layout was [anchor, primary, primary continuation, alternative]. The alternative attends only to its ancestors; its convolution uses the anchor and prefix. The fixed runs consume the same target token sequence as the live linear control. The shadow evaluates the alternative but never selects it. Promotion reuses the selected KV cell, convolution snapshot and target features without a second target decode.",
+    "cases": {
+      "fork-control": {
+        "output_tokens": 168,
+        "decode_tps": 43.023473297880614,
+        "decode_ms": 3881.602,
+        "http_s": 4.588979099993594,
+        "target_rounds": 86,
+        "total_target_ms": 3075.732,
+        "mean_target_round_ms": 35.764325581395354,
+        "alternate_hits": 0,
+        "accepted_token_ids_sha256": "13e0531f23eaa2e96aa74639a646e98b666b116eb658cd165d3e344b8e45c568",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_sha256": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+        "finish": "stop"
+      },
+      "fork-fixed-control": {
+        "output_tokens": 168,
+        "decode_tps": 42.88726299650996,
+        "decode_ms": 3893.93,
+        "http_s": 4.566085599944927,
+        "target_rounds": 86,
+        "total_target_ms": 3077.64,
+        "mean_target_round_ms": 35.786511627906975,
+        "alternate_hits": 0,
+        "accepted_token_ids_sha256": "13e0531f23eaa2e96aa74639a646e98b666b116eb658cd165d3e344b8e45c568",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_sha256": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+        "finish": "stop"
+      },
+      "fork-shadow": {
+        "output_tokens": 168,
+        "decode_tps": 35.66395499593281,
+        "decode_ms": 4682.599,
+        "http_s": 5.328240699949674,
+        "target_rounds": 89,
+        "total_target_ms": 3817.792,
+        "mean_target_round_ms": 42.8965393258427,
+        "alternate_hits": 0,
+        "accepted_token_ids_sha256": "13e0531f23eaa2e96aa74639a646e98b666b116eb658cd165d3e344b8e45c568",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_sha256": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+        "finish": "stop"
+      },
+      "fork-fixed-promote": {
+        "output_tokens": 168,
+        "decode_tps": 38.05035451765935,
+        "decode_ms": 4388.921,
+        "http_s": 5.06335609999951,
+        "target_rounds": 82,
+        "total_target_ms": 3553.362,
+        "mean_target_round_ms": 43.33368292682927,
+        "alternate_hits": 13,
+        "accepted_token_ids_sha256": "13e0531f23eaa2e96aa74639a646e98b666b116eb658cd165d3e344b8e45c568",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_sha256": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+        "finish": "stop"
+      },
+      "fork-fixed-replay": {
+        "output_tokens": 168,
+        "decode_tps": 30.133879231712385,
+        "decode_ms": 5541.935,
+        "http_s": 6.1957543999888,
+        "target_rounds": 82,
+        "total_target_ms": 3815.405,
+        "mean_target_round_ms": 46.529329268292685,
+        "alternate_hits": 12,
+        "accepted_token_ids_sha256": "13e0531f23eaa2e96aa74639a646e98b666b116eb658cd165d3e344b8e45c568",
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_sha256": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+        "finish": "stop"
+      },
+      "fork-live-promote": {
+        "output_tokens": 123,
+        "decode_tps": 40.385502796199525,
+        "decode_ms": 3020.886,
+        "http_s": 3.683463399996981,
+        "target_rounds": 57,
+        "total_target_ms": 2457.963,
+        "mean_target_round_ms": 43.12215789473684,
+        "alternate_hits": 10,
+        "accepted_token_ids_sha256": "84d6d0903eb4d5bdd83af1e86c1c49bf0e5ccfb29053a32801b0ca08255ddf9b",
+        "answer": "Scrambled eggs over rice: cook rice, whisk eggs with soy sauce, scramble, and mix into rice.",
+        "reasoning_sha256": "c2935780f7070a95e507236795b6077cd8c1968d51c2e3af0be9d94b043f58f8",
+        "finish": "stop"
+      }
+    },
+    "identical_child_checks": {
+      "fork-identical": {
+        "rounds": 89,
+        "same_argmax": 89,
+        "same_logits_at_six_decimals": 70,
+        "largest_logit_difference": 7.067823
+      },
+      "fork-duplicate-alias": {
+        "rounds": 89,
+        "same_argmax": 89,
+        "same_logits_at_six_decimals": 89,
+        "largest_logit_difference": 0.0
+      }
+    },
+    "limitations": "Changing the verifier shape or physical KV location can change logits. Fixed-path experiments compare cost and pass count; they do not establish equality of sampling distributions. Prototype was not deployed."
+  },
+  "inkling_dflash2": {
+    "checkpoint": "incoai/Inkling-2-Mini-DFlash2",
+    "revision": "4f9088ea66c21f2b99ed657d1941c306b03e84d2",
+    "files": {
+      "sha256": {
+        "model.safetensors": "217980ab00d116693fa5946df7bbfd967caf5fac1f529afd541fbd470ddb54ee",
+        "inkling-dflash2-bf16.gguf": "0dde9db3881f6874d45f0d48b75545e00ee69776ffffe0b479cacce529e3c230"
+      },
+      "metadata": {
+        "dflash.target_layers": [
+          5,
+          23,
+          41,
+          48
+        ],
+        "dflash.selector_softcap_after_correction": true,
+        "dflash.vocab_size_unpadded": 200058
+      },
+      "tokenizer_sha256": "6f70050978d0729fb31578dd613b7fa358e8536deb00186615bd88a9b85ca529"
+    },
+    "target_feature_positions": 57,
+    "feature_check_vs_dspark": [
+      {
+        "visit": 5,
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "identical": true
+      },
+      {
+        "visit": 23,
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "identical": true
+      },
+      {
+        "visit": 41,
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "identical": true
+      },
+      {
+        "visit": 48,
+        "max_abs": 0.0,
+        "rms": 0.0,
+        "identical": true
+      }
+    ],
+    "first_block": {
+      "anchor_id": 200001,
+      "draft_kv": "f16",
+      "reference": "Float32 reconstruction from original BF16 draft weights with the serving GGUF target output and embedding.",
+      "verification": [
+        {
+          "path_ref": 200008,
+          "path_cuda": 200008,
+          "position": 1,
+          "top16": 16,
+          "top1": true,
+          "max_error": 0.0969696044921875,
+          "rms": 0.03773676976561546
+        },
+        {
+          "path_ref": 32153,
+          "path_cuda": 32153,
+          "position": 2,
+          "top16": 16,
+          "top1": true,
+          "max_error": 0.1629962921142578,
+          "rms": 0.10435464978218079
+        },
+        {
+          "path_ref": 220,
+          "path_cuda": 220,
+          "position": 3,
+          "top16": 16,
+          "top1": true,
+          "max_error": 0.11684846878051758,
+          "rms": 0.038167864084243774
+        },
+        {
+          "path_ref": 220,
+          "path_cuda": 220,
+          "position": 4,
+          "top16": 15,
+          "top1": true,
+          "max_error": 0.1453862190246582,
+          "rms": 0.04899931326508522
+        }
+      ]
+    },
+    "bench": {
+      "request_index": 0,
+      "temperature": 1,
+      "max_tokens": 256,
+      "budget_mib": 20580,
+      "spec_draft_n_ubatch": 32,
+      "draft_kv": "q4_0",
+      "target_kv": "q4_0",
+      "target": "inkling-2-mini-q4_k-nvfp4.gguf",
+      "method": "Sequential native Windows llama-server HTTP requests with one slot, no cached prompt, and a fresh test process per run. Throughput is server decode speed. Generated token counts include reasoning. CUPTI and phase diagnostics are separate runs.",
+      "env_overrides": {
+        "LLAMA_EXPERIMENTAL_SPARK_VERIFY_MMQ": "1",
+        "GGML_CUDA_MMQ_PREC": "q4",
+        "LLAMA_EXPERIMENTAL_SPARK_DSPARK_MODEL_DEPTH": "2"
+      },
+      "cases": "ds uses DSpark depth two. Other cases use --spec-type draft-dflash2 with LLAMA_EXPERIMENTAL_SPARK_DFLASH2=1. The number after prob or d is the number of proposals. prob enables --spec-draft-sampling probabilistic. native keeps the trained eight-position draft block. fuse enables LLAMA_EXPERIMENTAL_SPARK_CONTROL_PROJECT. adapt enables LLAMA_EXPERIMENTAL_DFLASH2_ADAPTIVE and LLAMA_EXPERIMENTAL_DFLASH2_TIMED_COST. compact enables LLAMA_EXPERIMENTAL_SPARK_COMPACT_ROUTES. q8 uses Q8_0 draft weights. All other DFlash2 cases use BF16 draft weights."
+    },
+    "requests": [
+      {
+        "case": "lunch-adapt-prob7",
+        "output": 98,
+        "accepted": 58,
+        "drafted": 122,
+        "tps": 31.256,
+        "decode_ms": 3103.45,
+        "wall_s": 4.0776653999928385,
+        "prompt_ms": 947.757,
+        "mean_len": 2.45,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Scramble eggs with a little soy sauce and serve over rice.",
+        "reasoning_sha256": "2167aa8e08f6acdf72f61aec042d0bc3f75fb1b3bc48b111667869ac672b3072",
+        "seed": 42
+      },
+      {
+        "case": "lunch-adapt7",
+        "output": 99,
+        "accepted": 50,
+        "drafted": 122,
+        "tps": 26.833,
+        "decode_ms": 3652.164,
+        "wall_s": 4.809669899987057,
+        "prompt_ms": 1132.451,
+        "mean_len": 2.04,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Scrambled eggs over rice with soy sauce—stir in soy sauce while cooking. Done in ~10 minutes.",
+        "reasoning_sha256": "e7a6abf1f02a34d4cf13be57a59cd2c0f482f2905c53636cadeedbfc054d1889",
+        "seed": 42
+      },
+      {
+        "case": "lunch-compact-native-prob4-s43",
+        "output": 136,
+        "accepted": 88,
+        "drafted": 192,
+        "tps": 48.103,
+        "decode_ms": 2806.486,
+        "wall_s": 3.7280711999628693,
+        "prompt_ms": 913.792,
+        "mean_len": 2.83,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18390.2,
+        "answer": "Egg-fried rice: cook rice, scramble eggs, toss with rice and a splash of soy sauce. Done.",
+        "reasoning_sha256": "b7bdcf2d41e5c08bbec854bcca3edb1cb3f9efad00e368b34d407ede7ac0c381",
+        "seed": 43
+      },
+      {
+        "case": "lunch-compact-prob7-s42",
+        "output": 160,
+        "accepted": 111,
+        "drafted": 357,
+        "tps": 46.993,
+        "decode_ms": 3383.463,
+        "wall_s": 4.19393329997547,
+        "prompt_ms": 803.054,
+        "mean_len": 3.18,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "seed": 42
+      },
+      {
+        "case": "lunch-d2",
+        "output": 168,
+        "accepted": 79,
+        "drafted": 178,
+        "tps": 39.549,
+        "decode_ms": 4222.622,
+        "wall_s": 5.219093999941833,
+        "prompt_ms": 934.185,
+        "mean_len": 1.89,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18381.1,
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_sha256": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+        "seed": 42
+      },
+      {
+        "case": "lunch-d4",
+        "output": 122,
+        "accepted": 64,
+        "drafted": 228,
+        "tps": 37.397,
+        "decode_ms": 3235.558,
+        "wall_s": 4.207208700012416,
+        "prompt_ms": 951.462,
+        "mean_len": 2.12,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18390.2,
+        "answer": "Scrambled-egg rice bowl: cook eggs with soy sauce, serve over rice.",
+        "reasoning_sha256": "871d0180f126913697b55892ff69bca085d08f67edea1c37ef368cf9bb266673",
+        "seed": 42
+      },
+      {
+        "case": "lunch-d7",
+        "output": 226,
+        "accepted": 127,
+        "drafted": 686,
+        "tps": 34.996,
+        "decode_ms": 6429.216,
+        "wall_s": 7.326797200017609,
+        "prompt_ms": 878.532,
+        "mean_len": 2.3,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.9,
+        "answer": "Make an egg-soy scramble over cooked rice: whisk eggs with a splash of soy sauce, pour into a pan, stir, and mix with rice.",
+        "reasoning_sha256": "b376db70bbdd0b8ccf3fe9bf28657074e765e0f670434f5532667f676cc5fbee",
+        "seed": 42
+      },
+      {
+        "case": "lunch-ds-repeat",
+        "output": 168,
+        "accepted": 82,
+        "drafted": 172,
+        "tps": 42.424,
+        "decode_ms": 3936.43,
+        "wall_s": 4.755271599977277,
+        "prompt_ms": 811.122,
+        "mean_len": 1.95,
+        "expert_read_bytes": 0,
+        "peak_MiB": 17957.8,
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_sha256": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+        "seed": 42
+      },
+      {
+        "case": "lunch-ds-s43",
+        "output": 148,
+        "accepted": 73,
+        "drafted": 148,
+        "tps": 42.75,
+        "decode_ms": 3438.558,
+        "wall_s": 4.212254100013524,
+        "prompt_ms": 751.817,
+        "mean_len": 1.99,
+        "expert_read_bytes": 0,
+        "peak_MiB": 17957.8,
+        "answer": "Quick egg-fried rice: cook rice, scramble eggs in a little oil, mix in soy sauce, stir in rice. Done.",
+        "reasoning_sha256": "4a165a39e1b4fd6f7b01d7338e60e12c8efb19ec210cb03dd72e99ed56c5a8a3",
+        "seed": 43
+      },
+      {
+        "case": "lunch-ds-s44",
+        "output": 143,
+        "accepted": 68,
+        "drafted": 148,
+        "tps": 41.811,
+        "decode_ms": 3396.234,
+        "wall_s": 4.176011099945754,
+        "prompt_ms": 767.953,
+        "mean_len": 1.92,
+        "expert_read_bytes": 0,
+        "peak_MiB": 17957.8,
+        "answer": "Scrambled eggs over rice, drizzled with soy sauce.",
+        "reasoning_sha256": "109896cf6acc1f132ec85a0224cbedb078c2df11626505c6605671084596ae62",
+        "seed": 44
+      },
+      {
+        "case": "lunch-ds",
+        "output": 168,
+        "accepted": 82,
+        "drafted": 172,
+        "tps": 42.426,
+        "decode_ms": 3936.228,
+        "wall_s": 4.772197699989192,
+        "prompt_ms": 827.393,
+        "mean_len": 1.95,
+        "expert_read_bytes": 0,
+        "peak_MiB": 17957.8,
+        "answer": "Scrambled-egg rice: cook rice, scramble eggs, toss with soy sauce.",
+        "reasoning_sha256": "15bd6b10a1160ee9f2bda71ee7f553380a0c055855b7ef65acd388a47434c919",
+        "seed": 42
+      },
+      {
+        "case": "lunch-fuse-ds",
+        "output": 124,
+        "accepted": 59,
+        "drafted": 128,
+        "tps": 41.227,
+        "decode_ms": 2983.455,
+        "wall_s": 3.781674100086093,
+        "prompt_ms": 777.204,
+        "mean_len": 1.92,
+        "expert_read_bytes": 0,
+        "peak_MiB": 17957.8,
+        "answer": "Scrambled eggs with rice and a splash of soy sauce—season to taste.",
+        "reasoning_sha256": "0e3d7a9fb0f5351c56904393eb31e7a2996c4ae317e82fbf32b494d9a7d279c2",
+        "seed": 42
+      },
+      {
+        "case": "lunch-fuse-prob4",
+        "output": 150,
+        "accepted": 96,
+        "drafted": 216,
+        "tps": 47.88,
+        "decode_ms": 3111.917,
+        "wall_s": 4.06870289996732,
+        "prompt_ms": 935.66,
+        "mean_len": 2.78,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18390.2,
+        "answer": "Scrambled eggs stirred into cooked rice with soy sauce.",
+        "reasoning_sha256": "1c8aed904f42f5ef4ce6ec44e19c8de79c264900d765241d7be263e391f25bbc",
+        "seed": 42
+      },
+      {
+        "case": "lunch-fuse-prob7",
+        "output": 100,
+        "accepted": 67,
+        "drafted": 231,
+        "tps": 44.524,
+        "decode_ms": 2223.54,
+        "wall_s": 3.27509619994089,
+        "prompt_ms": 1043.918,
+        "mean_len": 3.03,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Scrambled eggs over rice, drizzled with soy sauce. Optionally sprinkle salt—that’s it.",
+        "reasoning_sha256": "28e583e8a4ed98c8cd9f750fc5581f13d85a9c02b915a85709bfa5dec1529022",
+        "seed": 42
+      },
+      {
+        "case": "lunch-native-prob4-repeat-s43",
+        "output": 136,
+        "accepted": 88,
+        "drafted": 192,
+        "tps": 48.762,
+        "decode_ms": 2768.522,
+        "wall_s": 3.8748324000043795,
+        "prompt_ms": 1100.2,
+        "mean_len": 2.83,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18390.2,
+        "answer": "Egg-fried rice: cook rice, scramble eggs, toss with rice and a splash of soy sauce. Done.",
+        "reasoning_sha256": "b7bdcf2d41e5c08bbec854bcca3edb1cb3f9efad00e368b34d407ede7ac0c381",
+        "seed": 43
+      },
+      {
+        "case": "lunch-native-prob4-s43",
+        "output": 136,
+        "accepted": 88,
+        "drafted": 192,
+        "tps": 23.775,
+        "decode_ms": 5678.123,
+        "wall_s": 6.866425400017761,
+        "prompt_ms": 1173.472,
+        "mean_len": 2.83,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18390.2,
+        "answer": "Egg-fried rice: cook rice, scramble eggs, toss with rice and a splash of soy sauce. Done.",
+        "reasoning_sha256": "b7bdcf2d41e5c08bbec854bcca3edb1cb3f9efad00e368b34d407ede7ac0c381",
+        "seed": 43
+      },
+      {
+        "case": "lunch-native-prob4-s44",
+        "output": 158,
+        "accepted": 94,
+        "drafted": 256,
+        "tps": 41.904,
+        "decode_ms": 3746.657,
+        "wall_s": 4.687308199936524,
+        "prompt_ms": 917.489,
+        "mean_len": 2.47,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18390.2,
+        "answer": "Scrambled eggs stirred with cooked rice and soy sauce. Quick and salty—easy lunch.",
+        "reasoning_sha256": "3e611c74f145c46a24ccf5571f171bc46bca64e40c69516d47e907d7bb0c03ff",
+        "seed": 44
+      },
+      {
+        "case": "lunch-native-prob4",
+        "output": 88,
+        "accepted": 60,
+        "drafted": 112,
+        "tps": 51.89,
+        "decode_ms": 1676.631,
+        "wall_s": 2.6373724000295624,
+        "prompt_ms": 939.291,
+        "mean_len": 3.14,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18390.2,
+        "answer": "Scrambled eggs with soy sauce over rice.",
+        "reasoning_sha256": "60095c8f5e28c19122f130b100efaf8e048847d3643aac3bba37371750f3a2e7",
+        "seed": 42
+      },
+      {
+        "case": "lunch-native-prob5",
+        "output": 132,
+        "accepted": 84,
+        "drafted": 240,
+        "tps": 44.409,
+        "decode_ms": 2949.842,
+        "wall_s": 4.041690099984407,
+        "prompt_ms": 1071.696,
+        "mean_len": 2.75,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18394.6,
+        "answer": "Scrambled eggs over rice, drizzled with soy sauce.",
+        "reasoning_sha256": "f7955fc0de185037621639e8de655cf1197e15078264316e29824eaf4454e28a",
+        "seed": 42
+      },
+      {
+        "case": "lunch-native-prob6",
+        "output": 89,
+        "accepted": 63,
+        "drafted": 156,
+        "tps": 50.626,
+        "decode_ms": 1738.241,
+        "wall_s": 2.70147219998762,
+        "prompt_ms": 945.532,
+        "mean_len": 3.42,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18399.0,
+        "answer": "Scrambled eggs over cooked rice with soy sauce. Add salt/pepper if you have them.",
+        "reasoning_sha256": "49c1bb56513fef17b4f6469c2cb626140f36a2f273ca93beb656f0e48b02bd02",
+        "seed": 42
+      },
+      {
+        "case": "lunch-prob2",
+        "output": 113,
+        "accepted": 56,
+        "drafted": 114,
+        "tps": 41.085,
+        "decode_ms": 2726.086,
+        "wall_s": 3.678088300046511,
+        "prompt_ms": 933.034,
+        "mean_len": 1.98,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18381.1,
+        "answer": "Scrambled eggs over rice, tossed with soy sauce—simple egg fried-rice.",
+        "reasoning_sha256": "5eb5bde2bba07890ba7d37faf48a63eedba334e30ab12acecafc7d6d313d209a",
+        "seed": 42
+      },
+      {
+        "case": "lunch-prob4",
+        "output": 145,
+        "accepted": 88,
+        "drafted": 228,
+        "tps": 44.02,
+        "decode_ms": 3271.271,
+        "wall_s": 4.281396500067785,
+        "prompt_ms": 1000.405,
+        "mean_len": 2.54,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18390.2,
+        "answer": "Scrambled eggs with soy sauce over cooked rice. Optional: add a pinch of salt and a little hot sauce if you have it.",
+        "reasoning_sha256": "79448d12b646ee61b45676cc5ec69fd7f659eaea81d71178387e966da041b0aa",
+        "seed": 42
+      },
+      {
+        "case": "lunch-prob7-repeat",
+        "output": 160,
+        "accepted": 111,
+        "drafted": 357,
+        "tps": 47.228,
+        "decode_ms": 3366.649,
+        "wall_s": 4.298016799963079,
+        "prompt_ms": 923.426,
+        "mean_len": 3.18,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "seed": 42
+      },
+      {
+        "case": "lunch-prob7-s43",
+        "output": 157,
+        "accepted": 105,
+        "drafted": 364,
+        "tps": 44.522,
+        "decode_ms": 3503.899,
+        "wall_s": 4.535149600007571,
+        "prompt_ms": 1004.222,
+        "mean_len": 3.02,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Stir-fried egg rice: cook rice, scramble eggs in it, add soy sauce, and mix until eggs are set.",
+        "reasoning_sha256": "9be3b1324d64e3a93c4578b622255c811af8233dcf994fcd78cbb277e8558a30",
+        "seed": 43
+      },
+      {
+        "case": "lunch-prob7-s44",
+        "output": 152,
+        "accepted": 102,
+        "drafted": 350,
+        "tps": 45.636,
+        "decode_ms": 3308.819,
+        "wall_s": 4.2937639999436215,
+        "prompt_ms": 964.244,
+        "mean_len": 3.04,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Fried rice: cook rice, scramble eggs, stir in, season with soy sauce.",
+        "reasoning_sha256": "3a6eb7a9ad6ef5afa043cc5d390ebdd879a71fe6bc13a90ae1fa1526711fe25a",
+        "seed": 44
+      },
+      {
+        "case": "lunch-prob7",
+        "output": 160,
+        "accepted": 111,
+        "drafted": 357,
+        "tps": 47.125,
+        "decode_ms": 3373.974,
+        "wall_s": 4.278855100041255,
+        "prompt_ms": 897.615,
+        "mean_len": 3.18,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "seed": 42
+      },
+      {
+        "case": "lunch-q8-prob7",
+        "output": 158,
+        "accepted": 110,
+        "drafted": 336,
+        "tps": 47.246,
+        "decode_ms": 3323.025,
+        "wall_s": 4.081954600056633,
+        "prompt_ms": 739.771,
+        "mean_len": 3.29,
+        "expert_read_bytes": 0,
+        "peak_MiB": 17961.4,
+        "answer": "Scramble the eggs, mix with rice, and drizzle soy sauce.",
+        "reasoning_sha256": "5a4b912b043b09d7de89db4414d98a389de1dcba00590734d9720cc64c5cca11",
+        "seed": 42
+      }
+    ],
+    "fixed_seed_comparison": {
+      "aggregation": "Sum of (predicted_n - 1) divided by sum of decode seconds, using the first run for each of seeds 42, 43, and 44. Repeats appear individually in requests.",
+      "results": {
+        "ds": {
+          "cases": [
+            "lunch-ds",
+            "lunch-ds-s43",
+            "lunch-ds-s44"
+          ],
+          "timed_token_intervals": 456,
+          "decode_ms": 10771.02,
+          "wall_s": 13.16046289994847,
+          "decode_tps": 42.335823348206574
+        },
+        "prob7": {
+          "cases": [
+            "lunch-prob7",
+            "lunch-prob7-s43",
+            "lunch-prob7-s44"
+          ],
+          "timed_token_intervals": 466,
+          "decode_ms": 10186.692,
+          "wall_s": 13.107768699992448,
+          "decode_tps": 45.745959532299594
+        },
+        "native-prob4": {
+          "cases": [
+            "lunch-native-prob4",
+            "lunch-native-prob4-s43",
+            "lunch-native-prob4-s44"
+          ],
+          "timed_token_intervals": 379,
+          "decode_ms": 11101.411,
+          "wall_s": 14.191105999983847,
+          "decode_tps": 34.13980439063106
+        },
+        "native-prob4-with-s43-idle-repeat": {
+          "cases": [
+            "lunch-native-prob4",
+            "lunch-native-prob4-repeat-s43",
+            "lunch-native-prob4-s44"
+          ],
+          "timed_token_intervals": 379,
+          "decode_ms": 8191.81,
+          "wall_s": 11.199512999970466,
+          "decode_tps": 46.26572149500537
+        }
+      }
+    },
+    "seven_proposal_profile": {
+      "phase_run": {
+        "case": "lunch-phase-prob7",
+        "output": 160,
+        "accepted": 111,
+        "drafted": 357,
+        "tps": 45.968,
+        "decode_ms": 3458.897,
+        "wall_s": 4.490978499990888,
+        "prompt_ms": 1010.715,
+        "mean_len": 3.18,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "seed": 42
+      },
+      "trace_run": {
+        "case": "lunch-trace-prob7",
+        "output": 160,
+        "accepted": 111,
+        "drafted": 357,
+        "tps": 43.155,
+        "decode_ms": 3684.373,
+        "wall_s": 4.872850500047207,
+        "prompt_ms": 1176.199,
+        "mean_len": 3.18,
+        "expert_read_bytes": 0,
+        "peak_MiB": 18403.4,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "seed": 42
+      },
+      "rounds": {
+        "draft": 51,
+        "d2h": 51,
+        "target": 51,
+        "inject": 51,
+        "sample": 51
+      },
+      "mean_ms": {
+        "draft": 10.528039215686274,
+        "d2h": 0.06845098039215687,
+        "target": 54.281666666666666,
+        "inject": 2.046392156862745,
+        "sample": 0.6166078431372549
+      },
+      "logit_copy_bytes": 326494656,
+      "notes": "The synchronized logits copy is included in target time. Profiling adds overhead. CUPTI records below are from target verification in round seven of a separate run.",
+      "cupti_round_7": {
+        "wall_ms": 57.7539,
+        "busy_union_ms": 53.38242,
+        "records": {
+          "M": 214,
+          "K": 4941
+        },
+        "kernels": [
+          {
+            "family": "mul_mat_q",
+            "grid": "2448,1,1",
+            "count": 96,
+            "sum_ms": 25.7862
+          },
+          {
+            "family": "mul_mat_vec_q",
+            "grid": "1536,1,1",
+            "count": 96,
+            "sum_ms": 3.93284
+          },
+          {
+            "family": "mul_mat_f",
+            "grid": "2,1,1",
+            "count": 96,
+            "sum_ms": 3.30309
+          },
+          {
+            "family": "spark_depth_kernel18spark_depth_states",
+            "grid": "1,8,1",
+            "count": 88,
+            "sum_ms": 2.11506
+          },
+          {
+            "family": "mul_mat_vec_q",
+            "grid": "512,1,1",
+            "count": 96,
+            "sum_ms": 1.734
+          },
+          {
+            "family": "mul_mat_q_few",
+            "grid": "12564,1,1",
+            "count": 1,
+            "sum_ms": 1.34211
+          },
+          {
+            "family": "rms_norm_f32",
+            "grid": "8,1,1",
+            "count": 346,
+            "sum_ms": 1.11884
+          },
+          {
+            "family": "mul_mat_f",
+            "grid": "72,1,1",
+            "count": 192,
+            "sum_ms": 1.03846
+          },
+          {
+            "family": "mul_mat_q_few",
+            "grid": "144,1,1",
+            "count": 48,
+            "sum_ms": 1.03366
+          },
+          {
+            "family": "concat_non_cont",
+            "grid": "2304,1,1",
+            "count": 96,
+            "sum_ms": 0.97497
+          },
+          {
+            "family": "mul_mat_f",
+            "grid": "4,1,1",
+            "count": 48,
+            "sum_ms": 0.92716
+          },
+          {
+            "family": "flash_attn_ext_f16",
+            "grid": "48,1,1",
+            "count": 48,
+            "sum_ms": 0.85071
+          },
+          {
+            "family": "k_set_rows_quant",
+            "grid": "1,1,1",
+            "count": 96,
+            "sum_ms": 0.72518
+          },
+          {
+            "family": "quantize_q8_1",
+            "grid": "10,8,1",
+            "count": 304,
+            "sum_ms": 0.71273
+          }
+        ]
+      }
+    }
+  },
+  "dflash2_expert_occupancy": {
+    "routes": {
+      "projection_pairs": 48,
+      "tokens_per_layer": 8,
+      "route_slots_per_layer": 64,
+      "occupancy_histogram": {
+        "1": 586,
+        "2": 298,
+        "3": 157,
+        "4": 94,
+        "5": 56,
+        "6": 32,
+        "7": 29,
+        "8": 46
+      },
+      "singleton_share_of_groups": 0.4514637904468413,
+      "singleton_share_of_routes": 0.19075520833333334,
+      "route_ids_sha256": "e085e6a316c5c0193b628811991b2fb92089b25ddad33ecaacda21048dc57be2"
+    },
+    "variants": {
+      "0": "Original FP4 MMQ, original route list",
+      "1": "Compact route list, row-major CTA schedule, original FP4 grouped tile",
+      "2": "As 1, singleton tensor-core matvec with direct global loads",
+      "3": "As 2, staging four contiguous K-blocks in warp-local shared memory"
+    },
+    "checks": {
+      "0": {
+        "exact_projections": 96,
+        "different_floats": 0,
+        "total_floats": 14155776,
+        "nonfinite": 0,
+        "max_abs": 0.0,
+        "rms": 0.0
+      },
+      "1": {
+        "exact_projections": 96,
+        "different_floats": 0,
+        "total_floats": 14155776,
+        "nonfinite": 0,
+        "max_abs": 0.0,
+        "rms": 0.0
+      },
+      "2": {
+        "exact_projections": 96,
+        "different_floats": 0,
+        "total_floats": 14155776,
+        "nonfinite": 0,
+        "max_abs": 0.0,
+        "rms": 0.0
+      },
+      "3": {
+        "exact_projections": 96,
+        "different_floats": 0,
+        "total_floats": 14155776,
+        "nonfinite": 0,
+        "max_abs": 0.0,
+        "rms": 0.0
+      }
+    },
+    "replay_passes": {
+      "0": [
+        {
+          "pass_index": 0,
+          "gate_up_ms": 38.95472,
+          "down_ms": 29.19881,
+          "total_ms": 68.15353
+        },
+        {
+          "pass_index": 1,
+          "gate_up_ms": 30.96589,
+          "down_ms": 22.66874,
+          "total_ms": 53.63463
+        },
+        {
+          "pass_index": 2,
+          "gate_up_ms": 32.30835,
+          "down_ms": 23.68387,
+          "total_ms": 55.992219999999996
+        },
+        {
+          "pass_index": 3,
+          "gate_up_ms": 28.36445,
+          "down_ms": 20.24848,
+          "total_ms": 48.612930000000006
+        }
+      ],
+      "1": [
+        {
+          "pass_index": 0,
+          "gate_up_ms": 77.22953,
+          "down_ms": 23.26563,
+          "total_ms": 100.49516
+        },
+        {
+          "pass_index": 1,
+          "gate_up_ms": 29.07366,
+          "down_ms": 21.82332,
+          "total_ms": 50.89698
+        },
+        {
+          "pass_index": 2,
+          "gate_up_ms": 28.12736,
+          "down_ms": 19.17146,
+          "total_ms": 47.29882
+        },
+        {
+          "pass_index": 3,
+          "gate_up_ms": 30.57952,
+          "down_ms": 21.92205,
+          "total_ms": 52.50157
+        }
+      ],
+      "2": [
+        {
+          "pass_index": 0,
+          "gate_up_ms": 28.94254,
+          "down_ms": 19.97389,
+          "total_ms": 48.916430000000005
+        },
+        {
+          "pass_index": 1,
+          "gate_up_ms": 35.41079,
+          "down_ms": 24.60886,
+          "total_ms": 60.01965
+        },
+        {
+          "pass_index": 2,
+          "gate_up_ms": 30.70464,
+          "down_ms": 21.25299,
+          "total_ms": 51.95763
+        },
+        {
+          "pass_index": 3,
+          "gate_up_ms": 27.85802,
+          "down_ms": 19.64342,
+          "total_ms": 47.50144
+        }
+      ],
+      "3": [
+        {
+          "pass_index": 0,
+          "gate_up_ms": 31.55418,
+          "down_ms": 21.11507,
+          "total_ms": 52.66925
+        },
+        {
+          "pass_index": 1,
+          "gate_up_ms": 34.60333,
+          "down_ms": 23.03597,
+          "total_ms": 57.6393
+        },
+        {
+          "pass_index": 2,
+          "gate_up_ms": 30.38115,
+          "down_ms": 21.49607,
+          "total_ms": 51.87722
+        },
+        {
+          "pass_index": 3,
+          "gate_up_ms": 32.16032,
+          "down_ms": 20.9401,
+          "total_ms": 53.10042
+        }
+      ]
+    },
+    "median_total_ms": {
+      "0": 54.813424999999995,
+      "1": 51.699275,
+      "2": 50.43703000000001,
+      "3": 52.884834999999995
+    },
+    "http": {
+      "chat-A1-prob7-s42": {
+        "seed": 42,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 2703.881,
+          "prompt_per_token_ms": 47.43650877192982,
+          "prompt_per_second": 21.08080939952609,
+          "predicted_n": 160,
+          "predicted_ms": 3986.766,
+          "predicted_per_token_ms": 25.074,
+          "predicted_per_second": 39.88194942968812,
+          "draft_n": 357,
+          "draft_n_accepted": 111
+        },
+        "wall_s": 6.754688200075179,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "budget_mib": 20580.0,
+        "expert_source_bytes": 0.0
+      },
+      "chat-A2-prob7-s42": {
+        "seed": 42,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 863.529,
+          "prompt_per_token_ms": 15.149631578947368,
+          "prompt_per_second": 66.0082058622235,
+          "predicted_n": 160,
+          "predicted_ms": 2897.068,
+          "predicted_per_token_ms": 18.220553459119497,
+          "predicted_per_second": 54.88307488812827,
+          "draft_n": 357,
+          "draft_n_accepted": 111
+        },
+        "wall_s": 3.776428099954501,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "budget_mib": 20580.0,
+        "expert_source_bytes": 0.0
+      },
+      "chat-B1-prob7-s42": {
+        "seed": 42,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 891.601,
+          "prompt_per_token_ms": 15.642122807017543,
+          "prompt_per_second": 63.92994175645833,
+          "predicted_n": 160,
+          "predicted_ms": 3003.732,
+          "predicted_per_token_ms": 18.891396226415093,
+          "predicted_per_second": 52.93414991750263,
+          "draft_n": 357,
+          "draft_n_accepted": 111
+        },
+        "wall_s": 3.911793899955228,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "budget_mib": 20580.0,
+        "expert_source_bytes": 0.0
+      },
+      "chat-B2-prob7-s42": {
+        "seed": 42,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 851.033,
+          "prompt_per_token_ms": 14.93040350877193,
+          "prompt_per_second": 66.97742625726617,
+          "predicted_n": 160,
+          "predicted_ms": 3021.194,
+          "predicted_per_token_ms": 19.001220125786162,
+          "predicted_per_second": 52.62819931457563,
+          "draft_n": 357,
+          "draft_n_accepted": 111
+        },
+        "wall_s": 3.8966427999548614,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "budget_mib": 20580.0,
+        "expert_source_bytes": 0.0
+      },
+      "chat-wA-prob7-s42-w42": {
+        "seed": 42,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 259.576,
+          "prompt_per_token_ms": 4.553964912280702,
+          "prompt_per_second": 219.58886800012326,
+          "predicted_n": 160,
+          "predicted_ms": 2892.958,
+          "predicted_per_token_ms": 18.194704402515725,
+          "predicted_per_second": 54.96104679017117,
+          "draft_n": 357,
+          "draft_n_accepted": 111
+        },
+        "wall_s": 3.1743099000304937,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "budget_mib": 20580.0,
+        "expert_source_bytes": 0.0
+      },
+      "chat-wA-prob7-s42-w43": {
+        "seed": 43,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 266.644,
+          "prompt_per_token_ms": 4.677964912280702,
+          "prompt_per_second": 213.76817029447503,
+          "predicted_n": 157,
+          "predicted_ms": 2964.222,
+          "predicted_per_token_ms": 19.00142307692308,
+          "predicted_per_second": 52.627637201262246,
+          "draft_n": 364,
+          "draft_n_accepted": 105
+        },
+        "wall_s": 3.250452399952337,
+        "answer": "Stir-fried egg rice: cook rice, scramble eggs in it, add soy sauce, and mix until eggs are set.",
+        "reasoning_sha256": "9be3b1324d64e3a93c4578b622255c811af8233dcf994fcd78cbb277e8558a30",
+        "budget_mib": 20580.0,
+        "expert_source_bytes": 0.0
+      },
+      "chat-wB-prob7-s42-w42": {
+        "seed": 42,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 244.377,
+          "prompt_per_token_ms": 4.287315789473684,
+          "prompt_per_second": 233.24617292134693,
+          "predicted_n": 160,
+          "predicted_ms": 2977.115,
+          "predicted_per_token_ms": 18.723993710691822,
+          "predicted_per_second": 53.407409522306,
+          "draft_n": 357,
+          "draft_n_accepted": 111
+        },
+        "wall_s": 3.2252181000076234,
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "budget_mib": 20580.0,
+        "expert_source_bytes": 0.0
+      },
+      "chat-wB-prob7-s42-w43": {
+        "seed": 43,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 57,
+          "prompt_ms": 270.635,
+          "prompt_per_token_ms": 4.747982456140351,
+          "prompt_per_second": 210.6157740129695,
+          "predicted_n": 157,
+          "predicted_ms": 3057.535,
+          "predicted_per_token_ms": 19.59958333333333,
+          "predicted_per_second": 51.02149280384362,
+          "draft_n": 364,
+          "draft_n_accepted": 105
+        },
+        "wall_s": 3.334020599955693,
+        "answer": "Stir-fried egg rice: cook rice, scramble eggs in it, add soy sauce, and mix until eggs are set.",
+        "reasoning_sha256": "9be3b1324d64e3a93c4578b622255c811af8233dcf994fcd78cbb277e8558a30",
+        "budget_mib": 20580.0,
+        "expert_source_bytes": 0.0
+      }
+    },
+    "method": "Inkling DFlash2, seven probabilistic proposals, shared 20580 MiB cap and request 0. Captured input tensors and FP4 reference outputs for the seventh full eight-position verification pass with CUDA graphs disabled, then replayed the same 96 projections in four rotated orders. The diagnostic reserved 192 MiB of temporary GPU memory outside the engine ledger and used 131309568 bytes. Full HTTP tests enabled normal CUDA graphs and did not allocate the capture arena. A is variant 0, B is variant 2. Cold process order A1 B1 B2 A2. Warm order B then A, one unmeasured seed-44 request after server load before seed 42 and 43. For HTTP timings the stock and manual servers were left running and had unchanged activity counters across each measured request.",
+    "result": "All replay outputs were bitwise exact. The first fresh control was slow; the warmed control decoded faster than the singleton path on both seeds, with equal visible answers, reasoning hashes and token counts. Keep the experimental kernel out of the serving configuration."
+  },
+  "dflash2_block_verification": {
+    "checkpoint": "Inco Inkling-2-Mini-DFlash2 BF16",
+    "algorithm": "Sun et al., ICLR 2025, Algorithm 2",
+    "reference": "https://openreview.net/pdf?id=frsg32u0rO",
+    "budget_mib": 20580,
+    "threshold_pct": 20,
+    "request_index": 0,
+    "method": "Native Windows llama-server, seven sampled proposals, default temperature 1, no prompt cache. One seed-44 warm-up in each timing process. Same binary and target sampler settings for control and block. Outputs can differ for the same seed because the coupling consumes random draws differently. Target distributions for hypothetical prefixes were evaluated with a cloned sampler. Audit expectations use identical proposed paths and target probabilities with no timing claims. Counts include the correction or bonus and ignore early EOS in theoretical yield.",
+    "two_token_law": "Four enumerated binary cases covering identical, disjoint and prefix-dependent probabilities, plus the published expected acceptance of 11/9 in its example.",
+    "rows": {
+      "control-42": {
+        "seed": 42,
+        "mode": "control",
+        "completion_tokens": 160,
+        "drafted": 357,
+        "accepted": 111,
+        "rounds": 51,
+        "decode_ms": 2863.332,
+        "tps": 55.52971153886452,
+        "prompt_ms": 254.835,
+        "wall_s": 3.1363468000199646,
+        "finish": "stop",
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "expert_source_bytes": 0.0
+      },
+      "control-43": {
+        "seed": 43,
+        "mode": "control",
+        "completion_tokens": 157,
+        "drafted": 364,
+        "accepted": 105,
+        "rounds": 52,
+        "decode_ms": 2970.88,
+        "tps": 52.50969409737182,
+        "prompt_ms": 255.715,
+        "wall_s": 3.244524099980481,
+        "finish": "stop",
+        "answer": "Stir-fried egg rice: cook rice, scramble eggs in it, add soy sauce, and mix until eggs are set.",
+        "reasoning_sha256": "9be3b1324d64e3a93c4578b622255c811af8233dcf994fcd78cbb277e8558a30",
+        "expert_source_bytes": 0.0
+      },
+      "block-42": {
+        "seed": 42,
+        "mode": "block",
+        "completion_tokens": 153,
+        "drafted": 287,
+        "accepted": 111,
+        "rounds": 41,
+        "decode_ms": 2335.565,
+        "tps": 65.08061218591646,
+        "prompt_ms": 282.965,
+        "wall_s": 2.6364614999620244,
+        "finish": "stop",
+        "answer": "Scrambled eggs + rice: scramble eggs with a splash of soy sauce, stir into cooked rice, and season lightly. Done.",
+        "reasoning_sha256": "6a21eff5a3400fadbe5b7fd0f8e53a132a5faba676e3a75480ea73a8742e7e88",
+        "expert_source_bytes": 0.0
+      },
+      "block-43": {
+        "seed": 43,
+        "mode": "block",
+        "completion_tokens": 214,
+        "drafted": 448,
+        "accepted": 149,
+        "rounds": 64,
+        "decode_ms": 3690.426,
+        "tps": 57.71691398228823,
+        "prompt_ms": 247.75,
+        "wall_s": 3.9575447000097483,
+        "finish": "stop",
+        "answer": "Egg fried rice: cook rice, whisk eggs with soy sauce, scramble, stir in rice and more soy sauce.",
+        "reasoning_sha256": "df0496ad174e01339b9ad5caaab7bc167b2d85721fd96d57af0140bba853e045",
+        "expert_source_bytes": 0.0
+      },
+      "audit-42": {
+        "seed": 42,
+        "mode": "audit",
+        "completion_tokens": 160,
+        "drafted": 357,
+        "accepted": 111,
+        "rounds": 51,
+        "decode_ms": 2958.647,
+        "tps": 53.740780836645946,
+        "prompt_ms": 711.854,
+        "wall_s": 3.6764539000578225,
+        "finish": "stop",
+        "answer": "Scrambled eggs tossed with soy sauce over rice — a quick soy-sauce egg rice bowl.",
+        "reasoning_sha256": "cc4bff1a3c7484631b83cdb909bf2a71b153440706d90a2d1eb66102a79fd7b5",
+        "expert_source_bytes": 0.0
+      },
+      "audit-43": {
+        "seed": 43,
+        "mode": "audit",
+        "completion_tokens": 157,
+        "drafted": 364,
+        "accepted": 105,
+        "rounds": 52,
+        "decode_ms": 3001.987,
+        "tps": 51.96558146321087,
+        "prompt_ms": 267.646,
+        "wall_s": 3.2884317999705672,
+        "finish": "stop",
+        "answer": "Stir-fried egg rice: cook rice, scramble eggs in it, add soy sauce, and mix until eggs are set.",
+        "reasoning_sha256": "9be3b1324d64e3a93c4578b622255c811af8233dcf994fcd78cbb277e8558a30",
+        "expert_source_bytes": 0.0
+      }
+    },
+    "audit": [
+      {
+        "rounds": 51,
+        "token_outputs_per_round": 3.1704895626666665,
+        "block_outputs_per_round": 3.327687743901961,
+        "relative_yield_gain_pct": 4.95816744159463,
+        "seed": 42,
+        "same_control_answer_reasoning_and_counts": true
+      },
+      {
+        "rounds": 52,
+        "token_outputs_per_round": 3.185041591750001,
+        "block_outputs_per_round": 3.3820802537307695,
+        "relative_yield_gain_pct": 6.186376419420836,
+        "seed": 43,
+        "same_control_answer_reasoning_and_counts": true
+      }
+    ],
+    "pooled_decode_tps": {
+      "control": 53.99186728216253,
+      "block": 60.57095007277641
+    },
+    "prototype": {
+      "fixture_path": "results\\inkling-dflash2-v1\\block-trial",
+      "executable": "results\\inkling-dflash2-v1\\build\\bin\\llama-server-block.exe",
+      "candidate_environment": "INKLING_TRIAL_BLOCK_VERIFY=1",
+      "control_environment": "INKLING_TRIAL_BLOCK_VERIFY=0",
+      "scope": "Isolated experimental binary only; the manual DSpark service was left on its existing binary."
+    }
+  }
+}

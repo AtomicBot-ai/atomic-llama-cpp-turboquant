@@ -168,13 +168,14 @@ namespace {
 class inkling_draft_input final : public llm_graph_input_embd_h {
 public:
     inkling_draft_input(int64_t width, const llm_graph_params & params)
-        : llm_graph_input_embd_h(width, width), prefix_rows(output_prefix(params)) {}
+        : llm_graph_input_embd_h(width, width), prefix_rows(output_prefix(params)), ids_only(params.cparams.spark_draft_ids) {}
 
     bool can_reuse(const llm_graph_params & params) override {
-        return prefix_rows == output_prefix(params) && llm_graph_input_embd_h::can_reuse(params);
+        return ids_only == params.cparams.spark_draft_ids && prefix_rows == output_prefix(params) && llm_graph_input_embd_h::can_reuse(params);
     }
 
     const uint32_t prefix_rows;
+    const bool ids_only;
 
 private:
     static uint32_t output_prefix(const llm_graph_params & params) {
@@ -317,14 +318,24 @@ llama_model_dflash::graph_inkling2::graph_inkling2(const llm_graph_params & para
         }
     }
     const int64_t head_rows = prefix_rows ? prefix_rows : block;
+    ggml_tensor * proposals = nullptr;
     for (int64_t i = 1; i < head_rows; ++i) {
         auto * col = build_inkling2_head(*this, model, *target, prev, state, column(cur, i), column(base, i), context, mark_add);
-        logits = ggml_concat(ctx0, logits, col, 1);
+        if (!cparams.spark_draft_ids) { logits = ggml_concat(ctx0, logits, col, 1); }
         // Select the first maximum, independent of backend argmax tie order.
         auto * valid = ggml_cont(ctx0, ggml_view_2d(ctx0, col, hparams.n_vocab_unpadded, nb, col->nb[1], 0));
         auto * maximum = ggml_pool_1d(ctx0, valid, GGML_OP_POOL_MAX, valid->ne[0], 1, 0);
         auto * is_max = ggml_scale_bias(ctx0, ggml_step(ctx0, ggml_sub(ctx0, ggml_repeat(ctx0, maximum, valid), valid)), -1.0f, 1.0f);
         prev = ggml_argmax(ctx0, ggml_mul(ctx0, is_max, tie_rank));
+        if (cparams.spark_draft_ids) {
+            proposals = proposals ? ggml_concat(ctx0, proposals, prev, 0) : prev;
+        }
+    }
+    if (proposals) {
+        ggml_set_name(proposals, "spark_dspark_proposals");
+        ggml_set_output(proposals);
+        ggml_build_forward_expand(gf, proposals);
+        return;
     }
     logits = ggml_reshape_3d(ctx0, logits, logits->ne[0], nb, head_rows);
     logits = ggml_reshape_2d(ctx0, ggml_cont(ctx0, ggml_permute(ctx0, logits, 0, 2, 1, 3)), logits->ne[0], nb*head_rows);

@@ -23,6 +23,10 @@
 #endif
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <io.h>
 #define expert_fstat _fstat64
 #define expert_stat _stat64
@@ -95,10 +99,30 @@ size_t llama_expert_tensor_info::expert_bytes() const {
     return bytes / size_t(ne[2]);
 }
 
+#if defined(_WIN32)
+#include "llama-spark-range-reader.inc"
+#endif
+
 struct llama_expert_source::impl {
     struct shard {
         file_ptr file;
         file_state state;
+#if defined(_WIN32)
+        std::unique_ptr<spark_range_reader> reader;
+        bool reader_unavailable = false;
+
+        spark_range_reader * parallel_reader() {
+            if (!reader && !reader_unavailable) {
+                auto candidate = std::unique_ptr<spark_range_reader>(new (std::nothrow) spark_range_reader);
+                if (candidate && candidate->open(reinterpret_cast<HANDLE>(_get_osfhandle(expert_fileno(file.get()))))) {
+                    reader = std::move(candidate);
+                } else {
+                    reader_unavailable = true;
+                }
+            }
+            return reader.get();
+        }
+#endif
 
         explicit shard(const std::string & path) : file(ggml_fopen(path.c_str(), "rb"), &std::fclose),
             state(require_file(path)) {
@@ -336,7 +360,7 @@ const llama_expert_tensor_info & llama_expert_source::tensor(const std::string &
     return pimpl->tensors[it->second];
 }
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
 void llama_expert_source::read_expert_range(const std::string & name, int64_t first, int64_t end,
         void * dst, size_t bytes) {
     const auto & info = tensor(name);
@@ -348,6 +372,13 @@ void llama_expert_source::read_expert_range(const std::string & name, int64_t fi
     if (pimpl->failed) { throw std::runtime_error("expert source is invalid after an earlier read failure"); }
     try {
         for (const auto & shard : pimpl->shards) { shard.check(); }
+#if defined(_WIN32)
+        auto * file = pimpl->shards[info.shard].file.get();
+        const size_t offset = info.offset + size_t(first) * stride;
+        if (expert_fseek(file, offset, SEEK_SET) != 0 || std::fread(dst, 1, bytes, file) != bytes) {
+            throw std::runtime_error("incomplete contiguous expert read: " + name);
+        }
+#else
         const int fd = expert_fileno(pimpl->shards[info.shard].file.get());
         const off_t offset = info.offset + size_t(first) * stride;
         for (size_t done = 0; done < bytes;) {
@@ -357,7 +388,80 @@ void llama_expert_source::read_expert_range(const std::string & name, int64_t fi
             if (n <= 0) { throw std::runtime_error("incomplete contiguous expert read: " + name); }
             done += size_t(n);
         }
+#endif
         for (const auto & shard : pimpl->shards) { shard.check(); }
+    } catch (...) {
+        pimpl->failed = true;
+        throw;
+    }
+}
+#endif
+
+#if defined(_WIN32)
+bool llama_expert_source::read_spark_expert_range(const std::string & name, int64_t first, int64_t end, void * dst, size_t bytes) {
+    const auto & info = tensor(name);
+    const size_t stride = info.expert_bytes();
+    if (!dst || first < 0 || end <= first || end > info.ne[2] || bytes != size_t(end - first) * stride) {
+        throw std::invalid_argument("invalid parallel expert range");
+    }
+    std::lock_guard<std::mutex> lock(pimpl->mutex);
+    if (pimpl->failed) { throw std::runtime_error("expert source is invalid after an earlier read failure"); }
+    auto & shard = pimpl->shards[info.shard];
+    auto * reader = shard.parallel_reader();
+    if (!reader) { return false; }
+    try {
+        shard.check();
+        reader->read(info.offset + size_t(first) * stride, dst, bytes);
+        shard.check();
+        return true;
+    } catch (...) {
+        pimpl->failed = true;
+        throw;
+    }
+}
+
+bool llama_expert_source::read_spark_selected_experts(const std::string & name, const std::array<bool, 128> & selected,
+        void * dst, size_t bytes, const std::array<int32_t, 128> * slots) {
+    const auto & info = tensor(name);
+    const size_t stride = info.expert_bytes();
+    if (!dst || !bytes || !stride || info.ne[2] != int64_t(selected.size()) || stride > std::numeric_limits<DWORD>::max() ||
+            (!slots && bytes != size_t(std::count(selected.begin(), selected.end(), true)) * stride)) {
+        throw std::invalid_argument("invalid Spark packed expert destination");
+    }
+    if (slots) {
+        int32_t previous = -1;
+        for (size_t i = 0; i < selected.size(); ++i) {
+            if (!selected[i]) { continue; }
+            const int32_t slot = (*slots)[i];
+            if (slot <= previous || size_t(slot) >= bytes / stride) {
+                throw std::invalid_argument("invalid Spark expert scatter destination");
+            }
+            previous = slot;
+        }
+    }
+    std::lock_guard<std::mutex> lock(pimpl->mutex);
+    if (pimpl->failed) { throw std::runtime_error("expert source is invalid after an earlier read failure"); }
+    auto & shard = pimpl->shards[info.shard];
+    auto * reader = shard.parallel_reader();
+    if (!reader) { return false; }
+    try {
+        shard.check();
+        auto * cursor = static_cast<char *>(dst);
+        std::array<spark_range_reader::request, 8> requests;
+        size_t count = 0;
+        for (size_t i = 0; i < selected.size(); ++i) {
+            if (!selected[i]) { continue; }
+            auto * target = slots ? static_cast<char *>(dst) + size_t((*slots)[i]) * stride : cursor;
+            requests[count++] = {info.offset + i * stride, target, DWORD(stride)};
+            cursor += stride;
+            if (count == requests.size()) {
+                reader->read_many(requests, count);
+                count = 0;
+            }
+        }
+        if (count) { reader->read_many(requests, count); }
+        shard.check();
+        return true;
     } catch (...) {
         pimpl->failed = true;
         throw;

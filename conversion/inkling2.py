@@ -201,12 +201,14 @@ class Inkling2Model(TextModel):
 
     def set_vocab(self):
         tokens, types, pre = self.get_vocab_base()
+        Inkling2Model.write_vocab(self, tokens, types, pre, self.hparams["eos_token_id"])
+
+    def write_vocab(self, tokens, types, pre, eos):
         self.gguf_writer.add_tokenizer_model("gpt2")
         self.gguf_writer.add_tokenizer_pre(pre)
         self.gguf_writer.add_token_list(tokens)
         self.gguf_writer.add_token_types(types)
         special = gguf.SpecialVocab(self.dir_model, load_merges=True)
-        eos = self.hparams["eos_token_id"]
         special.special_token_ids["eos"] = eos
         special.special_token_ids["eot"] = eos
         special.add_special_token["bos"] = False

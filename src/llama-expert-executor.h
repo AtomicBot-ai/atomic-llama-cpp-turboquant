@@ -59,6 +59,7 @@ public:
     void set_compact_inkling_scheduler(bool compact);
     void mark_inkling_prompt_tail();
     bool has_inkling_core_policy() const;
+    bool inkling_all_resident() const;
     const std::array<ggml_tensor *, 2> * inkling_core_layer(int ip) const;
     const std::array<ggml_tensor *, 3> * resident_layer(int il) const;
     bool can_retain_prefill_tail(size_t routed_layers) const;
@@ -91,7 +92,7 @@ public:
             llama_expert_read_probe submitted_read);
     void trim();
     // Empty unless size-aware reclamation is explicitly qualified and enabled.
-    llama_memory_reclaimer allocation_reclaimer();
+    llama_memory_reclaimer allocation_reclaimer(bool shared_draft = false);
     void set_profile(bool enabled);
     void clear_window_decode_advice(); // idle-only option/policy disable boundary
     bool can_layer_window() const;

@@ -75,8 +75,8 @@ private:
 
 class common_atomic_dflash_depth {
 public:
-    // The budgeted DFlash2 profile admits at most six draft rows.
-    static constexpr std::size_t capacity = 6;
+    // The longest qualified Spark block contains an anchor and seven draft rows.
+    static constexpr std::size_t capacity = 7;
 
 private:
     struct observations {

@@ -179,10 +179,11 @@ llama_context::llama_context(
     //     may need to be backend-dependent
     LLAMA_LOG_INFO("%s: constructing llama_context\n", __func__);
     if (model.memory_contract) {
-        if (model.memory_contract->discrete.device && (params.ctx_other || params.moe_cache_size)) {
+        if (model.memory_contract->discrete.separate_limits() && (params.ctx_other || params.moe_cache_size)) {
             throw std::runtime_error("discrete budget requires an independent context without a host MoE cache");
         }
-        if (model.memory_contract->stream_experts && (params.n_ubatch == 0 || params.n_ubatch > 32)) {
+        if (model.memory_contract->discrete.separate_limits() && model.memory_contract->stream_experts &&
+                (params.n_ubatch == 0 || params.n_ubatch > 32)) {
             throw std::runtime_error("discrete expert streaming requires an explicit microbatch of at most 32 tokens");
         }
         if (model.memory_contract->stream_cuda_boundary_reduction &&
@@ -199,7 +200,8 @@ llama_context::llama_context(
         const bool extended_flash = params.n_ctx > 4096 && (params.n_ctx == model.memory_contract->flash_next_extended_ctx ||
                 (model.arch == LLM_ARCH_DFLASH && params.ctx_other && params.ctx_other->model.memory_contract &&
                  params.n_ctx == params.ctx_other->model.memory_contract->flash_next_extended_ctx));
-        const uint32_t max_ubatch = inkling_rollback ? 1024 : 256;
+        const uint32_t max_ubatch = llama_atomic_spark_nvfp4_target(&model) ? 4096 :
+            inkling_rollback || model.memory_contract->discrete.unified ? 1024 : 256;
         if (params.n_ctx == 0 || (params.n_ctx > 4096 && !extended_flash) || params.n_batch > 4096 || params.n_ubatch > max_ubatch ||
             params.n_seq_max != 1 || (params.n_rs_seq && !rollback_allowed && !inkling_rollback) || params.n_threads > 16 || params.n_threads_batch > 16 ||
             params.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT || params.embeddings) {
@@ -519,6 +521,33 @@ llama_context::llama_context(
                     throw std::runtime_error("cannot enable observed CUDA workspace");
                 }
             }
+            if (model.memory_contract && model.memory_contract->discrete.unified && model.arch == LLM_ARCH_INKLING2_LOOP) {
+                budget_control->spark_backend = backend.get();
+                budget_control->set_spark_prompt_pool = reinterpret_cast<decltype(budget_control->set_spark_prompt_pool)>(
+                        ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(dev.dev), "ggml_backend_cuda_set_spark_prompt_pool"));
+                const char * flag = std::getenv("LLAMA_EXPERIMENTAL_SPARK_DECODE_GRAPH");
+                if (!flag || std::strcmp(flag, "1") == 0) {
+                    budget_control->set_spark_decode_graph = reinterpret_cast<decltype(budget_control->set_spark_decode_graph)>(
+                            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(dev.dev), "ggml_backend_cuda_set_spark_decode_graph"));
+                    const char * split = std::getenv("LLAMA_EXPERIMENTAL_SPARK_SPLIT_GRAPH");
+                    const char * verify = std::getenv("LLAMA_EXPERIMENTAL_SPARK_VERIFY");
+                    const char * stream = std::getenv("LLAMA_EXPERIMENTAL_SPARK_STREAM_VERIFY");
+                    if (split && std::strcmp(split, "1") == 0 && verify && std::strcmp(verify, "1") == 0 &&
+                            stream && std::strcmp(stream, "1") == 0 && llama_atomic_spark_nvfp4_target(&model)) {
+                        budget_control->set_spark_split_graph = reinterpret_cast<decltype(budget_control->set_spark_split_graph)>(
+                                ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(dev.dev), "ggml_backend_cuda_set_spark_split_graph"));
+                    }
+                }
+            }
+            if (budget_control && cparams.ctx_other && model.hparams.inkling2_dspark &&
+                    llama_atomic_spark_nvfp4_target(&cparams.ctx_other->model)) {
+                const char * verify = std::getenv("LLAMA_EXPERIMENTAL_SPARK_VERIFY");
+                if (verify && std::strcmp(verify, "1") == 0) {
+                    budget_control->spark_backend = backend.get();
+                    budget_control->set_spark_prompt_pool = reinterpret_cast<decltype(budget_control->set_spark_prompt_pool)>(
+                            ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(dev.dev), "ggml_backend_cuda_set_spark_prompt_pool"));
+                }
+            }
             backends.emplace_back(std::move(backend));
         }
 
@@ -699,6 +728,7 @@ llama_context::llama_context(
 
         if (model.memory_contract && expert_executor && expert_executor->stats().minimum_bytes >
                 model.memory_contract->ledger->snapshot(llama_memory_domain::host).requested) {
+            if (model.memory_contract->discrete.unified) { model.memory_contract->ledger->spark_admission_failed = true; }
             throw std::runtime_error("engine budget cannot fit model, context, graph and minimum expert working set");
         }
 
@@ -783,6 +813,10 @@ llama_context::llama_context(
 llama_context::~llama_context() {
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
+
+    if (budget_control && budget_control->set_spark_decode_graph) {
+        budget_control->set_spark_decode_graph(budget_control->spark_backend, false);
+    }
 
     // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
     if (!model.no_alloc() && !opt_ctx) {
@@ -931,6 +965,18 @@ void llama_context::sched_new(const sched_params & params) {
 
 static constexpr uint32_t inkling_decode_reserve_rows = 64;
 
+llama_memory_reclaimer llama_context::budget_reclaimer() const {
+    if (expert_executor) { return expert_executor->allocation_reclaimer(); }
+    const auto * target = cparams.ctx_other;
+    if (model.arch == LLM_ARCH_DFLASH && model.memory_contract && model.memory_contract->discrete.unified &&
+            target && target->expert_executor && target->model.memory_contract &&
+            target->model.memory_contract->ledger == model.memory_contract->ledger) {
+        // Both contexts share one cap. Only idle target expert slices can fund draft scratch.
+        return target->expert_executor->allocation_reclaimer(true);
+    }
+    return {};
+}
+
 void llama_context::sched_reserve() {
     if (!sched_need_reserve) {
         return;
@@ -947,7 +993,7 @@ void llama_context::sched_reserve() {
     if (model.memory_contract) {
         allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch,
                 [owner] { if (owner) { owner->trim(); } }, model.memory_contract->discrete,
-                owner ? owner->allocation_reclaimer() : llama_memory_reclaimer{});
+                owner ? owner->allocation_reclaimer() : budget_reclaimer());
     }
     sched_need_reserve = false;
 
@@ -1666,7 +1712,7 @@ ggml_backend_t llama_context::backend_from_dev(ggml_backend_dev_t dev) const {
 void llama_context::layer_inp_dev_alloc() {
     std::optional<llama_allocation_scope> allocation_scope;
     if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
-            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
+            budget_reclaimer()); }
     synchronize();
 
     layer_inp_dev     = nullptr;
@@ -1725,7 +1771,7 @@ void llama_context::layer_inp_dev_alloc() {
 bool llama_context::h_nextn_dev_alloc() {
     std::optional<llama_allocation_scope> allocation_scope;
     if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
-            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
+            budget_reclaimer()); }
     synchronize();
 
     auto reset = [&]() {
@@ -1840,7 +1886,9 @@ bool llama_context::set_ctx_state_src(llama_context * ctx_src) {
 
 bool llama_context::supports_state_row() const {
     // the MTP graphs read the rows, see llm_graph_context::build_inp_embd_state()
-    if (cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
+    const bool spark_draft = cparams.ctx_state_src == this && model.hparams.inkling2_dspark &&
+            cparams.ctx_other && llama_atomic_spark_nvfp4_target(&cparams.ctx_other->model);
+    if (cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP && !spark_draft) {
         return false;
     }
 
@@ -2076,7 +2124,25 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         expert_executor->mark_inkling_prompt_tail();
     }
     if (expert_ahead) { expert_executor->moe_lookahead_begin(true); }
+    if (budget_control && budget_control->set_spark_decode_graph && expert_executor) {
+        // Inkling DSpark verifies an anchor and at most seven proposed tokens.
+        const bool verify = model.memory_contract->inkling_dspark_target && ubatch.n_tokens <= 8 &&
+                gparams.n_outputs == ubatch.n_tokens;
+        const bool decode = expert_decode && (ubatch.n_tokens == 1 || verify) && !cparams.cb_eval;
+        const bool resident = decode && expert_executor->inkling_all_resident();
+        if (budget_control->set_spark_split_graph && decode && verify && !resident && ubatch.n_seqs == 1 &&
+                cparams.flash_attn && !cparams.pipeline_parallel && expert_executor->inkling_core_layer(0)) {
+            budget_control->set_spark_split_graph(budget_control->spark_backend, gf);
+        } else {
+            budget_control->set_spark_decode_graph(budget_control->spark_backend, resident);
+        }
+    }
+    const bool spark_prompt = ((!expert_decode && ubatch.n_tokens >= 512) || cparams.spark_draft_ids ||
+            (cparams.ctx_state_src == this && model.hparams.inkling2_dspark)) && budget_control &&
+            budget_control->set_spark_prompt_pool && !cparams.cb_eval;
+    if (spark_prompt) { budget_control->set_spark_prompt_pool(budget_control->spark_backend, true); }
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+    if (spark_prompt) { budget_control->set_spark_prompt_pool(budget_control->spark_backend, false); }
     if (expert_ahead) { expert_executor->moe_lookahead_end(); }
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
@@ -2092,7 +2158,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 int llama_context::encode(const llama_batch_ext & batch_inp) {
     std::optional<llama_allocation_scope> allocation_scope;
     if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
-            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
+            budget_reclaimer()); }
     if (batch_inp.tokens.empty()) {
         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
         return -1;
@@ -2362,6 +2428,9 @@ void llama_atomic_park_flash_draft(llama_context * draft) {
 }
 
 void llama_context::reset_expert_graphs() {
+    if (budget_control && budget_control->set_spark_decode_graph) {
+        budget_control->set_spark_decode_graph(budget_control->spark_backend, false);
+    }
     ggml_backend_sched_reset(sched.get());
     for (auto & graph : gf_res_prev) { graph->reset(); }
     gf_res_reserve->reset();
@@ -2381,7 +2450,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
     std::optional<llama_allocation_scope> allocation_scope;
     if (model.memory_contract) {
         allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::scratch, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
-            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{});
+            budget_reclaimer());
         if (expert_executor && !batch_inp.tokens.empty() && batch_inp.tokens.size() <= cparams.n_batch) {
             const size_t policy_tokens = std::max(uncached_prompt_tokens, batch_inp.tokens.size());
             const bool class_lru = expert_executor->select_decode_policy(policy_tokens, cparams.n_ubatch);
@@ -3006,8 +3075,11 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
         }
     }
 
+    // A wide Spark prompt and a short verification block have different scratch
+    // needs. Release the prompt scheduler after its feature copies have finished.
     const bool compact_inkling = uncached_prompt_tokens && n_tokens_all >= 512 && n_outputs_all == 1 &&
-            !layer_inp_dev && expert_executor && expert_executor->balanced_inkling_prompt();
+            expert_executor && ((!layer_inp_dev && expert_executor->balanced_inkling_prompt()) ||
+                (cparams.n_ubatch > 1024 && llama_atomic_spark_nvfp4_target(&model)));
     if (stream_wide || compact_inkling) {
         // Output copies and target feature writes must finish before replacing
         // the prompt graph. KV, recurrent state and the feature buffer belong
@@ -3032,7 +3104,7 @@ int llama_context::decode(const llama_batch_ext & batch_inp, size_t uncached_pro
 uint32_t llama_context::output_reserve(int32_t n_outputs) {
     std::optional<llama_allocation_scope> allocation_scope;
     if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
-            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
+            budget_reclaimer()); }
     const auto & hparams = model.hparams;
     const auto & vocab   = model.vocab;
 
@@ -3546,7 +3618,10 @@ ggml_status llama_context::graph_compute(
 
     copy_experts.reset();
 
-    if (expert_executor) { expert_executor->bind_preview_graph(gf); expert_executor->bind_early_graph(gf); }
+    if (expert_executor) {
+        expert_executor->bind_preview_graph(gf);
+        expert_executor->bind_early_graph(gf);
+    }
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (expert_executor) {
         ggml_backend_sched_synchronize(sched.get());
@@ -4512,7 +4587,7 @@ size_t llama_context::state_write_data(llama_io_write_i & io) {
 size_t llama_context::state_read_data(llama_io_read_i & io) {
     std::optional<llama_allocation_scope> allocation_scope;
     if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
-            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
+            budget_reclaimer()); }
     LLAMA_LOG_DEBUG("%s: reading state\n", __func__);
 
     // read model info
@@ -4549,7 +4624,7 @@ size_t llama_context::state_seq_write_data(llama_io_write_i & io, llama_seq_id s
 size_t llama_context::state_seq_read_data(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
     std::optional<llama_allocation_scope> allocation_scope;
     if (model.memory_contract) { allocation_scope.emplace(model.memory_contract->ledger, llama_memory_category::state, [this] { if (expert_executor) { expert_executor->trim(); } }, model.memory_contract->discrete,
-            expert_executor ? expert_executor->allocation_reclaimer() : llama_memory_reclaimer{}); }
+            budget_reclaimer()); }
     if (memory) {
         memory->state_read(io, seq_id, flags);
     }

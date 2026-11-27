@@ -353,7 +353,8 @@ struct common_params_speculative_draft {
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
     bool probabilistic = false; // sample the draft and verify by rejection, instead of argmax and match
-    bool atomic_adaptive_dflash = false; // budgeted DFlash2 verification depth for greedy requests
+    bool atomic_adaptive_dflash = false;
+    bool spark_sampled_depth = false; // select a verification depth before sampling at chat temperature
 
     common_params_model mparams;
 
